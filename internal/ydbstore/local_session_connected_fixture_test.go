@@ -43,11 +43,23 @@ func NewLocalSessionConnectedSeed(t *testing.T, endpoint string) *LocalSessionCo
 }
 
 func newLocalSessionConnectedSeed(t *testing.T, endpoint string, compiled bool, limits LocalCompactionConnectedLimits) *LocalSessionConnectedSeed {
+	return newLocalSessionConnectedSeedWithAuth(t, endpoint, compiled, limits, domain.ConfiguredInferenceAuthNoneV1)
+}
+
+// NewCredentialedLocalSessionConnectedSeed retains the same genuine local
+// Source/Store/worker graph as the no-auth seed, but seals a synthetic Bearer
+// resource generation before Source intake. It is not profile activation or
+// live provider evidence.
+func NewCredentialedLocalSessionConnectedSeed(t *testing.T, endpoint string) *LocalSessionConnectedSeed {
+	return newLocalSessionConnectedSeedWithAuth(t, endpoint, false, LocalCompactionConnectedLimits{}, domain.ConfiguredInferenceAuthBearerV1)
+}
+
+func newLocalSessionConnectedSeedWithAuth(t *testing.T, endpoint string, compiled bool, limits LocalCompactionConnectedLimits, auth domain.ConfiguredInferenceAuthV1) *LocalSessionConnectedSeed {
 	t.Helper()
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID,
 		SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
@@ -69,12 +81,86 @@ func newLocalSessionConnectedSeed(t *testing.T, endpoint string, compiled bool, 
 		parent: parent, sql: fixture}
 }
 
+// InstallProviderCredentialBinding is an exact SQL-row fixture hook for the
+// credentialed worker path. It only accepts a canonical binding matching this
+// seed's original Source-published profile; it never creates permission by
+// changing a resource or profile tuple.
+func (s *LocalSessionConnectedSeed) InstallProviderCredentialBinding(t *testing.T, binding domain.ProviderCredentialBindingV1) {
+	t.Helper()
+	if s == nil || s.Source == nil || s.sql == nil {
+		t.Fatal("credential binding requires the original connected seed")
+	}
+	configuration, err := s.Source.Configuration()
+	resource, resourceErr := binding.ResourceBinding()
+	if err != nil || resourceErr != nil || binding.Validate() != nil || configuration.Auth != domain.ConfiguredInferenceAuthBearerV1 ||
+		resource != configuration.Resource || binding.TenantID != s.Scope.TenantID || binding.OwnerUserID != s.Scope.OwnerUserID ||
+		binding.UpdatedAt.After(s.parent.parent.Authority.InvocationDeadline) {
+		t.Fatal("credential binding does not match the original Bearer source/profile/scope")
+	}
+	copy := binding
+	s.sql.providerCredential = &copy
+}
+
+// RevokeProviderCredentialBinding changes only the exact synthetic row already
+// installed for this seed. It models a canonical generation revocation after
+// an invocation lifecycle read; it does not change Source/profile authority.
+func (s *LocalSessionConnectedSeed) RevokeProviderCredentialBinding(t *testing.T) {
+	t.Helper()
+	if s == nil || s.Source == nil || s.sql == nil || s.sql.providerCredential == nil {
+		t.Fatal("credential revocation requires the installed connected row")
+	}
+	current := *s.sql.providerCredential
+	configuration, err := s.Source.Configuration()
+	resource, resourceErr := current.ResourceBinding()
+	if err != nil || resourceErr != nil || configuration.Auth != domain.ConfiguredInferenceAuthBearerV1 || resource != configuration.Resource || current.Validate() != nil || current.State != domain.ProviderCredentialActiveV1 {
+		t.Fatal("credential revocation requires the exact current synthetic binding")
+	}
+	current.State = domain.ProviderCredentialRevokedV1
+	current.SecretRef = domain.CredentialSecretRef{}
+	current.SecretFingerprint = ""
+	current.UpdatedAt = current.UpdatedAt.Add(time.Microsecond)
+	if err := current.Validate(); err != nil {
+		t.Fatal("construct canonical revoked synthetic credential row")
+	}
+	s.sql.providerCredential = &current
+}
+
+func (s *LocalSessionConnectedSeed) ProviderCredentialReadCount() int {
+	if s == nil || s.sql == nil {
+		return 0
+	}
+	return s.sql.providerCredentialReads
+}
+
+// ArmProviderCredentialRevocationAfterOperationReservationCommit changes only
+// the exact synthetic binding after the operation and call-index transaction
+// has successfully committed, before the following BeforeSend transaction.
+func (s *LocalSessionConnectedSeed) ArmProviderCredentialRevocationAfterOperationReservationCommit(t *testing.T, afterRevoke func()) {
+	t.Helper()
+	if s == nil || s.sql == nil || s.sql.providerCredential == nil || s.compaction == nil ||
+		s.sql.afterOperationReservationCommit != nil {
+		t.Fatal("post-reservation credential revocation requires a connected compaction seed with one installed binding")
+	}
+	s.sql.afterOperationReservationCommit = func() {
+		operations := s.compaction.compactionEffectSQL.operations
+		if len(operations) != 1 || len(operations[0]) != 11 || operations[0][5] != uint64(0) || operations[0][6] != uint64(0) ||
+			operations[0][9] != operations[0][0] || operations[0][10] != operations[0][3] {
+			t.Error("credential revocation hook did not follow committed operation and call-index rows")
+			return
+		}
+		s.RevokeProviderCredentialBinding(t)
+		if afterRevoke != nil {
+			afterRevoke()
+		}
+	}
+}
+
 // TEST ONLY raw constructor inputs. The caller's actual NewLocalV1 must create
 // its own original Store/bootstrap/entry/keeper. This installs no private owner,
 // proxy, capability, head, fit result or transport approval into the session.
 type LocalCompactionConnectedLimits struct {
 	InputTokens, OutputTokens, ModelWindowTokens uint64
-	NetworkOperation                             time.Duration
+	NetworkOperation, CleanupTimeout             time.Duration
 }
 
 func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs ports.BlobStore, limits ...LocalCompactionConnectedLimits) *LocalSessionConnectedSeed {
@@ -87,6 +173,59 @@ func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs
 		narrow = limits[0]
 	}
 	s := newLocalSessionConnectedSeed(t, endpoint, true, narrow)
+	return installLocalCompactionConnectedHistory(t, s, blobs)
+}
+
+// NewCredentialedLocalCompactionSessionConnectedSeed uses the same canonical
+// retained-history fixture as the ordinary compaction seed, while sealing the
+// Bearer resource before Source intake. The callback creates BlobStore only
+// after the genuine scope is known.
+func NewCredentialedLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobsForScope func(domain.AttemptExecutionSourceScopeV1) ports.BlobStore, limits ...LocalCompactionConnectedLimits) *LocalSessionConnectedSeed {
+	t.Helper()
+	if len(limits) > 1 || blobsForScope == nil {
+		t.Fatal("credentialed compaction seed requires one bounded limit declaration and a scope-bound BlobStore factory")
+	}
+	narrow := LocalCompactionConnectedLimits{}
+	if len(limits) == 1 {
+		narrow = limits[0]
+	}
+	s := newLocalSessionConnectedSeedWithAuth(t, endpoint, true, narrow, domain.ConfiguredInferenceAuthBearerV1)
+	blobs := blobsForScope(s.Scope)
+	if blobs == nil {
+		t.Fatal("credentialed compaction seed requires its original BlobStore")
+	}
+	return installLocalCompactionConnectedHistory(t, s, blobs)
+}
+
+// NewCredentialedLargeHistoryCompactionSessionConnectedSeed varies only an
+// old assistant summary that the compaction may summarize. The protected
+// latest trigger remains unchanged and small enough for the successor MODEL.
+func NewCredentialedLargeHistoryCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobsForScope func(domain.AttemptExecutionSourceScopeV1) ports.BlobStore, historicalSummary string, limits ...LocalCompactionConnectedLimits) *LocalSessionConnectedSeed {
+	t.Helper()
+	if len(limits) > 1 || blobsForScope == nil || historicalSummary == "" || len(historicalSummary) > 1<<16 {
+		t.Fatal("large-history credentialed seed requires bounded historical summary and one scope-bound BlobStore factory")
+	}
+	narrow := LocalCompactionConnectedLimits{}
+	if len(limits) == 1 {
+		narrow = limits[0]
+	}
+	s := newLocalSessionConnectedSeedWithAuth(t, endpoint, true, narrow, domain.ConfiguredInferenceAuthBearerV1)
+	blobs := blobsForScope(s.Scope)
+	if blobs == nil {
+		t.Fatal("credentialed compaction seed requires its original BlobStore")
+	}
+	return installLocalCompactionConnectedHistoryWithHistoricalSummary(t, s, blobs, historicalSummary)
+}
+
+func installLocalCompactionConnectedHistory(t *testing.T, s *LocalSessionConnectedSeed, blobs ports.BlobStore) *LocalSessionConnectedSeed {
+	return installLocalCompactionConnectedHistoryWithHistoricalSummary(t, s, blobs, "")
+}
+
+func installLocalCompactionConnectedHistoryWithHistoricalSummary(t *testing.T, s *LocalSessionConnectedSeed, blobs ports.BlobStore, historicalSummary string) *LocalSessionConnectedSeed {
+	t.Helper()
+	if blobs == nil {
+		t.Fatal("compaction seed requires its original BlobStore")
+	}
 	queries := &compactionSourceSQL{retainedEntrySQL: &retainedEntrySQL{loopbackOperationSQL: s.sql}}
 	engine := &compactionPublicationSQL{compactionEffectSQL: &compactionEffectSQL{compactionSourceSQL: queries}}
 	db := sql.OpenDB(compactionPublicationConnector{engine})
@@ -124,7 +263,15 @@ func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs
 			body = fmt.Sprintf(`{"schema":"sessionless.tool-event.v1","call_id":%q,"tool_name":"history_tool","content":{"data":"exact history bytes"}}`, call)
 		case 6:
 			kind = domain.SessionEventAssistantMessage
-			body = `{"schema":"sessionless.assistant-message.v1","summary":"historical answer","artifact_manifest_id":"historical-manifest"}`
+			summary := "historical answer"
+			if historicalSummary != "" {
+				summary = historicalSummary
+			}
+			encoded, err := json.Marshal(map[string]any{"schema": "sessionless.assistant-message.v1", "summary": summary, "artifact_manifest_id": "historical-manifest"})
+			if err != nil {
+				t.Fatal("encode bounded historical assistant summary")
+			}
+			body = string(encoded)
 		}
 		id := domain.SessionEventID(fmt.Sprintf("connected-history-%d", i))
 		if i == 7 {

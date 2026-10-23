@@ -151,6 +151,34 @@ operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
 Makefile is the authoritative component inventory; documentation deliberately
 does not duplicate a count that drifts as slices are added.
 
+### Private credentialed local session (not activation)
+
+The explicit `providerloopsession.NewCredentialedV1` composition implements the
+local direct-Bearer entry from the
+[#185 credential-entry contract](https://gitcode.com/urandon/sessionless/wiki/Managed-Provider-Credential-Entry-185.md).
+It is separate from the unchanged noauth `NewLocalV1`. Its one-use `Run`
+consumes the genuine prepared entry, issues one scoped handle and encloses the
+existing finite MODEL/conditional-compaction engine in one synchronous
+materialization. Each effect still uses the original Store transaction and
+before-send gate, including the current canonical credential generation and
+revocation join. A credential acquired earlier is not later send permission.
+
+The owned transport joins I/O and clears mutable header copies before the
+materializer returns. Release occurs outside its callback and mutex. The
+original entry fixes the active deadline and outer cleanup ceiling before
+Issue; the first final cleanup narrows one absolute deadline shared with
+Release and the original secret-free terminal owner. Returning that terminal
+owner is not canonical success: its existing output, cleanup and completion
+steps remain required. A failure or uncertain send never grants a retry.
+
+The source-level arm does not register a worker/cloud profile, complete the
+tool/result loop, or enable real credentials, providers or network access.
+Scripted connected tests use only synthetic Bearer bytes and owned loopback
+peers. Run the existing `make test-ordinary` and `make test-connected` targets
+with `GO_PACKAGE_PATTERNS` scoped to `./internal/providerloopsession`,
+`./internal/localloopback` and `./internal/ydbstore` for local development;
+required exact-head CI is still repository-wide.
+
 ### Offline attached transport experiment preparation
 
 The [#129 Phase-0 plan](attached-worker-transport-experiment.md) prepares

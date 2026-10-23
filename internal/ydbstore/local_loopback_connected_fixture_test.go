@@ -27,6 +27,9 @@ type loopbackOperationSQL struct {
 	operation, pendingOperation, call, pendingCall []driver.Value
 	operationWrites, callWrites                    int
 	observationWrites                              int
+	providerCredential                             *domain.ProviderCredentialBindingV1
+	providerCredentialReads                        int
+	afterOperationReservationCommit                func()
 	// Explicit factory/real-network test arm; old fixtures retain fixed time.
 	sampleWallClock bool
 }
@@ -53,6 +56,25 @@ func (f *loopbackOperationSQL) QueryContext(ctx context.Context, s string, args 
 		f.f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
 	}
 	switch s {
+	case providerCredentialReadSQL:
+		if len(args) != 4 || f.providerCredential == nil {
+			return &explanationFixtureRows{}, nil
+		}
+		binding := *f.providerCredential
+		if args[0].Value != string(binding.TenantID) || args[1].Value != string(binding.OwnerUserID) ||
+			args[2].Value != string(binding.ResourceKind) || args[3].Value != binding.ResourceID {
+			return nil, errors.New("connected credential point read crossed the exact resource locator")
+		}
+		record, err := json.Marshal(binding)
+		if err != nil {
+			return nil, err
+		}
+		f.providerCredentialReads++
+		return &explanationFixtureRows{values: []driver.Value{
+			int64(binding.ResourceRevision), int64(binding.CredentialGeneration), binding.CandidateMutationID,
+			string(binding.State), binding.SecretRef.StorageValue(), string(binding.SecretFingerprint),
+			binding.UpdatedAt, string(record),
+		}}, nil
 	case ownedOperationReadSQL, ownedOperationCallSQL:
 		f.f.parent.base.recordQuery(s, args)
 		if len(args) != 3 {
@@ -164,6 +186,14 @@ func (tx loopbackOperationTx) Commit() error {
 	}
 	tx.f.pendingOperation, tx.f.pendingCall = nil, nil
 	return e
+}
+func (f *loopbackOperationSQL) runAfterOperationReservationCommit() {
+	if f == nil || f.afterOperationReservationCommit == nil {
+		return
+	}
+	hook := f.afterOperationReservationCommit
+	f.afterOperationReservationCommit = nil
+	hook()
 }
 func (tx loopbackOperationTx) Rollback() error {
 	tx.f.pendingOperation, tx.f.pendingCall = nil, nil

@@ -22,7 +22,10 @@ import (
 // InlineClientV2 is only a fixed-origin, one-exchange wire adapter. The caller
 // owns provenance, durable burns, aggregate call budgets and recovery policy.
 // The supplied transport must honor request cancellation, perform no internal
-// retries, and bound response Read/Close by that context. Submit borrows an
+// retries, consume the request through checked EOF before closing it (possibly
+// asynchronously, as permitted by RoundTripper), and bound response Read/Close
+// by that context. Close alone is not exact-framing or remote-acceptance proof.
+// Submit borrows an
 // original bounded, nonblocking/context-cooperative reader; it neither owns nor
 // closes that reader. No arbitrary RoundTripper/Reader can be made bounded by
 // wrapping it in a leaking timeout goroutine.
@@ -226,7 +229,7 @@ func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, pa
 		body = bytes.NewReader(encoded)
 		length = int64(len(encoded))
 	}
-	framed := &inlineClientBodyV2{reader: body, remaining: length}
+	framed := &inlineClientBodyV2{reader: body, remaining: length, done: make(chan struct{})}
 	defer framed.Close()
 	request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, c.origin+path, framed)
 	if requestErr != nil {
@@ -276,7 +279,7 @@ func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, pa
 	}
 	var trailing [1]byte
 	defer clear(trailing[:])
-	if n, readErr := io.ReadFull(response.Body, trailing[:]); n != 0 || readErr != io.EOF || ctx.Err() != nil || !framed.valid() {
+	if n, readErr := io.ReadFull(response.Body, trailing[:]); n != 0 || readErr != io.EOF || ctx.Err() != nil || !framed.valid(ctx) {
 		return result, ErrUnavailable
 	}
 	if !inlineDecodeV2(raw, maxInlineControlBytesV2, &result) || !inlineResponseV2(result) || result.Nonce != expected.nonce || result.Fingerprint != expected.fingerprint ||
@@ -321,6 +324,7 @@ type inlineClientBodyV2 struct {
 	reader                   io.Reader
 	remaining                int64
 	checked, invalid, closed bool
+	done                     chan struct{}
 }
 
 func (b *inlineClientBodyV2) Read(p []byte) (int, error) {
@@ -363,15 +367,30 @@ func (b *inlineClientBodyV2) Read(p []byte) (int, error) {
 	return 0, err
 }
 
-func (b *inlineClientBodyV2) valid() bool {
+func (b *inlineClientBodyV2) valid(ctx context.Context) bool {
+	// Do may expose the response while the transport still probes the request
+	// reader for excess bytes. Join its Close before inspecting final framing;
+	// never probe/replay the borrowed reader from the response goroutine.
+	select {
+	case <-b.done:
+	case <-ctx.Done():
+		select {
+		case <-b.done:
+		default:
+			return false
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.remaining == 0 && b.checked && !b.invalid
+	return ctx.Err() == nil && b.closed && b.remaining == 0 && b.checked && !b.invalid
 }
 func (b *inlineClientBodyV2) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.closed = true
-	b.reader = nil
+	if !b.closed {
+		b.closed = true
+		b.reader = nil
+		close(b.done)
+	}
 	return nil
 }

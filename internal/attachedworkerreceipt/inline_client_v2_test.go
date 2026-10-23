@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -215,6 +216,183 @@ func TestInlineClientV2OneExchangeFixedFramingAndOriginalBytes(t *testing.T) {
 				}
 				if err != nil || result.Stage != attachedworkeroutput.InlineReadyV2 || calls != 1 || responseBody.closes != 1 || len(client.active) != 0 {
 					t.Fatalf("exchange result stage=%s err=%v calls=%d response-closes=%d active=%d", result.Stage, err, calls, responseBody.closes, len(client.active))
+				}
+			})
+		})
+	}
+}
+
+// RoundTripper may return a response before its request-body writer finishes.
+// A completed response is not the final EOF/Close of the original request.
+func TestInlineClientV2JoinsAsynchronousRequestBodyClose(t *testing.T) {
+	for _, path := range []string{PathInlinePrepareV2, PathInlineBodyV2, PathInlineReconcileV2} {
+		t.Run(path, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				original := []byte("{\"answer\":1}")
+				prepare, submit, reconcile := inlineClientFixtureV2(t, original)
+				ctx := inlineClientContextV2(t)
+				release, responseReady := make(chan struct{}), make(chan struct{})
+				writerDone, callDone := make(chan struct{}), make(chan struct{})
+				writerErrors := make(chan error, 1)
+				calls := 0
+				client := inlineClientNewV2(t, func(r *http.Request) (*http.Response, error) {
+					calls++
+					// Model the fixed-length writer: payload delivered, final EOF
+					// probe delayed until after the response becomes available.
+					raw := make([]byte, int(r.ContentLength))
+					_, readErr := io.ReadFull(r.Body, raw)
+					clear(raw)
+					go func() {
+						defer close(writerDone)
+						<-release
+						var extra [1]byte
+						n, err := r.Body.Read(extra[:])
+						closeErr := r.Body.Close()
+						if readErr != nil || n != 0 || err != io.EOF || closeErr != nil {
+							writerErrors <- fmt.Errorf("request writer: payload=%v trailing=%d/%v close=%v", readErr, n, err, closeErr)
+						}
+					}()
+					close(responseReady)
+					response, _ := inlineClientResponseV2(inlineClientMarshalV2(t, inlineClientResultV2(submit)))
+					return response, nil
+				})
+				var result attachedworkeroutput.AttachedWorkerInlineResultV2
+				var callErr error
+				go func() {
+					defer close(callDone)
+					switch path {
+					case PathInlinePrepareV2:
+						result, callErr = client.Prepare(ctx, prepare)
+					case PathInlineBodyV2:
+						result, callErr = client.Submit(ctx, submit, int64(len(original)), bytes.NewReader(original))
+					case PathInlineReconcileV2:
+						result, callErr = client.Reconcile(ctx, reconcile)
+					}
+				}()
+				released := false
+				t.Cleanup(func() {
+					if !released {
+						close(release)
+					}
+					<-writerDone
+					<-callDone
+				})
+				<-responseReady
+				synctest.Wait()
+				select {
+				case <-callDone:
+					t.Errorf("classified response before original request EOF/Close: stage=%s err=%v", result.Stage, callErr)
+				default:
+				}
+				close(release)
+				released = true
+				<-writerDone
+				<-callDone
+				select {
+				case err := <-writerErrors:
+					t.Error(err)
+				default:
+				}
+				if callErr != nil || result.Stage != attachedworkeroutput.InlineReadyV2 || calls != 1 || len(client.active) != 0 {
+					t.Errorf("joined exchange: stage=%s err=%v calls=%d active=%d", result.Stage, callErr, calls, len(client.active))
+				}
+			})
+		})
+	}
+}
+
+func TestInlineClientV2RequestCloseWaitKeepsOriginalDeadline(t *testing.T) {
+	for _, abort := range []string{"caller-cancel", "client-close", "deadline"} {
+		t.Run(abort, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				_, submit, _ := inlineClientFixtureV2(t, []byte("{}"))
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				t.Cleanup(cancel)
+				deadline, _ := ctx.Deadline()
+				responseReady, writerDone, callDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				calls := 0
+				var responseBody *inlineClientResponseBodyV2
+				client := inlineClientNewV2(t, func(r *http.Request) (*http.Response, error) {
+					calls++
+					// Complete EOF first: the only missing event is transport Close.
+					if raw, err := io.ReadAll(r.Body); err != nil || string(raw) != "{}" {
+						t.Errorf("read original payload before delayed Close: body=%q err=%v", raw, err)
+					}
+					go func() {
+						defer close(writerDone)
+						<-r.Context().Done()
+						_ = r.Body.Close()
+					}()
+					response, body := inlineClientResponseV2(inlineClientMarshalV2(t, inlineClientResultV2(submit)))
+					responseBody = body
+					close(responseReady)
+					return response, nil
+				})
+				var result attachedworkeroutput.AttachedWorkerInlineResultV2
+				var err error
+				go func() {
+					defer close(callDone)
+					result, err = client.Submit(ctx, submit, 2, strings.NewReader("{}"))
+				}()
+				t.Cleanup(func() { cancel(); <-writerDone; <-callDone })
+				<-responseReady
+				synctest.Wait()
+				select {
+				case <-callDone:
+					t.Errorf("EOF alone accepted before transport Close: stage=%s err=%v", result.Stage, err)
+				default:
+				}
+				switch abort {
+				case "caller-cancel":
+					cancel()
+				case "client-close":
+					_ = client.Close()
+				}
+				<-writerDone
+				<-callDone
+				if !errors.Is(err, ErrUnavailable) || result.Version != 0 || calls != 1 || responseBody.closes != 1 || len(client.active) != 0 {
+					t.Errorf("aborted Close wait=%s: err=%v version=%d requests=%d response-closes=%d active=%d", abort, err, result.Version, calls, responseBody.closes, len(client.active))
+				}
+				if time.Now().After(deadline) || abort == "deadline" && !time.Now().Equal(deadline) {
+					t.Errorf("Close wait renewed original deadline: abort=%s now=%v deadline=%v", abort, time.Now(), deadline)
+				}
+			})
+		})
+	}
+}
+
+func TestInlineClientV2ClosedRequestStillRequiresExactFraming(t *testing.T) {
+	for _, mode := range []string{"unread", "no-eof-probe", "short", "extra"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				_, submit, _ := inlineClientFixtureV2(t, []byte("{}"))
+				original := "{}"
+				if mode == "short" {
+					original = "x"
+				} else if mode == "extra" {
+					original = "xyz"
+				}
+				calls := 0
+				client := inlineClientNewV2(t, func(r *http.Request) (*http.Response, error) {
+					calls++
+					switch mode {
+					case "no-eof-probe":
+						var raw [2]byte
+						if _, err := io.ReadFull(r.Body, raw[:]); err != nil {
+							t.Errorf("read exact declared length: %v", err)
+						}
+					case "short", "extra":
+						if _, err := io.ReadAll(r.Body); err == nil {
+							t.Errorf("mismatched body=%q lacked framing error", original)
+						}
+					}
+					_ = r.Body.Close()
+					response, _ := inlineClientResponseV2(inlineClientMarshalV2(t, inlineClientResultV2(submit)))
+					return response, nil
+				})
+				result, err := client.Submit(inlineClientContextV2(t), submit, 2, strings.NewReader(original))
+				if !errors.Is(err, ErrUnavailable) || result.Version != 0 || calls != 1 || len(client.active) != 0 {
+					t.Errorf("Close manufactured framing proof=%s: err=%v version=%d requests=%d active=%d", mode, err, result.Version, calls, len(client.active))
 				}
 			})
 		})

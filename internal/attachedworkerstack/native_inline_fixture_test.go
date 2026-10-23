@@ -33,7 +33,7 @@ import (
 
 const nativeInlineFixtureFinal = `{"answer":"two requested files","artifacts":[{"name":"data.json","media_type":"application/json","content":" { \"n\": 9007199254740993123456789 } "},{"name":"note.txt","media_type":"text/plain","content":"original text\n"}]}`
 
-// NativeInlineFaultV2ForTest selects only these closed peer faults. It cannot
+// NativeInlineFaultV2ForTest selects only these closed peer/lifecycle faults. It cannot
 // replace the Stack, producer, runner, profile, admission or current predicate.
 type NativeInlineFaultV2ForTest uint8
 
@@ -43,6 +43,9 @@ const (
 	NativeInlineForgedDigestACKV2ForTest
 	NativeInlineForgedSequenceACKV2ForTest
 	NativeInlineExportExpiryV2ForTest
+	NativeInlineBoundaryReleaseFailureV2ForTest
+	NativeInlineWriteBackFailureV2ForTest
+	NativeInlineCredentialReleaseFailureV2ForTest
 )
 
 // NativeInlineFixtureV2ForTest exists only in this package's test binary. It
@@ -73,6 +76,8 @@ type NativeInlineFixtureV2ForTest struct {
 	terminalExchanges   int
 	exactACKReplay      bool
 	fault               NativeInlineFaultV2ForTest
+	command             *exec.Cmd
+	nativeSocketPath    string
 }
 
 func (f *NativeInlineFixtureV2ForTest) CurrentTime() time.Time {
@@ -146,10 +151,20 @@ func (c *nativeInlineCredentialFixture) WriteBack(ctx context.Context, handle po
 	if err != nil || !bytes.Equal(body, []byte(`{"synthetic":true}`)) {
 		return ports.CredentialWriteBackResult{}, errors.New("synthetic auth bytes changed")
 	}
+	if c.fixture.fault == NativeInlineWriteBackFailureV2ForTest {
+		c.fixture.record("writeback-failed")
+		return ports.CredentialWriteBackResult{}, errors.New("controlled synthetic writeback failure")
+	}
 	c.fixture.record("writeback")
 	return ports.CredentialWriteBackResult{Generation: handle.BindingGeneration}, nil
 }
 func (c *nativeInlineCredentialFixture) Release(context.Context, ports.CredentialHandle) error {
+	if c.fixture.fault == NativeInlineCredentialReleaseFailureV2ForTest {
+		// Retain only the synthetic t.TempDir-owned auth fixture. An error is
+		// not successful handback; normal test-directory cleanup owns it.
+		c.fixture.record("release-failed")
+		return errors.New("controlled synthetic credential release failure")
+	}
 	if err := os.Remove(filepath.Join(c.root, "auth.json")); err != nil {
 		return err
 	}
@@ -173,11 +188,16 @@ func (l *nativeInlineLauncherFixture) PrepareV3(ctx context.Context, envelope at
 	if envelope.Execution.ValidateV3(ctx, envelope.Native) != nil || !envelope.Socket.MatchesExecutionV3(envelope.Execution) {
 		return nil, errors.New("original native launch/readset mismatch")
 	}
-	l.fixture.mu.Lock()
-	l.fixture.launches++
-	l.fixture.mu.Unlock()
+	socketPath, err := envelope.Socket.Path()
+	if err != nil {
+		return nil, err
+	}
 	command := exec.Command(envelope.Workload.Executable, envelope.Workload.Arguments...)
 	command.Dir, command.Env = envelope.Workload.Directory, append([]string(nil), envelope.Workload.Environment...)
+	l.fixture.mu.Lock()
+	l.fixture.launches++
+	l.fixture.command, l.fixture.nativeSocketPath = command, socketPath
+	l.fixture.mu.Unlock()
 	return &nativeInlineBoundaryFixture{command: command, envelope: envelope, fixture: l.fixture}, nil
 }
 
@@ -199,6 +219,10 @@ func (b *nativeInlineBoundaryFixture) Release(ctx context.Context) error {
 	close(b.fixture.TeardownEntered)
 	select {
 	case <-b.fixture.continueTeardown:
+		if b.fixture.fault == NativeInlineBoundaryReleaseFailureV2ForTest {
+			b.fixture.record("boundary-release-failed")
+			return errors.New("controlled synthetic boundary release failure")
+		}
 		b.fixture.record("boundary-release")
 		return nil
 	case <-ctx.Done():
@@ -308,7 +332,7 @@ func (p *nativeInlineSessionPeer) Exchange(ctx context.Context, batch attachedwo
 // no Codex, bootstrap, relay, engine, model or provider is executed.
 func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForTest) *NativeInlineFixtureV2ForTest {
 	t.Helper()
-	if fault > NativeInlineExportExpiryV2ForTest {
+	if fault > NativeInlineCredentialReleaseFailureV2ForTest {
 		t.Fatal("unknown closed native inline fixture fault")
 	}
 	base, _, _ := nativeStackFixtureV3(t)
@@ -394,12 +418,19 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 	// A short owned scratch root keeps real Unix socket names below sun_path's
 	// limit, matching the existing native joined fixture. Remove only this root
 	// after the actual Stack has cleaned its exact owned children.
+	// Register quarantine's ordinary test-directory cleanup first, so it runs
+	// after owner shutdown, any proven fixture-only relocation, and fallback.
+	quarantine := t.TempDir()
 	shortRoot, err := os.MkdirTemp("", "ni-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ownedShortRoot := shortRoot
+	quarantined := false
 	t.Cleanup(func() {
+		if quarantined {
+			return
+		}
 		if err := os.Remove(ownedShortRoot); err != nil {
 			t.Errorf("owned native scratch residue: %v", err)
 		}
@@ -456,16 +487,45 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 		f.ContinueACK()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		var stackErr error
 		if f.Stack != nil {
-			if err := f.Stack.Close(ctx); err != nil {
-				t.Errorf("close original native Stack: %v", err)
-			}
+			stackErr = f.Stack.Close(ctx)
 		}
+		sessionClosed := false
 		if f.Session != nil {
 			if err := f.Session.Close(ctx); err != nil {
 				t.Errorf("close original Session: %v", err)
+			} else {
+				sessionClosed = true
 			}
 		}
+		f.mu.Lock()
+		injected := slices.Contains(f.events, "boundary-release-failed")
+		command, socketPath := f.command, f.nativeSocketPath
+		f.mu.Unlock()
+		if !injected {
+			if stackErr != nil {
+				t.Errorf("close original native Stack: %v", stackErr)
+			}
+			return
+		}
+		// Production correctly retains unknown boundary custody. Only this
+		// observed closed synthetic fault may relocate this exact MkdirTemp
+		// root, after the actual command was joined and Session shut down.
+		if f.fault != NativeInlineBoundaryReleaseFailureV2ForTest || stackErr != codexexec.ErrContract ||
+			!sessionClosed || command == nil || command.ProcessState == nil || !command.ProcessState.Exited() || socketPath == "" {
+			t.Errorf("synthetic boundary retention lacks joined-owner cleanup proof: stack=%v session_closed=%t", stackErr, sessionClosed)
+			return
+		}
+		if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("original native socket not retired before fixture relocation: %v", err)
+			return
+		}
+		if err := os.Rename(ownedShortRoot, filepath.Join(quarantine, "retained-synthetic-boundary")); err != nil {
+			t.Errorf("relocate exact synthetic boundary residue without deletion fallback: %v", err)
+			return
+		}
+		quarantined = true
 	})
 	f.Session, err = connector.Connect(t.Context(), attachedworkersession.ConnectInputV1{ExpectedWorkerRevision: 7, CapabilityManifest: f.Capability})
 	if err != nil {

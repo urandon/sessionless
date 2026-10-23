@@ -30,6 +30,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
 	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 const nativeInlineHTTPBearer = "fixed-synthetic-inline-http-bearer"
@@ -346,6 +347,24 @@ type nativeInlineFaultScenario struct {
 // helpers never replace a prepared owner or synthesize a successful result.
 func newNativeInlineFaultScenario(t *testing.T, fault attachedworkerstack.NativeInlineFaultV2ForTest) *nativeInlineFaultScenario {
 	t.Helper()
+	s, ctx := newNativeInlineFaultAdmission(t, fault)
+	f := s.fixture
+	f.ContinueTeardown()
+	f.ContinueWriteBack()
+	var err error
+	s.result, err = f.Stack.Run(ctx, s.invocation)
+	if !s.result.Succeeded(err) || !s.result.CleanupComplete() {
+		t.Fatalf("original fault run failed: %+v err=%v", s.result, err)
+	}
+	s.source, err = f.Stack.InlineReceiptCandidate(ctx, s.invocation.Identity, s.result, nil)
+	if err != nil {
+		t.Fatalf("original fault producer unavailable: %v", err)
+	}
+	return s
+}
+
+func newNativeInlineFaultAdmission(t *testing.T, fault attachedworkerstack.NativeInlineFaultV2ForTest) (*nativeInlineFaultScenario, context.Context) {
+	t.Helper()
 	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t, fault)
 	s := &nativeInlineFaultScenario{fixture: f, peer: &nativeInlineHTTPPeer{fixture: f, fault: fault}, v1: &preparedReceiptPublisher{}}
 	client, err := attachedworkerreceipt.NewInlineClientV2("https://native-inline.invalid", &http.Client{Transport: s.peer}, []byte(nativeInlineHTTPBearer))
@@ -376,17 +395,68 @@ func newNativeInlineFaultScenario(t *testing.T, fault attachedworkerstack.Native
 		t.Fatalf("original fault offer/claim/materialization available=%v err=%v", available, err)
 	}
 	t.Cleanup(s.invocation.VerifiedInput.Clear)
-	f.ContinueTeardown()
-	f.ContinueWriteBack()
-	s.result, err = f.Stack.Run(ctx, s.invocation)
-	if !s.result.Succeeded(err) || !s.result.CleanupComplete() {
-		t.Fatalf("original fault run failed: %+v err=%v", s.result, err)
+	return s, ctx
+}
+
+// These are genuine original-owner finalization controls, not native isolation,
+// real credential or persistence proofs. The fixed shell completes its original
+// protocol; only the closed lower-boundary/lifecycle fault is synthetic. Failed
+// terminal publication is separate: no failed result is relabelled as success
+// merely to call the inline adapter or to fabricate a private producer.
+func TestNativeInlineTransportV2FinalizationFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fault   attachedworkerstack.NativeInlineFaultV2ForTest
+		failure string
+		events  []string
+	}{
+		{"boundary_release", attachedworkerstack.NativeInlineBoundaryReleaseFailureV2ForTest, "", []string{"issue", "materialize", "boundary-release-failed", "writeback-entered", "writeback", "release"}},
+		{"writeback", attachedworkerstack.NativeInlineWriteBackFailureV2ForTest, "credential_writeback_failed", []string{"issue", "materialize", "boundary-release", "writeback-entered", "writeback-failed", "release"}},
+		{"credential_release", attachedworkerstack.NativeInlineCredentialReleaseFailureV2ForTest, "credential_release_failed", []string{"issue", "materialize", "boundary-release", "writeback-entered", "writeback", "release-failed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, ctx := newNativeInlineFaultAdmission(t, tc.fault)
+			f := s.fixture
+			f.ContinueTeardown()
+			f.ContinueWriteBack()
+			result, runErr := f.Stack.Run(ctx, s.invocation)
+			if runErr == nil || result.Succeeded(runErr) || result.Process.ExitCode != 0 || !result.Process.DescendantsReaped || result.Process.Cancelled || result.Process.Deadline || ctx.Err() != nil {
+				t.Fatalf("original completed process did not fail at finalization: result=%+v err=%v context=%v", result, runErr, ctx.Err())
+			}
+			if tc.failure != "" && (!errors.Is(runErr, attachedworkerdaemon.ErrCredentialFinalization) || result.FailureCode != tc.failure) {
+				t.Fatalf("original finalization classification=%q err=%v", result.FailureCode, runErr)
+			}
+			if tc.fault == attachedworkerstack.NativeInlineBoundaryReleaseFailureV2ForTest {
+				var classified *domain.ClassifiedError
+				if result.Process.BoundaryReleased || result.Process.CleanupSucceeded || result.CleanupComplete() || !result.CredentialReleased ||
+					!errors.Is(runErr, codexexec.ErrContract) || !errors.As(runErr, &classified) || classified.Kind != domain.ErrorTerminal || classified.Code != string(sessionlessharness.FailureHarnessBackendFailed) {
+					t.Fatalf("original supervisor certified failed release: result=%+v err=%v", result, runErr)
+				}
+			} else if !result.Process.BoundaryReleased || !result.Process.CleanupSucceeded || result.CredentialReleased != (tc.fault == attachedworkerstack.NativeInlineWriteBackFailureV2ForTest) {
+				t.Fatalf("original cleanup/handback observations changed: %+v", result)
+			}
+			if source, err := f.Stack.InlineReceiptCandidate(ctx, s.invocation.Identity, result, runErr); source != nil || !errors.Is(err, codexexec.ErrContract) {
+				t.Fatalf("failed original finalization minted inline authority: present=%t err=%v", source != nil, err)
+			}
+			if _, err := f.Stack.Run(ctx, s.invocation); err == nil {
+				t.Fatal("failed original invocation permitted another run")
+			}
+			events, launches, terminals := f.Events()
+			if !reflect.DeepEqual(events, tc.events) || launches != 1 || terminals != 0 {
+				t.Fatalf("original lifecycle effects events=%v launches=%d terminals=%d", events, launches, terminals)
+			}
+			prepare, body, reconcile, failures := s.peer.snapshot()
+			s.peer.mu.Lock()
+			paths, observed, capability := len(s.peer.paths), len(s.peer.observed), s.peer.prepare.Nonce
+			s.peer.mu.Unlock()
+			if prepare != 0 || body != 0 || reconcile != 0 || paths != 0 || observed != 0 || capability != "" || len(failures) != 0 || s.v1.calls != 0 {
+				t.Fatalf("failed finalization reached receipt peers: prepare=%d body=%d reconcile=%d paths=%d observed=%d v1=%d failures=%v", prepare, body, reconcile, paths, observed, s.v1.calls, failures)
+			}
+			if _, err := os.Stat(f.JournalPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed finalization created an output journal: %v", err)
+			}
+		})
 	}
-	s.source, err = f.Stack.InlineReceiptCandidate(ctx, s.invocation.Identity, s.result, nil)
-	if err != nil {
-		t.Fatalf("original fault producer unavailable: %v", err)
-	}
-	return s
 }
 
 func (s *nativeInlineFaultScenario) completeUntilACK(t *testing.T, ctx context.Context) <-chan error {

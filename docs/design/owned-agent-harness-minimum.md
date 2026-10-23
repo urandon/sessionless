@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.5, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies bounded operation-body storage; 0.2.4 defines normalized model bodies and Store correlation; 0.2.5 specifies local invocation construction and first-model composition. [#190](https://gitcode.com/urandon/sessionless/issues/190) records independent engineering review and implementation evidence. These increments do not complete the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.6, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies bounded operation-body storage; 0.2.4 defines normalized model bodies and Store correlation; 0.2.5 specifies local invocation construction and first-model composition; 0.2.6 adds the narrowly authenticated [original MCP conservative continuation](mcp-conservative-continuation.md) contract. [#190](https://gitcode.com/urandon/sessionless/issues/190) records independent engineering review and implementation evidence. These increments do not complete the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -163,15 +163,21 @@ stop work conservatively but never grants authority or reduces a reservation.
 
 Eligibility branches on the completed predecessor's kind, not the proposed
 next operation: a known model response can admit a tool under its own exact
-call/grant checks, while a completed tool/search predecessor retains its
-existing measured-amount requirement before any continuation. This clarification
-does not change external-service billing or grant rules.
+call/grant checks. A completed tool/search predecessor retains its existing
+measured-amount requirement except for the v0.2.6 original public-MCP route in
+[the conservative continuation contract](mcp-conservative-continuation.md).
+That exclusive route requires authentic Source/Store service-envelope evidence,
+the complete unchanged nonrefundable pre-send debit, durable known result and
+eligible canonical pair/answer finalization before effects. Actual billing stays
+unknown; no generic fixture/search gate, price, payer or live authority changes.
 Cleanup, retention/disposal and final success keep their separate evidence
 requirements; permission to continue is not proof of settled billing or safe
-physical deletion. In particular, the residual-disposal inventory's measured
-billing requirement remains unchanged; newly representable provider reports do
-not qualify that route or claim final export/cleanup readiness. Its integration
-with conservative reservations remains explicit work for #191. The existing
+physical deletion. Existing residual-disposal V1/V2 measured-billing semantics
+remain unchanged; provider reports cannot qualify them. The v0.2.6 original MCP
+route requires explicit new accounting/residual V3 and terminal capsule V2,
+preserving unknown actual money, the full charge reserve and genuine physical
+cleanup/retention evidence. That implementation remains work for #190/#191.
+The existing
 fixture-only body/lineage parser remains
 fixture-only until #190/#191 deliver their real normalized path. This change
 alone does not complete either task or enable a profile.

@@ -123,6 +123,7 @@ Detailed engineering contracts:
 - [Eligible compute choice contract (#142, draft)](design/eligible-compute-choice.md)
 - [Compute choice context evidence (#142, draft)](design/compute-choice-context-evidence.md)
 - [Owned harness current authority (#189, draft)](design/owned-harness-current-authority.md)
+- [Original MCP conservative continuation (#190/#191/#193, engineering contract)](design/mcp-conservative-continuation.md)
 - [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
 - [Attached harness media and artifact design](design/attached-harness-media-and-artifacts.md)
 

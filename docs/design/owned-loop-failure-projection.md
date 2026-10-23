@@ -1,10 +1,15 @@
 # Original owned-loop failure frontier and canonical projection
 
-Version: 0.1.0, engineering DRAFT for [#191](https://gitcode.com/urandon/sessionless/issues/191)
+Version: 0.1.0, accepted engineering clarification for [#191](https://gitcode.com/urandon/sessionless/issues/191)
 under [#176](https://gitcode.com/urandon/sessionless/issues/176).
 Source baseline: PR !280 `8367b67310616955e6efb91f356fec3fc752f4bb`,
 tree `ed9c760e4be97c0af17491c7ac8bfd9535f38374`; that implementation's
-integration gates remain separate. This draft is not accepted implementation,
+integration gates remain separate. Independent original-issue-first review of
+`f42c14f1147bc0c5dd211672c9c0f9ef51d7bf27` resolved the one-use publication
+P2 and found no unresolved P1/P2; reviewed document SHA256
+`3c592fd42357892395fa39962c8600c9195bd05fa4797b15df810f2428d01762`.
+Primary engineering acceptance adopts that unchanged contract; this header
+records acceptance metadata only. This is not accepted implementation,
 permission to enable a profile, or a claim of real service/cleanup evidence.
 
 ## Requirement, evidence and boundary

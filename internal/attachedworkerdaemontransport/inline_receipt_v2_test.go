@@ -20,10 +20,11 @@ import (
 // evidence. The production entry must obtain that separately from pinned Stack.
 type inlineJournalFixtureV2 struct {
 	*fakeSession
-	payload           []byte
-	advances, retires int
-	applied           bool
-	err               error
+	payload                   []byte
+	advances, retires         int
+	applied                   bool
+	err                       error
+	cancelCallerBeforeAdvance context.CancelFunc
 }
 
 func (j *inlineJournalFixtureV2) SealInlineReceiptSubmissionV2(_ context.Context, payload []byte) error {
@@ -36,6 +37,10 @@ func (j *inlineJournalFixtureV2) SealInlineReceiptSubmissionV2(_ context.Context
 
 func (j *inlineJournalFixtureV2) AdvanceInlineReceiptSubmissionV2(ctx context.Context, previous, next []byte) (bool, error) {
 	j.advances++
+	if j.cancelCallerBeforeAdvance != nil {
+		j.cancelCallerBeforeAdvance()
+		j.cancelCallerBeforeAdvance = nil
+	}
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
@@ -110,6 +115,52 @@ func TestInlineReceiptV2ExpiredWindowRecoversOnlyReadyMetadata(t *testing.T) {
 			})
 		})
 	}
+}
+
+// A child's deadline timer may publish cancellation before its parent's timer
+// at the same absolute deadline. Model only that pending-notification instant:
+// Deadline has elapsed, while the caller has not yet observed Done or Err.
+// This is a context scheduling fixture, never execution/producer authority.
+type inlineDeadlineNotificationPendingV2 struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c inlineDeadlineNotificationPendingV2) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func TestInlineReceiptV2ElapsedCallerDeadlinePreservesRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, state, journal, publisher := inlineMetadataFixtureV2(t)
+		originalPlan := state.checkpoint.PlanSHA256
+		originalExpiry := state.checkpoint.Plan.ExpiresAt
+		// Advance the single virtual authority past the original export window.
+		time.Sleep(16 * time.Second)
+		parent, publishCancellation := context.WithCancel(context.Background())
+		defer publishCancellation()
+		pending := inlineDeadlineNotificationPendingV2{Context: parent, deadline: originalExpiry}
+		// Publish the pending notification at the next actual CAS entry. This
+		// reproduces the child-first/parent-later cancellation order without
+		// scheduler luck. No CAS should be attempted for this elapsed caller.
+		journal.cancelCallerBeforeAdvance = publishCancellation
+		if pending.Err() != nil || time.Now().Before(originalExpiry) {
+			t.Fatal("fixture did not establish elapsed deadline before cancellation publication")
+		}
+		if _, err := a.reconcileInlineReceiptV2(pending, state); !errors.Is(err, ErrReconciliationRequired) {
+			t.Fatalf("elapsed caller must return reconciliation: %v", err)
+		}
+		if journal.advances != 0 || state.blocked || state.checkpoint.Progress.ReconcileBurned || publisher.reconciles != 0 || publisher.prepares != 0 || publisher.bodies != 0 {
+			t.Fatalf("elapsed caller spent recovery before CAS authority: advances=%d blocked=%v burned=%v calls=%d/%d/%d", journal.advances, state.blocked, state.checkpoint.Progress.ReconcileBurned, publisher.prepares, publisher.bodies, publisher.reconciles)
+		}
+		journal.cancelCallerBeforeAdvance = nil
+		fresh, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		evidence, err := a.reconcileInlineReceiptV2(fresh, state)
+		if err != nil || len(evidence) != 32 || publisher.reconciles != 1 || publisher.prepares != 0 || publisher.bodies != 0 || state.blocked || state.checkpoint.PlanSHA256 != originalPlan || !state.checkpoint.Plan.ExpiresAt.Equal(originalExpiry) || !publisher.lastReconcile.BodySendBurned {
+			t.Fatalf("fresh caller failed original metadata-only recovery: evidence=%d calls=%d/%d/%d blocked=%v err=%v", len(evidence), publisher.prepares, publisher.bodies, publisher.reconciles, state.blocked, err)
+		}
+	})
 }
 
 func inlineMetadataFixtureV2(t *testing.T) (*Adapter, *inlineReceiptAttemptV2, *inlineJournalFixtureV2, *inlinePublisherFixtureV2) {

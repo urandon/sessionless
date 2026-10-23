@@ -26,7 +26,9 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
+	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
@@ -62,6 +64,7 @@ func nativeInlineCheckpointAt(path string) (attachedworkeroutput.InlineReceiptCh
 type nativeInlineHTTPPeer struct {
 	mu                      sync.Mutex
 	fixture                 *attachedworkerstack.NativeInlineFixtureV2ForTest
+	fault                   attachedworkerstack.NativeInlineFaultV2ForTest
 	prepare                 attachedworkeroutput.AttachedWorkerInlinePrepareV2
 	fingerprint             string
 	paths                   []string
@@ -129,6 +132,12 @@ func (p *nativeInlineHTTPPeer) RoundTrip(request *http.Request) (*http.Response,
 		}
 		verified.Clear()
 		p.observed = bytes.Clone(raw)
+		if p.fault == attachedworkerstack.NativeInlineExportExpiryV2ForTest {
+			// Actual immutable request expiry, not a sleep or a virtual clock
+			// jump. The complete original body has already reached EOF once.
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}
 		// The body was fully received, but this peer loses READY. Only one
 		// subsequent metadata reconciliation is permitted; never resend body.
 		return nil, errors.New("controlled lost READY after original body EOF")
@@ -158,7 +167,7 @@ func (p *nativeInlineHTTPPeer) snapshot() (int, int, int, []string) {
 // actual InlineClientV2 -> HTTP peer -> original Session ACK/retirement. This
 // qualifies local orchestration only, never actual native/provider/YDB custody.
 func TestNativeInlineTransportV2(t *testing.T) {
-	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t)
+	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t, attachedworkerstack.NativeInlineHeldACKV2ForTest)
 	peer := &nativeInlineHTTPPeer{fixture: f}
 	client, err := attachedworkerreceipt.NewInlineClientV2("https://native-inline.invalid", &http.Client{Transport: peer}, []byte(nativeInlineHTTPBearer))
 	if err != nil {
@@ -173,7 +182,7 @@ func TestNativeInlineTransportV2(t *testing.T) {
 	})
 	v1 := &preparedReceiptPublisher{}
 	adapter, err := transport.NewPreparedAdapter(f.Session, &preparedReceiptMaterializer{invocation: f.Original}, transport.Config{Profile: transport.LocalProfileV1{Name: "fixed-native-inline-fixture", CapabilityDigest: f.Session.Snapshot().CapabilityDigest, Executable: f.Original.Process.Executable, ExecutableDigest: f.Original.Process.ExecutableDigest, Arguments: f.Original.Process.Arguments},
-		CapabilityManifest: &f.Capability, ReceiptPublisher: v1, InlineReceiptPublisher: client, MaterializationRoot: f.MaterializationRoot, MaxInputBytes: 1 << 20, ReportTimeout: 5 * time.Second, Now: func() time.Time { return f.Now }}, f.Stack)
+		CapabilityManifest: &f.Capability, ReceiptPublisher: v1, InlineReceiptPublisher: client, MaterializationRoot: f.MaterializationRoot, MaxInputBytes: 1 << 20, ReportTimeout: 5 * time.Second, Now: f.CurrentTime}, f.Stack)
 	if err != nil {
 		t.Fatalf("join original Stack/Session: %v", err)
 	}
@@ -321,4 +330,260 @@ func TestNativeInlineTransportV2(t *testing.T) {
 		t.Error("original byte order or finite HTTP exchange sequence changed")
 	}
 	peer.mu.Unlock()
+}
+
+type nativeInlineFaultScenario struct {
+	fixture    *attachedworkerstack.NativeInlineFixtureV2ForTest
+	peer       *nativeInlineHTTPPeer
+	adapter    *transport.Adapter
+	v1         *preparedReceiptPublisher
+	invocation attachedworkerdaemon.Invocation
+	result     attachedworkerdaemon.InvocationResult
+	source     *codexexec.NativeInlineOutputV2
+}
+
+// The same fixed genuine constructor supplies every fault scenario. These
+// helpers never replace a prepared owner or synthesize a successful result.
+func newNativeInlineFaultScenario(t *testing.T, fault attachedworkerstack.NativeInlineFaultV2ForTest) *nativeInlineFaultScenario {
+	t.Helper()
+	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t, fault)
+	s := &nativeInlineFaultScenario{fixture: f, peer: &nativeInlineHTTPPeer{fixture: f, fault: fault}, v1: &preparedReceiptPublisher{}}
+	client, err := attachedworkerreceipt.NewInlineClientV2("https://native-inline.invalid", &http.Client{Transport: s.peer}, []byte(nativeInlineHTTPBearer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		s.peer.mu.Lock()
+		clear(s.peer.observed)
+		s.peer.observed = nil
+		s.peer.mu.Unlock()
+	})
+	s.adapter, err = transport.NewPreparedAdapter(f.Session, &preparedReceiptMaterializer{invocation: f.Original}, transport.Config{Profile: transport.LocalProfileV1{Name: "fixed-native-inline-fault-fixture", CapabilityDigest: f.Session.Snapshot().CapabilityDigest, Executable: f.Original.Process.Executable, ExecutableDigest: f.Original.Process.ExecutableDigest, Arguments: f.Original.Process.Arguments},
+		CapabilityManifest: &f.Capability, ReceiptPublisher: s.v1, InlineReceiptPublisher: client, MaterializationRoot: f.MaterializationRoot, MaxInputBytes: 1 << 20, ReportTimeout: 5 * time.Second, Now: f.CurrentTime}, f.Stack)
+	if err != nil {
+		t.Fatalf("join original fault Stack/Session: %v", err)
+	}
+	window := 20 * time.Second
+	if fault == attachedworkerstack.NativeInlineExportExpiryV2ForTest {
+		window = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), window)
+	t.Cleanup(cancel)
+	var available bool
+	s.invocation, available, err = s.adapter.Next(ctx)
+	if err != nil || !available {
+		t.Fatalf("original fault offer/claim/materialization available=%v err=%v", available, err)
+	}
+	t.Cleanup(s.invocation.VerifiedInput.Clear)
+	f.ContinueTeardown()
+	f.ContinueWriteBack()
+	s.result, err = f.Stack.Run(ctx, s.invocation)
+	if !s.result.Succeeded(err) || !s.result.CleanupComplete() {
+		t.Fatalf("original fault run failed: %+v err=%v", s.result, err)
+	}
+	s.source, err = f.Stack.InlineReceiptCandidate(ctx, s.invocation.Identity, s.result, nil)
+	if err != nil {
+		t.Fatalf("original fault producer unavailable: %v", err)
+	}
+	return s
+}
+
+func (s *nativeInlineFaultScenario) completeUntilACK(t *testing.T, ctx context.Context) <-chan error {
+	t.Helper()
+	done, joined := make(chan error, 1), make(chan struct{})
+	go func() { done <- s.adapter.Complete(ctx, s.invocation.Identity, s.result, nil); close(joined) }()
+	t.Cleanup(func() {
+		s.fixture.ContinueACK()
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		select {
+		case <-joined:
+		case <-cleanup.Done():
+			t.Error("fault Complete did not join owned cleanup")
+		}
+	})
+	select {
+	case <-s.fixture.AckEntered:
+	case err := <-done:
+		prepares, bodies, reconciles, failures := s.peer.snapshot()
+		snapshot := s.fixture.Session.Snapshot()
+		checkpoint, checkpointErr := nativeInlineCheckpointAt(s.fixture.JournalPath)
+		_, _, originalExpiry, sourceErr := s.source.Declaration()
+		t.Fatalf("fault Complete failed before ACK barrier: %v session-state=%s session-auth-expires=%v checkpoint-progress=%+v checkpoint-err=%v peer-counts=%d/%d/%d HTTP-peer=%v original-expiry=%v current-time=%v source-err=%v", err, snapshot.State, snapshot.AuthenticationExpires, checkpoint.Progress, checkpointErr, prepares, bodies, reconciles, failures, originalExpiry, s.fixture.CurrentTime(), sourceErr)
+	case <-ctx.Done():
+		t.Fatal("fault Complete did not reach ACK barrier", ctx.Err())
+	}
+	return done
+}
+
+func (s *nativeInlineFaultScenario) assertOneOriginalPipeline(t *testing.T, exchanges int, replay bool) {
+	t.Helper()
+	prepares, bodies, reconciles, failures := s.peer.snapshot()
+	events, launches, logicalTerminals := s.fixture.Events()
+	physicalTerminals, exactReplay := s.fixture.TerminalExchanges()
+	if prepares != 1 || bodies != 1 || reconciles != 1 || len(failures) != 0 || launches != 1 || logicalTerminals != 1 || physicalTerminals != exchanges || exactReplay != replay || s.v1.calls != 0 {
+		t.Errorf("fault counts prepare/body/reconcile=%d/%d/%d launches=%d terminals=%d/%d exactReplay=%v v1=%d events=%v HTTP-peer=%v", prepares, bodies, reconciles, launches, logicalTerminals, physicalTerminals, exactReplay, s.v1.calls, events, failures)
+	}
+}
+
+func TestNativeInlineTransportV2LostACKExactSessionReplay(t *testing.T) {
+	s := newNativeInlineFaultScenario(t, attachedworkerstack.NativeInlineLostACKV2ForTest)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	done := s.completeUntilACK(t, ctx)
+	select {
+	case <-s.fixture.LostACKEntered:
+	default:
+		t.Fatal("ACK replay did not follow the server-accepted lost first response")
+	}
+	checkpoint, err := nativeInlineCheckpointAt(s.fixture.JournalPath)
+	if err != nil || checkpoint.Progress.Revision != 4 || checkpoint.Progress.TerminalAcked || checkpoint.Progress.CanonicalDigest == "" {
+		t.Fatalf("lost ACK did not retain exact READY journal: progress=%+v err=%v", checkpoint.Progress, err)
+	}
+	if err := s.source.CheckCurrent(ctx); err != nil {
+		t.Fatal("lost ACK prematurely retired original source", err)
+	}
+	if _, _, err := s.source.OpenBody(ctx); err == nil {
+		t.Fatal("lost ACK reopened the consumed original body")
+	}
+	if _, _, _, err := s.source.Declaration(); err != nil {
+		t.Fatal("lost ACK erased original declaration", err)
+	}
+	s.fixture.ContinueACK()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		t.Fatal("exact cached ACK replay did not finish", ctx.Err())
+	}
+	if err != nil {
+		t.Fatalf("original Session exact ACK replay: %v", err)
+	}
+	if _, err := os.Stat(s.fixture.JournalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("valid replayed ACK did not retire journal: %v", err)
+	}
+	if _, _, _, err := s.source.Declaration(); err == nil {
+		t.Fatal("valid replayed ACK retained retired original declaration")
+	}
+	if _, err := s.fixture.Stack.Run(ctx, s.invocation); err == nil {
+		t.Fatal("lost ACK permitted another original process")
+	}
+	if err := s.adapter.Complete(ctx, s.invocation.Identity, s.result, nil); err != nil {
+		t.Fatalf("completed ACK replay not locally idempotent: %v", err)
+	}
+	s.assertOneOriginalPipeline(t, 2, true)
+}
+
+func assertNativeInlineForgedACK(t *testing.T, fault attachedworkerstack.NativeInlineFaultV2ForTest) {
+	t.Helper()
+	s := newNativeInlineFaultScenario(t, fault)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	done := s.completeUntilACK(t, ctx)
+	before, err := nativeInlineCheckpointAt(s.fixture.JournalPath)
+	if err != nil {
+		t.Fatal("load READY journal before forged ACK", err)
+	}
+	_, producer, expiry, err := s.source.Declaration()
+	if err != nil {
+		t.Fatal("original source before forged ACK", err)
+	}
+	s.fixture.ContinueACK()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		t.Fatal("forged ACK did not fail within original Session window", ctx.Err())
+	}
+	if !errors.Is(err, transport.ErrReconciliationRequired) || s.fixture.Session.Snapshot().State != attachedworkersession.StateReconciliationRequired {
+		t.Fatalf("forged ACK did not fail original Session closed: err=%v state=%s", err, s.fixture.Session.Snapshot().State)
+	}
+	after, err := nativeInlineCheckpointAt(s.fixture.JournalPath)
+	if err != nil || !reflect.DeepEqual(before, after) || after.Progress.TerminalAcked {
+		t.Fatalf("forged ACK changed or retired actual journal: progress=%+v err=%v", after.Progress, err)
+	}
+	_, retainedProducer, retainedExpiry, err := s.source.Declaration()
+	if err != nil || retainedProducer != producer || !retainedExpiry.Equal(expiry) {
+		t.Fatalf("forged ACK discarded retained declaration: %v", err)
+	}
+	// The Session is no longer ready: retention is not current export authority.
+	if err := s.source.CheckCurrent(ctx); err == nil {
+		t.Fatal("fenced Session retained current export authority")
+	}
+	if err := s.adapter.Complete(ctx, s.invocation.Identity, s.result, nil); !errors.Is(err, transport.ErrReconciliationRequired) {
+		t.Fatalf("forged ACK allowed another completion dispatch: %v", err)
+	}
+	if _, err := s.fixture.Stack.Run(ctx, s.invocation); err == nil {
+		t.Fatal("forged ACK allowed another original process")
+	}
+	s.assertOneOriginalPipeline(t, 1, false)
+}
+
+func TestNativeInlineTransportV2ForgedDigestACK(t *testing.T) {
+	assertNativeInlineForgedACK(t, attachedworkerstack.NativeInlineForgedDigestACKV2ForTest)
+}
+
+func TestNativeInlineTransportV2ForgedSequenceACK(t *testing.T) {
+	assertNativeInlineForgedACK(t, attachedworkerstack.NativeInlineForgedSequenceACKV2ForTest)
+}
+
+func TestNativeInlineTransportV2ExpiredExportMetadataRecovery(t *testing.T) {
+	s := newNativeInlineFaultScenario(t, attachedworkerstack.NativeInlineExportExpiryV2ForTest)
+	_, producer, originalExpiry, err := s.source.Declaration()
+	if err != nil {
+		t.Fatal("original expiry declaration unavailable", err)
+	}
+	// The actual successful Run retained its original ten-second caller bound.
+	// Complete cannot renew it. The peer reads one body, then waits for exactly
+	// that HTTP context to expire; it never advances the production clock.
+	first, cancelFirst := context.WithTimeout(t.Context(), 20*time.Second)
+	err = s.adapter.Complete(first, s.invocation.Identity, s.result, nil)
+	cancelFirst()
+	if !errors.Is(err, transport.ErrReconciliationRequired) || s.fixture.CurrentTime().Before(originalExpiry) {
+		t.Fatalf("original export did not expire at immutable deadline: err=%v expiry=%v", err, originalExpiry)
+	}
+	checkpoint, err := nativeInlineCheckpointAt(s.fixture.JournalPath)
+	if err != nil || checkpoint.Progress.Revision != 2 || !checkpoint.Progress.PrepareBurned || !checkpoint.Progress.BodyBurned || checkpoint.Progress.ReconcileBurned || checkpoint.Progress.CanonicalDigest != "" || checkpoint.Progress.TerminalAcked || !checkpoint.Plan.ExpiresAt.Equal(originalExpiry) {
+		t.Fatalf("expired first Complete consumed metadata recovery or changed original plan: progress=%+v err=%v", checkpoint.Progress, err)
+	}
+	prepares, bodies, reconciles, failures := s.peer.snapshot()
+	_, launches, terminals := s.fixture.Events()
+	if prepares != 1 || bodies != 1 || reconciles != 0 || len(failures) != 0 || launches != 1 || terminals != 0 || s.fixture.Session.Snapshot().State != attachedworkersession.StateReady {
+		t.Fatalf("expired export effects prepare/body/reconcile=%d/%d/%d launches=%d terminals=%d session=%s failures=%v", prepares, bodies, reconciles, launches, terminals, s.fixture.Session.Snapshot().State, failures)
+	}
+	recovery, cancelRecovery := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelRecovery()
+	if err := s.source.CheckCurrent(recovery); err == nil {
+		t.Fatal("expired source retained fresh export authority")
+	}
+	if _, _, err := s.source.OpenBody(recovery); err == nil {
+		t.Fatal("expired source reopened original body")
+	}
+	_, retainedProducer, retainedExpiry, err := s.source.Declaration()
+	if err != nil || retainedProducer != producer || !retainedExpiry.Equal(originalExpiry) {
+		t.Fatalf("expiry discarded or renewed original metadata: %v", err)
+	}
+	done := s.completeUntilACK(t, recovery)
+	ready, err := nativeInlineCheckpointAt(s.fixture.JournalPath)
+	if err != nil || ready.Progress.Revision != 4 || !ready.Progress.ReconcileBurned || ready.Progress.CanonicalDigest == "" || ready.Progress.TerminalAcked || ready.PlanSHA256 != checkpoint.PlanSHA256 || !ready.Plan.ExpiresAt.Equal(originalExpiry) {
+		t.Fatalf("fresh metadata-only recovery changed immutable plan: progress=%+v err=%v", ready.Progress, err)
+	}
+	s.fixture.ContinueACK()
+	select {
+	case err = <-done:
+	case <-recovery.Done():
+		t.Fatal("metadata-only recovery did not finish original ACK", recovery.Err())
+	}
+	if err != nil {
+		t.Fatalf("expired export metadata recovery: %v", err)
+	}
+	if _, err := os.Stat(s.fixture.JournalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metadata recovery ACK did not retire journal: %v", err)
+	}
+	if _, _, _, err := s.source.Declaration(); err == nil {
+		t.Fatal("metadata recovery ACK did not retire original source")
+	}
+	if _, err := s.fixture.Stack.Run(recovery, s.invocation); err == nil {
+		t.Fatal("expired export recovery permitted another process")
+	}
+	s.assertOneOriginalPipeline(t, 1, false)
 }

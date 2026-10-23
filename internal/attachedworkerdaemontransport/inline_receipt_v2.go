@@ -225,14 +225,22 @@ func (adapter *Adapter) reconcileInlineReceiptV2(ctx context.Context, state *inl
 	if state.blocked || state.checkpoint.Progress.ReconcileBurned || ctx == nil || ctx.Err() != nil {
 		return nil, ErrReconciliationRequired
 	}
+	now := adapter.config.Now()
+	// A same-deadline HTTP child may observe expiry before its parent publishes
+	// Err. Do not attempt CAS with an already elapsed caller: even a pre-write
+	// cancellation would conservatively block the retained recovery state.
+	// Only a later fresh caller can supply the bounded metadata-only window.
+	if callerDeadline, ok := ctx.Deadline(); ok && !now.Before(callerDeadline) {
+		return nil, ErrReconciliationRequired
+	}
 	deadline := state.checkpoint.Plan.ExpiresAt
-	metadataOnly := !adapter.config.Now().Before(deadline)
+	metadataOnly := !now.Before(deadline)
 	if metadataOnly {
 		snapshot, err := adapter.readySnapshot()
 		if err != nil {
 			return nil, errors.Join(ErrReconciliationRequired, err)
 		}
-		deadline = adapter.config.Now().Add(15 * time.Second)
+		deadline = now.Add(15 * time.Second)
 		if snapshot.AuthenticationExpires.Before(deadline) {
 			deadline = *snapshot.AuthenticationExpires
 		}

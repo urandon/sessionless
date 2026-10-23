@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroci"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -31,6 +32,18 @@ import (
 )
 
 const nativeInlineFixtureFinal = `{"answer":"two requested files","artifacts":[{"name":"data.json","media_type":"application/json","content":" { \"n\": 9007199254740993123456789 } "},{"name":"note.txt","media_type":"text/plain","content":"original text\n"}]}`
+
+// NativeInlineFaultV2ForTest selects only these closed peer faults. It cannot
+// replace the Stack, producer, runner, profile, admission or current predicate.
+type NativeInlineFaultV2ForTest uint8
+
+const (
+	NativeInlineHeldACKV2ForTest NativeInlineFaultV2ForTest = iota
+	NativeInlineLostACKV2ForTest
+	NativeInlineForgedDigestACKV2ForTest
+	NativeInlineForgedSequenceACKV2ForTest
+	NativeInlineExportExpiryV2ForTest
+)
 
 // NativeInlineFixtureV2ForTest exists only in this package's test binary. It
 // exposes one fixed construction, not an arbitrary runner/producer factory.
@@ -47,6 +60,7 @@ type NativeInlineFixtureV2ForTest struct {
 	TeardownEntered     chan struct{}
 	WriteBackEntered    chan struct{}
 	AckEntered          chan struct{}
+	LostACKEntered      chan struct{}
 	continueTeardown    chan struct{}
 	continueWriteBack   chan struct{}
 	continueAck         chan struct{}
@@ -56,6 +70,22 @@ type NativeInlineFixtureV2ForTest struct {
 	mu                  sync.Mutex
 	events              []string
 	launches, terminals int
+	terminalExchanges   int
+	exactACKReplay      bool
+	fault               NativeInlineFaultV2ForTest
+}
+
+func (f *NativeInlineFixtureV2ForTest) CurrentTime() time.Time {
+	if f.fault == NativeInlineExportExpiryV2ForTest {
+		return time.Now().UTC()
+	}
+	return f.Now
+}
+
+func (f *NativeInlineFixtureV2ForTest) TerminalExchanges() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.terminalExchanges, f.exactACKReplay
 }
 
 func (f *NativeInlineFixtureV2ForTest) ContinueTeardown() {
@@ -91,7 +121,7 @@ func (c *nativeInlineCredentialFixture) LoadCredentialBinding(ctx context.Contex
 	return c.binding, true, nil
 }
 func (c *nativeInlineCredentialFixture) Issue(ctx context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
-	if ctx.Err() != nil || request.ValidateAt(c.fixture.Now) != nil || request.ProviderResource.CredentialGeneration != c.binding.Generation {
+	if ctx.Err() != nil || request.ValidateAt(c.fixture.CurrentTime()) != nil || request.ProviderResource.CredentialGeneration != c.binding.Generation {
 		return ports.CredentialHandle{}, errors.New("synthetic credential issue scope mismatch")
 	}
 	c.fixture.record("issue")
@@ -184,6 +214,9 @@ type nativeInlineSessionPeer struct {
 	connection attachedworkersession.ConnectionBindingV1
 	binding    attachedworkerprotocol.AttemptBindingV1
 	step       uint64
+	terminal   []byte
+	cachedACK  []byte
+	replayed   bool
 }
 
 func (p *nativeInlineSessionPeer) Open(binding attachedworkersession.ConnectionBindingV1, bearer []byte) (attachedworkersession.ExchangePort, error) {
@@ -201,6 +234,29 @@ func (p *nativeInlineSessionPeer) Exchange(ctx context.Context, batch attachedwo
 	if in.Kind == attachedworkerprotocol.MessageManifest && p.step == 0 {
 		return nil, nil
 	}
+	if in.Kind == attachedworkerprotocol.MessageTerminal && len(p.terminal) != 0 {
+		exact, err := attachedworkerprotocol.EncodeBatchV1(batch)
+		defer clear(exact)
+		if err != nil || p.fixture.fault != NativeInlineLostACKV2ForTest || p.replayed || !bytes.Equal(exact, p.terminal) {
+			return nil, errors.New("terminal retry changed exact encoded request or exceeded closed replay budget")
+		}
+		reply, err := attachedworkerprotocol.DecodeBatchV1(p.cachedACK)
+		if err != nil {
+			return nil, errors.New("original cached terminal ACK malformed")
+		}
+		p.replayed = true
+		p.fixture.mu.Lock()
+		p.fixture.terminalExchanges++
+		p.fixture.exactACKReplay = true
+		p.fixture.mu.Unlock()
+		close(p.fixture.AckEntered)
+		select {
+		case <-p.fixture.continueAck:
+			return &reply, nil // same ACK, no platform-step/terminal-commit advance
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	p.step++
 	frame := attachedworkerprotocol.FrameV1{Version: 1, WorkerID: string(p.connection.WorkerID), EnrollmentGeneration: p.connection.EnrollmentGeneration, ConnectionGeneration: p.connection.ConnectionGeneration,
 		Sequence: p.step + 2, Ack: in.Sequence, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, p.step+2)}
@@ -212,15 +268,35 @@ func (p *nativeInlineSessionPeer) Exchange(ctx context.Context, batch attachedwo
 	case p.step == 3 && in.Kind == attachedworkerprotocol.MessageTerminal && in.Terminal != nil:
 		p.fixture.mu.Lock()
 		p.fixture.terminals++
+		p.fixture.terminalExchanges++
 		p.fixture.mu.Unlock()
+		v := in.Terminal
+		frame.Kind, frame.TerminalAck = attachedworkerprotocol.MessageTerminalAck, &attachedworkerprotocol.TerminalAckV1{Binding: p.binding, AttemptSequence: 3, TerminalSequence: v.TerminalSequence, Status: v.Status, Result: v.Result, EvidenceDigest: bytes.Clone(v.EvidenceDigest)}
+		if p.fixture.fault == NativeInlineLostACKV2ForTest {
+			var err error
+			p.terminal, err = attachedworkerprotocol.EncodeBatchV1(batch)
+			if err != nil {
+				return nil, err
+			}
+			p.cachedACK, err = attachedworkerprotocol.EncodeBatchV1(attachedworkerprotocol.BatchV1{Version: 1, Frames: []attachedworkerprotocol.FrameV1{frame}})
+			if err != nil {
+				return nil, err
+			}
+			close(p.fixture.LostACKEntered)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+		}
+		switch p.fixture.fault {
+		case NativeInlineForgedDigestACKV2ForTest:
+			frame.TerminalAck.EvidenceDigest[0] ^= 0x80
+		case NativeInlineForgedSequenceACKV2ForTest:
+			frame.TerminalAck.TerminalSequence++
+		}
 		close(p.fixture.AckEntered)
 		select {
 		case <-p.fixture.continueAck:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		v := in.Terminal
-		frame.Kind, frame.TerminalAck = attachedworkerprotocol.MessageTerminalAck, &attachedworkerprotocol.TerminalAckV1{Binding: p.binding, AttemptSequence: 3, TerminalSequence: v.TerminalSequence, Status: v.Status, Result: v.Result, EvidenceDigest: bytes.Clone(v.EvidenceDigest)}
 	default:
 		return nil, errors.New("unexpected synthetic protocol exchange")
 	}
@@ -230,10 +306,13 @@ func (p *nativeInlineSessionPeer) Exchange(ctx context.Context, batch attachedwo
 // NewNativeInlineFixtureV2ForTest accepts no caller-selected runner, admission,
 // profile or output. Its sole fixed workload is a local shell JSONL fixture;
 // no Codex, bootstrap, relay, engine, model or provider is executed.
-func NewNativeInlineFixtureV2ForTest(t *testing.T) *NativeInlineFixtureV2ForTest {
+func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForTest) *NativeInlineFixtureV2ForTest {
 	t.Helper()
+	if fault > NativeInlineExportExpiryV2ForTest {
+		t.Fatal("unknown closed native inline fixture fault")
+	}
 	base, _, _ := nativeStackFixtureV3(t)
-	f := &NativeInlineFixtureV2ForTest{Now: time.Now().UTC(), TeardownEntered: make(chan struct{}), WriteBackEntered: make(chan struct{}), AckEntered: make(chan struct{}), continueTeardown: make(chan struct{}), continueWriteBack: make(chan struct{}), continueAck: make(chan struct{})}
+	f := &NativeInlineFixtureV2ForTest{fault: fault, Now: time.Now().UTC(), TeardownEntered: make(chan struct{}), WriteBackEntered: make(chan struct{}), AckEntered: make(chan struct{}), LostACKEntered: make(chan struct{}), continueTeardown: make(chan struct{}), continueWriteBack: make(chan struct{}), continueAck: make(chan struct{})}
 	t.Cleanup(func() { f.ContinueTeardown(); f.ContinueWriteBack(); f.ContinueACK() })
 	text, err := json.Marshal(nativeInlineFixtureFinal)
 	if err != nil {
@@ -250,7 +329,7 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T) *NativeInlineFixtureV2ForTest
 		t.Fatal(err)
 	}
 	profile := base.config.PreparedCodexNative.Profile.Clone()
-	profile.Backend.ExecutableDigest, profile.Backend.Now = digest, func() time.Time { return f.Now }
+	profile.Backend.ExecutableDigest, profile.Backend.Now = digest, f.CurrentTime
 	profile.Launch.Workload.Digest, profile.Architecture = digest, runtime.GOARCH
 	host, err := os.Executable()
 	if err != nil {
@@ -336,7 +415,7 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T) *NativeInlineFixtureV2ForTest
 	base.manifest.IdentityKeyFingerprint = string(domain.DigestAttachedWorkerIdentityKey(public))
 	base.manifest.CreatedAt, base.manifest.UpdatedAt = f.Now, f.Now
 	stateRoot := filepath.Join(filepath.Dir(base.scratch), "inline-session-state")
-	store, err := attachedworkerlocal.NewStore(stateRoot, func() time.Time { return f.Now })
+	store, err := attachedworkerlocal.NewStore(stateRoot, f.CurrentTime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +424,7 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T) *NativeInlineFixtureV2ForTest
 	}
 	f.JournalPath, f.MaterializationRoot = filepath.Join(stateRoot, attachedworkerlocal.ReceiptCheckpointFileName), filepath.Dir(base.scratch)
 	peer := &nativeInlineSessionPeer{preparedSessionPeer: &preparedSessionPeer{now: f.Now, public: public}, fixture: f}
+	t.Cleanup(func() { clear(peer.terminal); clear(peer.cachedACK) })
 	f.Capability = preparedCapability(base.manifest)
 	f.Capability.OperatingSystem, f.Capability.Architecture, f.Capability.HarnessVersion = "linux", runtime.GOARCH, "0.162.1"
 	f.Capability.Features = append(f.Capability.Features, attachedworkerprotocol.FeatureInlineOutputV2)
@@ -354,12 +434,19 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T) *NativeInlineFixtureV2ForTest
 		newLauncher: func(context.Context, attachedworkeroci.Config) (nativeReconcilingLauncherV3, error) {
 			return launcher, nil
 		}}
-	connector, err := attachedworkersession.New(store, peer, peer, attachedworkersession.Config{Audience: "sessionless:attached-worker:v1", WorkerOffer: f.Capability.ProtocolOffer, ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: 5 * time.Second,
-		Now: func() time.Time { return f.Now }, Random: bytes.NewReader(bytes.Repeat([]byte{0x41}, 64)), RuntimePreflight: func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+	sessionConfig := attachedworkersession.Config{Audience: "sessionless:attached-worker:v1", WorkerOffer: f.Capability.ProtocolOffer, ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: 5 * time.Second,
+		Now: f.CurrentTime, Random: bytes.NewReader(bytes.Repeat([]byte{0x41}, 64)), RuntimePreflight: func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
 			var err error
 			f.Stack, err = newNativeStackV3(ctx, manifest, base.config, credentials, deps)
 			return err
-		}})
+		}}
+	if fault == NativeInlineLostACKV2ForTest {
+		// Backoff is a bounded transport-replay policy, never readiness proof.
+		sessionConfig.MaxExchangeAttempts = 2
+		sessionConfig.RetryInitialBackoff, sessionConfig.RetryMaxBackoff = 5*time.Millisecond, 5*time.Millisecond
+		sessionConfig.RetryRandom = bytes.NewReader(bytes.Repeat([]byte{0x63}, 8))
+	}
+	connector, err := attachedworkersession.New(store, peer, peer, sessionConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

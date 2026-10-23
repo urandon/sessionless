@@ -26,7 +26,7 @@ func (s *LocalTerminalPublicationSessionConnectedSeed) InstallTerminalMCPV2Proxy
 	var publication ports.OwnedProxyPublicationV2
 	runtime := allocation.LocalRuntime
 	switch op.Kind {
-	case domain.AttemptOperationModelV1:
+	case domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1:
 		policy, err := ports.BuildLocalLoopbackEgressPolicyV1(s.Profile)
 		if err != nil {
 			t.Fatal(err)
@@ -52,7 +52,7 @@ func (s *LocalTerminalPublicationSessionConnectedSeed) InstallTerminalMCPV2Proxy
 		ab, _ := json.Marshal(att)
 		publication = ports.OwnedProxyPublicationV2{TransportKind: domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1, ServiceKind: domain.RegisteredProxyMCPToolV1, ObservedAt: at, PolicyBody: pb, AttestationBody: ab}
 	default:
-		t.Fatal("only exact MODEL/MCP proxy DATA is supported")
+		t.Fatal("only exact MODEL/COMPACTION/MCP proxy DATA is supported")
 	}
 	bodies, err := publication.Bodies()
 	if err != nil {

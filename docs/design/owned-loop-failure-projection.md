@@ -103,8 +103,10 @@ MODEL/COMPACTION intermediates are retained provenance, not assistant answers.
 An unadmitted model request is not a physically reserved tool and emits no
 purported tool effect. No tool reservations means a notice-only failure.
 
-Keep the existing canonical tool-event envelope. Its result content is an
-explicit closed Sessionless outcome object: completed with the verified result,
+Keep the existing canonical tool-event envelope. A completed nonerror pair may
+use its existing exact successful payload encoding; original identity joins
+belong in the failure commitment/capsule and do not require rewriting content.
+Other result content uses an explicit closed Sessionless outcome object:
 service_error with its verified bounded domain error, rejected_before_send
 only with authenticated zero-send evidence, or accepted_outcome_unknown with
 NO fabricated service response. Missing/conflicting observations are a
@@ -137,6 +139,34 @@ not a committed assistant answer. The failure arm projects its tool prefix and
 notice only; original success drafts remain owned deletion residues. Missing
 or uncertain candidate readback means reconciliation, not another upload.
 
+Candidate reuse also requires the ORIGINAL private producer and the confirmed
+publication/readback records for each reused canonical pair. Reuse only the
+EXACT previously written IDs, kinds, payload bytes/digests and order; the
+completed-pair encoding above is an explicitly admitted source variant. The
+new commitment binds those unchanged bytes to their original complete
+operations/observations. An uncommitted capsule alone, a matching public hash,
+or a new re-encoding cannot recreate the original writer/first-commit owner.
+The existing one-use batch is never reset or invoked again. Missing, uncertain,
+partial or incompatible pair publication leaves reconciliation-only residue;
+do not replace it with a second failure payload batch. Already uploaded
+assistant bytes remain residue and are NEVER appended by the failure arm.
+
+There is ONE original protected notice slot, not one per terminal arm or error.
+Before its sole write, latch exact sanitized notice bytes, ID and failed versus
+cancelled disposition. Pure failure capture may select its fixed failure
+notice there; the old cancellation route keeps its original fixed cancelled
+notice. A confirmed already written notice may be reused only byte-identically
+for its actual outcome, not rewritten into another code or status. In
+particular a non-cancellation error discovered after the cancellation-specific
+notice was written remains reconciliation-only. No extra fallback object or
+new notice allowance is manufactured to force that transition to complete.
+
+Finally latch the terminal transaction arm BEFORE its first commit attempt.
+Any possibly accepted success commit prevents switching to failure, even if a
+subsequent point read is absent. Resolve its exact original success marker/
+replay or preserve uncertainty; a lost success ACK never authorizes another
+terminal decision. The failure arm similarly cannot retry through a new owner.
+
 Keep RunTerminalCustodyV1 and its strict success-only fields unchanged. Add one
 optional compact Run.terminal_failure version1 commitment containing exact
 scope/parent, plan/capsule format+digest, complete frontier/accounting digest,
@@ -162,12 +192,16 @@ baseline, all aggregate/component debits and exact usage provenance, including
 unknown/overrun. No refund, repricing, top-up or residual-erasure
 receipt follows from error. No unknown charge becomes zero or settled debt.
 
-The same original one-use per-event uploader writes/readbacks exact ordered
-payloads before the existing fenced failure transaction. Burn before I/O;
-lost ACK/partial PUT never retries. Reserve the worst of successful and failed
-capsule/event encodings before effects, using matched counters and actual
-writers under ORIGINAL artifact/body/event/SQL/time ceilings. Reuse the same
-prepaid capsule slot; no extra artifact, deferred cap increase or truncation.
+The same original one-use per-event uploader writes/readbacks an eligible
+initial failure batch before the existing fenced failure transaction; candidate
+reuse performs NO repeated batch write. Burn before I/O; lost ACK/partial PUT
+never retries. Before effects reserve the complete MONOTONIC transition
+inventory: selected one capsule, every pair/assistant residue already writable,
+the single protected notice and any nonreusable planned payloads. Merely
+max(success bytes, failure bytes) is insufficient when residues coexist.
+Matched counters and actual writers use ORIGINAL artifact/body/event/SQL/time
+ceilings. Reject an unrepresentable transition before effects; no extra slot,
+deferred cap increase, refund, replacement PUT or truncation follows on error.
 
 The dedicated failure arm factors the EXISTING failure transaction and
 Run/Attempt/quota/event/finalization updates; it is not a second finalizer.
@@ -209,6 +243,11 @@ commit/lost-ACK replay/fresh history/deletion after TTL expiry. Assert canonical
 payload bytes/order, full debit, authentic evidence, actual dispatch counts,
 no double reservation/materialization, no hidden reasoning and no extra writes.
 Keep success, old notice-only and registry-sanitization regressions unchanged.
+Exercise failure selection after pair publication, assistant publication,
+protected-notice publication, erasure and uncertain terminal ACK. Prove exact
+pair reuse with ZERO second batch write; conflicting notice/incompatible or
+uncertain publication and possible prior success commit stay reconcile-only.
+Count the complete residue/notice union at exact capacity and one byte over.
 
 Follow [testing practices](../testing-best-practices.md): causal barriers/one
 clock, immediate bounded cleanup, race, fresh uncached and repeated shuffled

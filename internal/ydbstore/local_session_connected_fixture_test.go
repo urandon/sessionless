@@ -1,16 +1,21 @@
 package ydbstore
 
 import (
+	"bytes"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/compactioncontext"
+	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
+	"gitcode.com/urandon/sessionless/internal/mcpwire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
@@ -59,7 +64,7 @@ func newLocalSessionConnectedSeedWithAuth(t *testing.T, endpoint string, compile
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID,
 		SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, mcpModelDescription: limits.MCPModelDescription, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
@@ -161,6 +166,88 @@ func (s *LocalSessionConnectedSeed) ArmProviderCredentialRevocationAfterOperatio
 type LocalCompactionConnectedLimits struct {
 	InputTokens, OutputTokens, ModelWindowTokens uint64
 	NetworkOperation, CleanupTimeout             time.Duration
+	MCPModelDescription                          string // bounded original grant declaration, never patched after Source intake
+}
+
+// LocalCompactionFixtureRequests is calibration DATA only, never a source,
+// preparation, reservation, fit override or operation capability. The fixed
+// source hash is deliberately NOT an authority commitment. The test must
+// independently exercise the original Store/Source and actual received wires.
+func (s *LocalSessionConnectedSeed) LocalCompactionFixtureRequests(t *testing.T, blobs ports.BlobStore) (ordinary, generation, rebuilt *configuredinference.FrozenRequestV1) {
+	t.Helper()
+	if s == nil || s.compaction == nil || blobs == nil || s.parent.parent.Authority.HarnessBinding.AgentLoopPolicy == nil {
+		t.Fatal("original installed compaction fixture required")
+	}
+	var records []sessioncontext.EventPayload
+	for _, row := range s.compaction.compactionEffectSQL.compactionSourceSQL.events {
+		var event domain.SessionEvent
+		if len(row) != 1 || json.Unmarshal([]byte(row[0].(string)), &event) != nil || event.Validate() != nil {
+			t.Fatal("original canonical fixture event")
+		}
+		r, e := blobs.Open(t.Context(), event.TenantID, event.Payload)
+		if e != nil {
+			t.Fatal("original immutable event", e)
+		}
+		body, e := io.ReadAll(io.LimitReader(r, 65537))
+		closeErr := r.Close()
+		if e != nil || closeErr != nil || len(body) > 65536 {
+			t.Fatal("bounded canonical fixture body", e, closeErr)
+		}
+		records = append(records, sessioncontext.EventPayload{Event: event, Payload: body})
+	}
+	defer func() {
+		for _, record := range records {
+			clear(record.Payload)
+		}
+	}()
+	p := s.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Clone()
+	grant, e := s.Source.ReadMCPToolGrant(t.Context(), domain.OwnedAgentProfileReferenceV1{Locator: s.receipt.Profile.Locator, RevocationGeneration: s.receipt.Profile.RevocationGeneration, Digest: s.receipt.Digest}, time.Now().UTC().Truncate(time.Microsecond))
+	if e != nil {
+		t.Fatal("original retained installed grant", e)
+	}
+	d, e := mcpwire.ParseDescriptorV1(grant.Descriptor, grant.Limits)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tools := []configuredinference.ToolV1{{Name: d.Name(), Description: grant.ModelDescription, Parameters: d.InputSchema()}}
+	ordinary, e = compactioncontext.BuildOrdinaryV1(s.Profile, s.Profile.Limits, p, strings.Repeat("a", 64), records, nil, nil, tools)
+	if e != nil {
+		t.Fatal("ordinary fixture DATA", e)
+	}
+	program, e := compactioncontext.BuildGenerationV1(s.Profile, s.Profile.Limits, p, strings.Repeat("a", 64), records, nil, nil, tools)
+	if e != nil {
+		t.Fatal("generation fixture DATA", e)
+	}
+	generation = program.FrozenRequest()
+	var wire struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	var history struct {
+		Protected []struct {
+			SourceID string `json:"source_id"`
+		} `json:"protected_originals"`
+		Units []struct {
+			SourceID string `json:"source_id"`
+		} `json:"original_units"`
+	}
+	if json.Unmarshal(generation.Body(), &wire) != nil || len(wire.Messages) != 2 || json.Unmarshal([]byte(wire.Messages[1].Content), &history) != nil || len(history.Protected) == 0 || len(history.Units) == 0 {
+		t.Fatal("bounded actual generation DATA framing")
+	}
+	summary, e := json.Marshal(map[string]any{"schema": "sessionless.compaction-summary.v1", "task": []any{map[string]any{"text": "Preserve original task and constraints", "source_ids": []string{history.Protected[0].SourceID}}}, "constraints": []any{}, "facts": []any{map[string]any{"text": "Completed original history", "source_ids": []string{history.Units[0].SourceID}}}, "unresolved": []any{}, "artifacts": []any{}, "omissions": []any{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	rebuilt, e = program.Rebuild(summary)
+	clear(summary)
+	if e != nil {
+		t.Fatal("rebuilt fixture DATA", e)
+	}
+	if bytes.Equal(ordinary.Body(), generation.Body()) {
+		t.Fatal("ordinary and summarizer DATA must be distinct")
+	}
+	return ordinary, generation, rebuilt
 }
 
 func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs ports.BlobStore, limits ...LocalCompactionConnectedLimits) *LocalSessionConnectedSeed {
@@ -331,6 +418,32 @@ func (s *LocalSessionConnectedSeed) PersistedObservation(t *testing.T) domain.At
 		t.Fatal("committed observation digest mismatch")
 	}
 	return o.Clone()
+}
+
+// PersistedCompactionObservations is read-only scripted SQL DATA. The caller
+// separately verifies each original issuer MAC and reservation/observation join.
+func (s *LocalSessionConnectedSeed) PersistedCompactionObservations(t *testing.T) []domain.AttemptOperationObservationV1 {
+	t.Helper()
+	if s == nil || s.compaction == nil {
+		t.Fatal("original compaction SQL fixture required")
+	}
+	var out []domain.AttemptOperationObservationV1
+	for _, operation := range s.compaction.operations {
+		if len(operation) != 11 || operation[5] != uint64(1) || operation[6] != uint64(1) {
+			t.Fatalf("original committed observation row required: columns=%d want=11", len(operation))
+		}
+		var o domain.AttemptOperationObservationV1
+		raw, ok := operation[7].(string)
+		if !ok || json.Unmarshal([]byte(raw), &o) != nil {
+			t.Fatal("original observation encoding")
+		}
+		d, e := o.Digest()
+		if e != nil || operation[8] != string(d) {
+			t.Fatal("original observation digest", e)
+		}
+		out = append(out, o.Clone())
+	}
+	return out
 }
 
 // TEST ONLY canonical DATA; no private entry, grant or approval is returned.

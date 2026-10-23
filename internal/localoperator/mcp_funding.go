@@ -1,6 +1,8 @@
 package localoperator
 
 import (
+	"bytes"
+	"context"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -18,6 +20,38 @@ func (s *Source) retainedMCPBodyLocked(digest string, cap uint64) ([]byte, bool)
 		}
 	}
 	return nil, false
+}
+
+// ReadMCPToolGrant returns the exact retained original grant as DATA after
+// revalidating the existing retained grant, price, terms and Source lifetime.
+// The result is not a capability or current Store authorization; every
+// dispatch must still rejoin the original Source and current Store state.
+func (s *Source) ReadMCPToolGrant(ctx context.Context, ref domain.OwnedAgentProfileReferenceV1, at time.Time) (mcpadmission.MCPToolGrantV1, error) {
+	deny := func() (mcpadmission.MCPToolGrantV1, error) { return mcpadmission.MCPToolGrantV1{}, ErrDenied }
+	if s == nil || ctx == nil || ctx.Err() != nil || ref.Validate() != nil || at.IsZero() || at.Nanosecond()%1000 != 0 {
+		return deny()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.aliveLocked() || s.receipt == nil || !s.receiptMatchesLocked(*s.receipt) ||
+		ref.Locator != s.receipt.Profile.Locator || ref.RevocationGeneration != s.receipt.Profile.RevocationGeneration ||
+		ref.Digest != s.receipt.Digest || s.receipt.Profile.MCPToolGrantDigest == "" {
+		return deny()
+	}
+	_, _, err := s.mcpFundingLocked(at.UTC())
+	if err != nil {
+		return deny()
+	}
+	raw, ok := s.retainedMCPBodyLocked(s.receipt.Profile.MCPToolGrantDigest, mcpadmission.GrantBodyBytesV1)
+	if !ok {
+		return deny()
+	}
+	grant, err := mcpadmission.ParseMCPToolGrantV1(raw)
+	if err != nil || ctx.Err() != nil || !s.aliveLocked() {
+		return deny()
+	}
+	grant.Descriptor = bytes.Clone(grant.Descriptor)
+	return grant, nil
 }
 
 func (s *Source) retainedMCPDocumentLocked(ref domain.OwnedAgentAuthorityBodyRefV1) bool {

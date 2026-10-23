@@ -582,8 +582,18 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 			r, o := row.Operation.Reservation, row.Operation.Observation
 			original := r.Operation.Scope
 			key, err := OperationSourceKeyV1(r, o)
-			if err != nil || key != row.SourceID || original.TenantID != scope.TenantID || original.SessionID != scope.SessionID || original.OwnerUserID != scope.OwnerUserID || r.Operation.Kind != domain.AttemptOperationModelV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence <= lastOperations[original] || r.Operation.Sequence >= scopeSequenceLimit {
+			isTool := r.Operation.Kind == domain.AttemptOperationMCPToolV1
+			if err != nil || key != row.SourceID || original.TenantID != scope.TenantID || original.SessionID != scope.SessionID || original.OwnerUserID != scope.OwnerUserID || (r.Operation.Kind != domain.AttemptOperationModelV1 && !isTool) || o.Outcome != domain.AttemptOperationCompletedV1 || (!isTool && o.Reason != domain.AttemptOperationReasonNoneV1) || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence <= lastOperations[original] || r.Operation.Sequence >= scopeSequenceLimit {
 				return nil, ErrCanonical
+			}
+			if isTool {
+				if i == 0 || c.Sources[i-1].Operation == nil || !toolUsageContinuable(o) {
+					return nil, ErrCanonical
+				}
+				before := c.Sources[i-1].Operation
+				if before.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || r.Operation.ValidatePredecessor(before.Reservation, before.Observation) != nil || parts[i] != parts[i-1] || (i == int(c.Cut)) {
+					return nil, ErrCanonical
+				}
 			}
 			if original != scope {
 				anchored := false

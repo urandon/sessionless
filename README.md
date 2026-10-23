@@ -129,6 +129,9 @@ It never configures cloud resources or sends notifications.
 
 Changes are reviewed against deterministic local gates and mirrored exact-SHA
 GitHub CI. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
+`make test-mcp-offline` runs the synthetic joined MCP TLS/Store regression;
+[development notes](docs/development.md) explain its additive test-only overlay
+and why it is not public-endpoint qualification. It also runs in `make test`.
 The [security and trust-boundary index](docs/README.md#security-and-trust-boundaries)
 routes reviewers to the applicable threat models and contracts.
 

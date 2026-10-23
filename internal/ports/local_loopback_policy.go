@@ -110,19 +110,24 @@ type OwnedLocalLoopbackBodiesV2 struct {
 	Policy      LocalLoopbackEgressPolicyV1
 	Attestation LocalLoopbackEgressAttestationV1
 }
+type OwnedLocalPublicMCPHTTPSBodiesV1 struct {
+	Policy      LocalPublicMCPHTTPSProxyPolicyV1
+	Attestation LocalPublicMCPHTTPSProxyAttestationV1
+}
 
 // OwnedProxyBodiesV2 is a closed, exclusive DATA union. A local observation can
 // never be interpreted as HTTPS, nor can a transport tag manufacture a producer.
 type OwnedProxyBodiesV2 struct {
-	TransportKind domain.RegisteredProxyTransportKindV2
-	PinnedHTTPS   *OwnedPinnedHTTPSBodiesV2
-	LocalLoopback *OwnedLocalLoopbackBodiesV2
+	TransportKind       domain.RegisteredProxyTransportKindV2
+	PinnedHTTPS         *OwnedPinnedHTTPSBodiesV2
+	LocalLoopback       *OwnedLocalLoopbackBodiesV2
+	LocalPublicMCPHTTPS *OwnedLocalPublicMCPHTTPSBodiesV1
 }
 
 func (b OwnedProxyBodiesV2) Validate() error {
 	switch b.TransportKind {
 	case domain.RegisteredProxyTransportPinnedHTTPSV2:
-		if b.PinnedHTTPS == nil || b.LocalLoopback != nil {
+		if b.PinnedHTTPS == nil || b.LocalLoopback != nil || b.LocalPublicMCPHTTPS != nil {
 			return domain.ErrMembershipDenied
 		}
 		a, p := b.PinnedHTTPS.Attestation, b.PinnedHTTPS.Policy
@@ -132,7 +137,12 @@ func (b OwnedProxyBodiesV2) Validate() error {
 			return domain.ErrMembershipDenied
 		}
 	case domain.RegisteredProxyTransportLocalLoopbackHTTPV2:
-		if b.LocalLoopback == nil || b.PinnedHTTPS != nil || b.LocalLoopback.Attestation.ValidateForPolicy(b.LocalLoopback.Policy) != nil {
+		if b.LocalLoopback == nil || b.PinnedHTTPS != nil || b.LocalPublicMCPHTTPS != nil || b.LocalLoopback.Attestation.ValidateForPolicy(b.LocalLoopback.Policy) != nil {
+			return domain.ErrMembershipDenied
+		}
+	case domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		if b.LocalPublicMCPHTTPS == nil || b.PinnedHTTPS != nil || b.LocalLoopback != nil || b.LocalPublicMCPHTTPS.Policy.Validate() != nil ||
+			b.LocalPublicMCPHTTPS.Attestation.ValidateForPolicy(b.LocalPublicMCPHTTPS.Policy, b.LocalPublicMCPHTTPS.Attestation.ObservedAt, b.LocalPublicMCPHTTPS.Attestation.ExpiresAt) != nil {
 			return domain.ErrMembershipDenied
 		}
 	default:
@@ -149,6 +159,8 @@ func (b OwnedProxyBodiesV2) PolicyDigest() (string, error) {
 		return b.PinnedHTTPS.Policy.Digest()
 	case domain.RegisteredProxyTransportLocalLoopbackHTTPV2:
 		return b.LocalLoopback.Policy.Digest()
+	case domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		return b.LocalPublicMCPHTTPS.Policy.Digest()
 	}
 	return "", domain.ErrMembershipDenied
 }
@@ -161,6 +173,8 @@ func (b OwnedProxyBodiesV2) ExpiresAt() time.Time {
 		return b.PinnedHTTPS.Attestation.ExpiresAt
 	case domain.RegisteredProxyTransportLocalLoopbackHTTPV2:
 		return b.LocalLoopback.Attestation.ExpiresAt
+	case domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		return b.LocalPublicMCPHTTPS.Attestation.ExpiresAt
 	}
 	return time.Time{}
 }

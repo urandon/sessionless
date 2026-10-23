@@ -344,7 +344,7 @@ func encodeLocalTerminalCapsuleTo(sink *localCapsuleSink, scope domain.AttemptOp
 		if o.reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
 			projection = "compaction"
 		}
-		if i == len(ops)-1 {
+		if i == len(ops)-1 && o.reservation.Operation.Kind != domain.AttemptOperationMCPToolV1 {
 			projection = "assistant"
 		}
 		add([]byte(`,"projection":`))

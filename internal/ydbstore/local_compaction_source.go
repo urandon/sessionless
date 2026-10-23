@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
@@ -197,13 +198,14 @@ type localSourceCapturePurpose uint8
 const (
 	localSourceStandalone localSourceCapturePurpose = iota
 	localSourcePreparation
+	localSourceMCPPreparation
 )
 
 // Preparation's original factory owns the two subsequent current joins. Its
 // materialized source is private until that factory completes; sharing this
 // first read avoids a fourth callback or a reset of the logical-call budget.
 func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context, purpose localSourceCapturePurpose) (*LocalCompactionSourceV1, error) {
-	if purpose != localSourceStandalone && purpose != localSourcePreparation {
+	if purpose != localSourceStandalone && purpose != localSourcePreparation && purpose != localSourceMCPPreparation {
 		return nil, domain.ErrMembershipDenied
 	}
 	if !entry.original() || entry.canonicalBlobs == nil {
@@ -240,13 +242,8 @@ func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context
 		return nil, domain.ErrMembershipDenied
 	}
 	state.view = view
-	for _, row := range snapshot.Operations {
+	for i, row := range snapshot.Operations {
 		op, o := row.reservation.Operation, *row.observation
-		// The current base has no real local MCP/search normalized producer.
-		// Their semantic continuation is deliberately not guessed from fixtures.
-		if op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 {
-			return nil, domain.ErrMembershipDenied
-		}
 		if chargeOwnedAuthorityBody(call, op.RequestBytes+o.ResponseBytes) != nil {
 			return nil, domain.ErrMembershipDenied
 		}
@@ -260,13 +257,43 @@ func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context
 			return nil, domain.ErrMembershipDenied
 		}
 		state.operations = append(state.operations, LocalCompactionOperationV1{Reservation: row.reservation.Clone(), Observation: o.Clone(), Request: request, Response: response})
-		decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, request, response, op.Kind)
-		pendingCall := decoded.Call != nil
-		if decoded.Call != nil {
-			clear(decoded.Call.Arguments)
-		}
-		usage, ue := decoded.Usage.OperationUsage()
-		if e != nil || ue != nil || pendingCall || !reflect.DeepEqual(usage, o.Usage) {
+		switch op.Kind {
+		case domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1:
+			decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, request, response, op.Kind)
+			pendingCall := decoded.Call != nil
+			allowPendingCall := pendingCall && decoded.Stop == configuredinference.StopToolV1 &&
+				((purpose == localSourceMCPPreparation && i == len(snapshot.Operations)-1) ||
+					(i+1 < len(snapshot.Operations) && snapshot.Operations[i+1].reservation.Operation.Kind == domain.AttemptOperationMCPToolV1))
+			if decoded.Call != nil {
+				clear(decoded.Call.Arguments)
+			}
+			usage, ue := decoded.Usage.OperationUsage()
+			if e != nil || ue != nil || (pendingCall && !allowPendingCall) || (!pendingCall && decoded.Stop != configuredinference.StopFinalV1) || !reflect.DeepEqual(usage, o.Usage) {
+				return nil, domain.ErrMembershipDenied
+			}
+		case domain.AttemptOperationMCPToolV1:
+			if i == 0 || snapshot.Operations[i-1].reservation.Operation.Kind != domain.AttemptOperationModelV1 {
+				return nil, domain.ErrMembershipDenied
+			}
+			previous := state.operations[i-1]
+			model, e := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, previous.Request, previous.Response, domain.AttemptOperationModelV1)
+			if e != nil || model.Stop != configuredinference.StopToolV1 || model.Call == nil {
+				if model.Call != nil {
+					clear(model.Call.Arguments)
+				}
+				return nil, domain.ErrMembershipDenied
+			}
+			tool, e := mcpadmission.DecodeSealedToolResultDataV1(row.reservation, o, response)
+			argsHash := sha256.Sum256(model.Call.Arguments)
+			args := hex.EncodeToString(argsHash[:])
+			modelDigest := previous.Observation.ResponseDigest
+			callID, name := model.Call.ID, model.Call.Name
+			clear(model.Call.Arguments)
+			if e != nil || tool.CallID() != callID || tool.Name() != name || tool.ArgumentsDigest() != args || tool.ModelResponseDigest() != modelDigest ||
+				op.ModelResponseDigest != modelDigest || op.CallID != callID || op.ArgumentsDigest != args || op.ToolGrantDigest != tool.GrantDigest() {
+				return nil, domain.ErrMembershipDenied
+			}
+		default:
 			return nil, domain.ErrMembershipDenied
 		}
 	}
@@ -310,7 +337,7 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Conte
 
 func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotWithBurn(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, time.Time, error) {
 	if phase == localCompactionCapture {
-		if owner.generation != nil || owner.model != nil {
+		if owner.generation != nil || owner.model != nil || owner.mcp != nil {
 			return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 		}
 	} else if !owner.original(entry, phase) {

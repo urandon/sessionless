@@ -107,7 +107,21 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		ad, _ := allocation.original.Digest()
 		sd, _ := source.Digest()
 		pd, _ := bodies.PolicyDigest()
-		if ad != allocationDigest || sd != sourceDigest || proof.Scope != source.Scope || proof.LeaseID != parent.Reservation.LeaseID || proof.FenceToken != parent.Reservation.FenceToken || proof.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || observedAt.Before(allocation.original.Window.ObservedAt) || observedAt.After(q.at) || pd != allocation.original.Substrate.EgressPolicyDigest {
+		// Preserve all previously admitted closed transport/service combinations.
+		// Only the new local MCP arm has a distinct retained grant-bound policy.
+		policyJoin := proof.TransportKind != domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1 && pd == allocation.original.Substrate.EgressPolicyDigest
+		if proof.ServiceKind == domain.RegisteredProxyMCPToolV1 && proof.TransportKind == domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1 && bodies.LocalPublicMCPHTTPS != nil {
+			mcpPolicy := bodies.LocalPublicMCPHTTPS.Policy
+			profile, profileErr := readOwnedProfileCurrent(ctx, q, source.Profile)
+			cost := parent.Authority.AdmissionCostCeiling.MCPToolCost
+			grantDigest := source.Spending[2].ScopedGrantDigest
+			policyJoin = profileErr == nil && cost != nil && cost.ValidateAt(q.at) == nil && profile.ValidateAt(q.at) == nil &&
+				profile.MCPToolGrantDigest == grantDigest && cost.ScopedGrantDigest == grantDigest &&
+				mcpPolicy.GrantDigest == grantDigest && mcpPolicy.ConfiguredProfileDigest == allocation.original.Backend.BackendProfileDigest &&
+				mcpPolicy.MCPProfileID == cost.ProfileID && mcpPolicy.MCPProfileRevision == cost.ProfileRevision && mcpPolicy.MCPProfileDigest != "" && mcpPolicy.DescriptorDigest != "" &&
+				cost.Kind == domain.ExternalServiceMCPToolV1 && cost.TenantID == source.Scope.TenantID && cost.OwnerUserID == source.Scope.OwnerUserID
+		}
+		if ad != allocationDigest || sd != sourceDigest || proof.Scope != source.Scope || proof.LeaseID != parent.Reservation.LeaseID || proof.FenceToken != parent.Reservation.FenceToken || proof.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || observedAt.Before(allocation.original.Window.ObservedAt) || observedAt.After(q.at) || !policyJoin {
 			return q.budget.deny()
 		}
 		if proof.OperationSequence > parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxOperations || (proof.OperationSequence == 1 && proof.ServiceKind != domain.RegisteredProxyProviderV1) {
@@ -284,6 +298,14 @@ func buildOwnedProxyRecord(bodies ports.OwnedProxyBodiesV2, allocation domain.Re
 			return deny()
 		}
 		return domain.BuildRegisteredLocalLoopbackProxyAttestationV2(allocation, source, transport, policyDigest, b.Attestation.Observation, pb, ab, window, sequence, operation)
+	case domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		b := bodies.LocalPublicMCPHTTPS
+		transport, err := b.Policy.TransportDigest()
+		if err != nil || service != domain.RegisteredProxyMCPToolV1 || !b.Attestation.ObservedAt.Equal(window.ObservedAt) ||
+			b.Attestation.ValidateForPolicy(b.Policy, window.PublishedAt, window.ExpiresAt) != nil {
+			return deny()
+		}
+		return domain.BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation, source, transport, policyDigest, b.Attestation.Observation, pb, ab, window, sequence, operation)
 	default:
 		return deny()
 	}

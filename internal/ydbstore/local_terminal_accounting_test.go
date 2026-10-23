@@ -79,7 +79,7 @@ func TestOwnedOperationResidualV2ConsentBodyCorrespondence(t *testing.T) {
 		if err != nil {
 			t.Fatal("mixed-arm residual canonical DATA", err)
 		}
-		for _, name := range []string{"missing-body", "foreign-body-scope", "noncanonical-key", "changed-body-digest", "changed-consent-size", "pending-consent", "ordinary-request-as-consent-key"} {
+		for _, name := range []string{"missing-body", "foreign-body-scope", "noncanonical-key", "changed-body-digest", "changed-consent-size", "pending-consent", "ordinary-response-as-consent-key"} {
 			var bad ports.OwnedOperationResidualInventoryV2
 			if err := json.Unmarshal(encoded, &bad); err != nil {
 				t.Fatal(err)
@@ -103,10 +103,12 @@ func TestOwnedOperationResidualV2ConsentBodyCorrespondence(t *testing.T) {
 				bad.Consents[0].Request.Arguments.Size++
 			case "pending-consent":
 				bad.Consents[0].Status, bad.Consents[0].Revision, bad.Consents[0].UpdatedAt = domain.WebSearchConsentPendingV1, 1, at
-			case "ordinary-request-as-consent-key":
+			case "ordinary-response-as-consent-key":
 				// Keep the whole operation and every committed identity unchanged.
 				// Matching bytes in a consent key cannot replace its ordinary body.
-				bad.Bodies[0], err = domain.AttemptOperationConsentArgumentsRefV1(scope, uint64(bad.Bodies[0].Size), bad.Bodies[0].SHA256)
+				// Use the small normalized response: the full MODEL request now
+				// includes the installed tool schema and exceeds the consent cap.
+				bad.Bodies[1], err = domain.AttemptOperationConsentArgumentsRefV1(scope, uint64(bad.Bodies[1].Size), bad.Bodies[1].SHA256)
 				if err != nil {
 					t.Fatal("same-size/digest alternate-key prerequisite", err)
 				}

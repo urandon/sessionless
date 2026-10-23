@@ -300,9 +300,12 @@ type RegisteredProxyServiceKindV1 string
 type RegisteredProxyTransportKindV2 string
 
 const (
-	RegisteredProxyTransportPinnedHTTPSV2       RegisteredProxyTransportKindV2 = "pinned_https.v1"
-	RegisteredProxyTransportLocalLoopbackHTTPV2 RegisteredProxyTransportKindV2 = "local_loopback_http.v1"
+	RegisteredProxyTransportPinnedHTTPSV2         RegisteredProxyTransportKindV2 = "pinned_https.v1"
+	RegisteredProxyTransportLocalLoopbackHTTPV2   RegisteredProxyTransportKindV2 = "local_loopback_http.v1"
+	RegisteredProxyTransportLocalPublicMCPHTTPSV1 RegisteredProxyTransportKindV2 = "local_public_mcp_https.v1"
 )
+
+const ConfiguredLocalPublicMCPHTTPSPolicyV1 = "local_public_mcp_https.v1"
 
 type RegisteredPinnedHTTPSProxyV2 struct {
 	ResolutionSetDigest string `json:"resolution_set_digest"`
@@ -324,6 +327,23 @@ type RegisteredLocalLoopbackProxyV2 struct {
 	LiteralPeerDigest              string `json:"literal_peer_digest"`
 }
 
+// RegisteredLocalPublicMCPHTTPSProxyV1 is exact local MCP proxy observation
+// DATA. These fields correlate an original local runtime and retained public
+// MCP profile; they are not proof that DNS/TLS enforcement actually occurred.
+type RegisteredLocalPublicMCPHTTPSProxyV1 struct {
+	ConfiguredProfileDigest        string `json:"configured_profile_digest"`
+	EndpointPolicy                 string `json:"endpoint_policy"`
+	ConnectorArtifactDigest        string `json:"connector_artifact_digest"`
+	InstallationID                 string `json:"installation_id"`
+	InstallationRevision           uint64 `json:"installation_revision"`
+	HostIdentityDigest             string `json:"host_identity_digest"`
+	NetworkNamespaceIdentityDigest string `json:"network_namespace_identity_digest"`
+	ResolutionSetDigest            string `json:"resolution_set_digest"`
+	MCPProfileDigest               string `json:"mcp_profile_digest"`
+	GrantDigest                    string `json:"grant_digest"`
+	DescriptorDigest               string `json:"descriptor_digest"`
+}
+
 const (
 	RegisteredProxyProviderV1  RegisteredProxyServiceKindV1 = "provider"
 	RegisteredProxyMCPToolV1   RegisteredProxyServiceKindV1 = "mcp_tool"
@@ -334,30 +354,32 @@ const (
 // bytes and existing fixed-endpoint enforcement BEFORE publication. Body refs
 // and digests are not network policy approval or proof of DNS/TLS enforcement.
 // No URL/endpoint selector or invented parallel endpoint validator lives here.
-// In particular, the MCP/search producer bridge remains unimplemented.
+// The explicit local MCP arm remains observation DATA only; activation requires
+// the separate exact-substrate and live-service qualification gates.
 type RegisteredProxyAttestationV2 struct {
-	Version                    uint32                          `json:"version"`
-	TransportKind              RegisteredProxyTransportKindV2  `json:"transport_kind"`
-	OperationSequence          uint64                          `json:"operation_sequence"`
-	OperationDigest            AttemptOperationDigestV1        `json:"operation_digest"`
-	Scope                      AttemptExecutionSourceScopeV1   `json:"scope"`
-	PhysicalInvocationClaimID  string                          `json:"physical_invocation_claim_id"`
-	AllocationID               string                          `json:"allocation_id"`
-	AllocationGeneration       uint64                          `json:"allocation_generation"`
-	RegisteredAllocationDigest RegisteredAllocationDigestV2    `json:"registered_allocation_digest"`
-	SourceDigest               string                          `json:"source_digest"`
-	ServiceKind                RegisteredProxyServiceKindV1    `json:"service_kind"`
-	TransportDigest            string                          `json:"transport_digest"`
-	GrantDigest                string                          `json:"grant_digest"`
-	PolicyDigest               string                          `json:"policy_digest"`
-	PinnedHTTPS                *RegisteredPinnedHTTPSProxyV2   `json:"pinned_https,omitempty"`
-	LocalLoopback              *RegisteredLocalLoopbackProxyV2 `json:"local_loopback,omitempty"`
-	PolicyBody                 OwnedAgentAuthorityBodyRefV1    `json:"policy_body"`
-	AttestationBody            OwnedAgentAuthorityBodyRefV1    `json:"attestation_body"`
-	State                      RegisteredPreparationStateV1    `json:"state"`
-	RevocationGeneration       uint64                          `json:"revocation_generation"`
-	Window                     OwnedAgentAuthorityWindowV1     `json:"window"`
-	UpdatedAt                  time.Time                       `json:"updated_at"`
+	Version                    uint32                                `json:"version"`
+	TransportKind              RegisteredProxyTransportKindV2        `json:"transport_kind"`
+	OperationSequence          uint64                                `json:"operation_sequence"`
+	OperationDigest            AttemptOperationDigestV1              `json:"operation_digest"`
+	Scope                      AttemptExecutionSourceScopeV1         `json:"scope"`
+	PhysicalInvocationClaimID  string                                `json:"physical_invocation_claim_id"`
+	AllocationID               string                                `json:"allocation_id"`
+	AllocationGeneration       uint64                                `json:"allocation_generation"`
+	RegisteredAllocationDigest RegisteredAllocationDigestV2          `json:"registered_allocation_digest"`
+	SourceDigest               string                                `json:"source_digest"`
+	ServiceKind                RegisteredProxyServiceKindV1          `json:"service_kind"`
+	TransportDigest            string                                `json:"transport_digest"`
+	GrantDigest                string                                `json:"grant_digest"`
+	PolicyDigest               string                                `json:"policy_digest"`
+	PinnedHTTPS                *RegisteredPinnedHTTPSProxyV2         `json:"pinned_https,omitempty"`
+	LocalLoopback              *RegisteredLocalLoopbackProxyV2       `json:"local_loopback,omitempty"`
+	LocalPublicMCPHTTPS        *RegisteredLocalPublicMCPHTTPSProxyV1 `json:"local_public_mcp_https,omitempty"`
+	PolicyBody                 OwnedAgentAuthorityBodyRefV1          `json:"policy_body"`
+	AttestationBody            OwnedAgentAuthorityBodyRefV1          `json:"attestation_body"`
+	State                      RegisteredPreparationStateV1          `json:"state"`
+	RevocationGeneration       uint64                                `json:"revocation_generation"`
+	Window                     OwnedAgentAuthorityWindowV1           `json:"window"`
+	UpdatedAt                  time.Time                             `json:"updated_at"`
 }
 
 func (v RegisteredProxyAttestationV2) Clone() RegisteredProxyAttestationV2 {
@@ -369,6 +391,10 @@ func (v RegisteredProxyAttestationV2) Clone() RegisteredProxyAttestationV2 {
 	if v.LocalLoopback != nil {
 		value := *v.LocalLoopback
 		v.LocalLoopback = &value
+	}
+	if v.LocalPublicMCPHTTPS != nil {
+		value := *v.LocalPublicMCPHTTPS
+		v.LocalPublicMCPHTTPS = &value
 	}
 	return v
 }
@@ -390,7 +416,7 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 	}
 	switch v.TransportKind {
 	case RegisteredProxyTransportPinnedHTTPSV2:
-		if v.PinnedHTTPS == nil || v.LocalLoopback != nil {
+		if v.PinnedHTTPS == nil || v.LocalLoopback != nil || v.LocalPublicMCPHTTPS != nil {
 			return registeredPreparationError("proxy.transport", "pinned HTTPS requires only its explicit HTTPS observations")
 		}
 		for _, digest := range []string{v.PinnedHTTPS.ResolutionSetDigest, v.PinnedHTTPS.ProxyArtifactDigest, v.PinnedHTTPS.ProxyIdentityDigest} {
@@ -400,11 +426,21 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 		}
 	case RegisteredProxyTransportLocalLoopbackHTTPV2:
 		p := v.LocalLoopback
-		if p == nil || v.PinnedHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 {
+		if p == nil || v.PinnedHTTPS != nil || v.LocalPublicMCPHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 {
 			return registeredPreparationError("proxy.transport", "local loopback requires explicit local provider facts only")
 		}
 		for _, digest := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.LiteralPeerDigest} {
 			if err := ValidateSHA256Digest("registered_proxy.local_loopback", digest); err != nil {
+				return err
+			}
+		}
+	case RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		p := v.LocalPublicMCPHTTPS
+		if p == nil || v.PinnedHTTPS != nil || v.LocalLoopback != nil || v.ServiceKind != RegisteredProxyMCPToolV1 || p.EndpointPolicy != ConfiguredLocalPublicMCPHTTPSPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 || p.GrantDigest != v.GrantDigest {
+			return registeredPreparationError("proxy.transport", "local public MCP HTTPS requires exact MCP-only local observation facts")
+		}
+		for _, d := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.ResolutionSetDigest, p.MCPProfileDigest, p.GrantDigest, p.DescriptorDigest} {
+			if err := ValidateSHA256Digest("registered_proxy.local_public_mcp_https", d); err != nil {
 				return err
 			}
 		}
@@ -481,6 +517,37 @@ func BuildRegisteredLocalLoopbackProxyAttestationV2(allocation RegisteredAllocat
 	return v.Clone(), nil
 }
 
+// BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1 correlates the exact
+// original local runtime and MCP spending reference. Current grant/profile/
+// cost authorization remains a separate transactional Store responsibility.
+func BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation RegisteredAllocationV2, source AttemptExecutionSourceV1, transportDigest, policyDigest string, observation RegisteredLocalPublicMCPHTTPSProxyV1, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1, sequence uint64, operationDigest AttemptOperationDigestV1) (RegisteredProxyAttestationV2, error) {
+	deny := func() (RegisteredProxyAttestationV2, error) {
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.local_mcp_builder", "requires exact original local runtime, MCP spending and bounded observation")
+	}
+	sd, err := source.Digest()
+	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || source.Validate() != nil || window.Validate() != nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.LocalRuntime == nil ||
+		allocation.SourceDigest != sd || allocation.Scope != source.Scope || window.ObservedAt.Before(allocation.ParentReservation.ReservedAt) || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ObservedAt.Before(source.IssuedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) || window.ExpiresAt.After(source.ExpiresAt) {
+		return deny()
+	}
+	runtime := allocation.LocalRuntime
+	if observation.ConfiguredProfileDigest != allocation.Backend.BackendProfileDigest || observation.ConfiguredProfileDigest != runtime.ConfiguredProfileDigest || observation.EndpointPolicy != ConfiguredLocalPublicMCPHTTPSPolicyV1 ||
+		observation.ConnectorArtifactDigest != allocation.ObservedProxyArtifactDigest || observation.ConnectorArtifactDigest != runtime.WorkerExecutableDigest || observation.InstallationID != runtime.InstallationID || observation.InstallationRevision != runtime.InstallationRevision || observation.HostIdentityDigest != runtime.HostIdentityDigest || observation.NetworkNamespaceIdentityDigest != runtime.NetworkNamespaceIdentityDigest ||
+		observation.GrantDigest != source.Spending[2].ScopedGrantDigest || source.Spending[2].Locator.ComponentKind != AttemptSpendingMCPToolV1 {
+		return deny()
+	}
+	d, err := allocation.Digest()
+	if err != nil {
+		return deny()
+	}
+	v := RegisteredProxyAttestationV2{Version: 2, TransportKind: RegisteredProxyTransportLocalPublicMCPHTTPSV1, OperationSequence: sequence, OperationDigest: operationDigest, Scope: allocation.Scope, PhysicalInvocationClaimID: allocation.ParentReservation.PhysicalInvocationClaimID,
+		AllocationID: allocation.AllocationID, AllocationGeneration: allocation.AllocationGeneration, RegisteredAllocationDigest: d, SourceDigest: sd, ServiceKind: RegisteredProxyMCPToolV1, TransportDigest: transportDigest, GrantDigest: observation.GrantDigest,
+		PolicyDigest: policyDigest, LocalPublicMCPHTTPS: &observation, PolicyBody: policyBody, AttestationBody: attestationBody, State: RegisteredPreparationActiveV1, RevocationGeneration: 1, Window: window, UpdatedAt: window.PublishedAt}
+	if _, err := EncodeRegisteredProxyAttestationV2(v); err != nil {
+		return deny()
+	}
+	return v.Clone(), nil
+}
+
 // Historical correlation takes the exact retained original active allocation
 // snapshot whose digest this observation sealed, not a later retired/revoked
 // head. It is not a current permission check: fresh execution separately needs
@@ -497,6 +564,8 @@ func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation Registere
 		expected, err = BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.PinnedHTTPS.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	case RegisteredProxyTransportLocalLoopbackHTTPV2:
 		expected, err = BuildRegisteredLocalLoopbackProxyAttestationV2(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalLoopback, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
+	case RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		expected, err = BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalPublicMCPHTTPS, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	default:
 		return registeredPreparationError("proxy.transport", "requires an explicit supported transport tag")
 	}

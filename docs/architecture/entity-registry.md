@@ -217,11 +217,22 @@ Owned connector observations use the canonical tagged
 existing `attempt_effect_reservations` original/current/body columns; later
 sequences still use `attempt_operation_proxies_v1`. The table suffix is not a
 record-codec fallback. V2 seals the original operation digest and sequence, with
-exclusive HTTPS versus local-loopback facts, and is reread by reservation,
+exclusive pinned-HTTPS, local MODEL-loopback, or local public-MCP HTTPS facts,
+and is reread by reservation,
 before-send and history/custody consumers. No new endpoint or observation table
 is needed. Retained V1 rows are not rewritten or promoted into V2 authority;
 their presence blocks unsupported serving/recovery and needs the separately
 authorized [drained format cutover](../serverless-egress.md#owned-observation-format-and-cutover).
+The explicit `local_public_mcp_https.v1` arm binds the original local runtime
+installation/profile/host/namespace to the independent retained MCP grant,
+descriptor, fixed endpoint, public-address resolution and verified TLS peer.
+It does not reinterpret MODEL loopback as a tool proxy. Its stateless POST-only
+protocol counters remain bounded process-local execution state; durable
+operation reservation/observation and exact proxy bodies reuse the records
+above. Missing local state cannot authorize protocol or tool replay. This
+component enables no real profile; unknown service money remains unknown and
+cannot authorize MODEL continuation. No table, index, migration or operational
+progress ledger is added.
 Local observation data cannot be relabelled as an image-backed allocation or
 replace the actual retained local connector.
 

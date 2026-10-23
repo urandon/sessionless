@@ -1,0 +1,27 @@
+//go:build sessionless_mcp_offline
+
+package providerloopsession
+
+import (
+	"context"
+	"crypto/x509"
+	"net"
+	"net/netip"
+)
+
+// ConfigureMCPOfflineNetwork is present ONLY in the overlay test binary. The
+// temporary atomic claim serializes inert setup against Run; it cannot reset an
+// already claimed invocation or install a Store/keeper/prepared authority.
+func (v *CredentialedV1) ConfigureMCPOfflineNetwork(lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool) error {
+	if v == nil || v.state == nil || v.state.session == nil || v.state.session.state == nil || !v.state.claimed.CompareAndSwap(false, true) {
+		return ErrSession
+	}
+	defer v.state.claimed.Store(false)
+	s := v.state.session.state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.credentialed || s.closed || s.started || s.attempted || s.runtimeStarted || s.entry != nil || s.keeper == nil || s.ctx == nil || s.ctx.Err() != nil {
+		return ErrSession
+	}
+	return s.keeper.ConfigureMCPOfflineNetwork(lookup, dial, roots)
+}

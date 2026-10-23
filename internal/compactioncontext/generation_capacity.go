@@ -23,7 +23,7 @@ func (p *GenerationV1) MinimumSuccessorRequest() (*configuredinference.FrozenReq
 // MinimumSummaryData returns an independent structural DATA witness, never a
 // generated result, citation-quality assertion or publication permission.
 func (p *GenerationV1) MinimumSummaryData() ([]byte, error) {
-	if p == nil || p.frozen == nil || len(p.tools) != 0 || len(p.references) == 0 {
+	if p == nil || p.frozen == nil || len(p.references) == 0 {
 		return nil, ErrCanonical
 	}
 	body := []byte(`{"schema":"` + configuredinference.CompactionSummarySchemaV1 + `","task":[{"text":"x","source_ids":["` + p.references[0].SourceID + `"]}],"constraints":[],"facts":[],"unresolved":[],"artifacts":[],"omissions":[]}`)
@@ -47,7 +47,7 @@ func (p *GenerationV1) SuccessorOutputReserve() uint64 {
 // maxAdmissibleWire must be independently derived from original budget/fit
 // ceilings; clipping never attests that every summary will fit those ceilings.
 func (p *GenerationV1) SuccessorRequestUpperBytes(summaryBytes, maxAdmissibleWire uint64) (uint64, error) {
-	if p == nil || p.frozen == nil || summaryBytes == 0 || summaryBytes > configuredinference.MaxCompactionSummaryBytesV1 || maxAdmissibleWire == 0 || len(p.tools) != 0 {
+	if p == nil || p.frozen == nil || summaryBytes == 0 || summaryBytes > configuredinference.MaxCompactionSummaryBytesV1 || maxAdmissibleWire == 0 {
 		return 0, ErrCanonical
 	}
 	maxAdmissibleWire = min(maxAdmissibleWire, p.limits.RequestBytes)

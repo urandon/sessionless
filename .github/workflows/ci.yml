@@ -143,6 +143,11 @@ jobs:
       - name: Prove attached-worker two-owner YDB authority gate
         run: make attached-worker-security-ydb-gate
 
+      - name: Prove inline-output transactional claim and write custody
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make attached-inline-output-ydb-gate
+
       - name: Capture failed YDB Local state
         if: failure()
         run: |

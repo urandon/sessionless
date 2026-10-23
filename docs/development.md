@@ -756,6 +756,17 @@ idempotent DDL operation per file, and a forward-only production policy. See
 keys and transaction procedures.
 
 Run explanation storage (#187) has a separate true-transaction proof target.
+
+The existing disposable GitHub YDB job also runs
+`make attached-inline-output-ydb-gate` for inline V2 output (#200). It uses the
+original signed worker claim and real serializable transactions to observe
+body-claim commitment before the first body read and complete canonical write
+custody before physical Put. Controlled immutable blobs exercise lost Put
+acknowledgement without replay. The target requires disposable GitHub CI and a
+migrated loopback database; it starts no local service. A skipped local test is
+compilation evidence only, not native YDB, Object Storage, producer or rollout
+qualification. Existing job/test deadlines and all prior gates remain unchanged.
+
 The read-only conversation explanation drawer (#141) is absent in default WebUI
 builds. `VITE_RUN_EXPLANATION_ENABLED=true make web-stage` opts the frontend build
 in only after the deployment's writer/schema cutover receipt has been checked

@@ -351,6 +351,14 @@ retained-compaction-ydb-gate: prepare
 		-run '^TestLocalRetainedCompactionYDB' ./internal/ydbstore
 
 .PHONY: admission-cost-ydb-gate
+.PHONY: attached-inline-output-ydb-gate
+# Existing disposable CI database only; native claim/copy custody, fake blobs.
+attached-inline-output-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \
+		go test -race -count=3 -shuffle=on -timeout=5m \
+		-run '^TestAttachedInlineOutputYDB' ./internal/ydbstore
+
 admission-cost-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
 		-run '^(TestAdmissionCostV2YDB|TestAdmissionCostV2ServingGate)' ./test/ydbintegration

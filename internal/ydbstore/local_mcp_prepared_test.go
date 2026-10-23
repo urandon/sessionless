@@ -2,6 +2,7 @@ package ydbstore
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
@@ -9,8 +10,15 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-func recordPreparedLocalToolCall(t *testing.T, f *compactionSourceFixture, op domain.AttemptOperationV1, frozen *configuredinference.FrozenRequestV1) {
+func recordPreparedLocalToolCall(t *testing.T, f *compactionSourceFixture, op domain.AttemptOperationV1, frozen *configuredinference.FrozenRequestV1, callData ...[2]string) {
 	t.Helper()
+	callID, query := "mcp-call-1", "public docs"
+	if len(callData) > 1 {
+		t.Fatal("one bounded fixture call declaration")
+	}
+	if len(callData) == 1 {
+		callID, query = callData[0][0], callData[0][1]
+	}
 	installPreparedFutureProxy(t, f, op)
 	r, err := f.store.ReserveAttemptOperation(t.Context(), ports.ReserveAttemptOperationRequestV1{Operation: op})
 	if err != nil || r.Capability == nil || r.Status != ports.AttemptOperationReservedV1 {
@@ -19,13 +27,13 @@ func recordPreparedLocalToolCall(t *testing.T, f *compactionSourceFixture, op do
 	if err := f.store.AuthorizeAttemptOperationBeforeSend(t.Context(), r.Capability.Clone()); err != nil {
 		t.Fatalf("actual prepared model BeforeSend: %v", err)
 	}
-	argumentBytes, err := json.Marshal(map[string]string{"query": "public docs"})
+	argumentBytes, err := json.Marshal(map[string]string{"query": query})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wire, err := json.Marshal(map[string]any{"model": f.actual.config.ModelID, "choices": []any{map[string]any{
 		"index": 0, "message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{
-			"id": "mcp-call-1", "type": "function", "function": map[string]any{"name": "search_openai_docs", "arguments": string(argumentBytes)},
+			"id": callID, "type": "function", "function": map[string]any{"name": "search_openai_docs", "arguments": string(argumentBytes)},
 		}}}, "finish_reason": "tool_calls",
 	}}})
 	if err != nil {
@@ -51,6 +59,10 @@ func recordPreparedLocalToolCall(t *testing.T, f *compactionSourceFixture, op do
 	}
 	if err := f.store.RecordAttemptOperationObservation(t.Context(), ports.RecordAttemptOperationObservationRequestV1{ObservationGrant: r.ObservationGrant, Observation: observed}); err != nil {
 		t.Fatalf("record original model observation: %v", err)
+	}
+	readback, err := f.store.ReadAttemptOperationObservation(t.Context(), r.ObservationGrant)
+	if err != nil || !reflect.DeepEqual(readback, observed) {
+		t.Fatalf("read back exact authenticated original model observation: %v", err)
 	}
 }
 

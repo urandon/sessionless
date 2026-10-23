@@ -82,6 +82,19 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 	if !store.validOwnedAllocationContext(ctx) || request.Validate() != nil || store.ownedProxyPublicationVerifier == nil || proof.Validate() != nil {
 		return deny()
 	}
+	// Serialize original local preparation/custody with this real publisher.
+	// Nonlocal and the existing explicit preinstalled-body arm are unchanged.
+	var localScope domain.AttemptOperationScopeV1
+	if store.localBootstrap != nil {
+		if entry := store.localBootstrap.entry.Load(); entry != nil {
+			localScope = ownedOperationScope(entry.parent)
+		}
+	}
+	unlock, err := store.lockLocalGenericMutation(ctx, localScope)
+	if err != nil {
+		return deny()
+	}
+	defer unlock()
 	proof = proof.Clone()
 	bodies, err := proof.Bodies()
 	if err != nil || store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublication(proof.Clone(), proof.ObservedAt) != nil {
@@ -153,7 +166,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		}
 		if proof.OperationSequence > 1 {
 			previous, err := readOwnedOperation(ctx, q, domain.AttemptOperationV1{Scope: ownedOperationScope(parent), Sequence: proof.OperationSequence - 1})
-			if err != nil || previous == nil || previous.observation == nil || !ownedObservationAllowsSuccessor(previous.reservation, *previous.observation) {
+			if err != nil || previous == nil || previous.observation == nil || (!ownedObservationAllowsSuccessor(previous.reservation, *previous.observation) && !store.localMCPProxyContinuation(ctx, q, parent, source, proof, previous)) {
 				return q.budget.deny()
 			}
 		}

@@ -25,3 +25,24 @@ func (v *CredentialedV1) ConfigureMCPOfflineNetwork(lookup func(context.Context,
 	}
 	return s.keeper.ConfigureMCPOfflineNetwork(lookup, dial, roots)
 }
+
+// The noauth variant exists only in this additive offline overlay. It acquires
+// the SAME original session gate, and can configure only an inert invocation.
+func (v *LocalV1) ConfigureMCPOfflineNetwork(lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool) error {
+	if v == nil || v.state == nil {
+		return ErrSession
+	}
+	s := v.state
+	select {
+	case s.gate <- struct{}{}:
+	default:
+		return ErrBusy
+	}
+	defer func() { <-s.gate }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.credentialed || s.closed || s.started || s.attempted || s.runtimeStarted || s.entry != nil || s.keeper == nil || s.ctx == nil || s.ctx.Err() != nil {
+		return ErrSession
+	}
+	return s.keeper.ConfigureMCPOfflineNetwork(lookup, dial, roots)
+}

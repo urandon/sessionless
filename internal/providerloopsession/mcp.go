@@ -53,8 +53,9 @@ func (s *localState) runBoundedEngine(caller, call context.Context) (result Mode
 		if e != nil {
 			return result, e
 		}
-		// A future measured-cost owner may admit continuation. Unknown money
-		// never arrives here as observed zero, even for anonymous public docs.
+		// The next ORIGINAL prepared MODEL revalidates the same Source/Store
+		// conservative witness and full nonrefundable MCP reservation. A known
+		// result is not measured money or a caller-granted continuation flag.
 	}
 	return result, ErrIncomplete
 }
@@ -106,7 +107,9 @@ func (s *localState) invokeMCP(caller, call context.Context, op domain.AttemptOp
 	defer clear(transport.Body)
 	// The admitted endpoint/price declaration is not a measured service bill.
 	// This transport currently has no authoritative measured-cost channel. Keep
-	// the known result durable, but forbid the TOOL -> MODEL successor.
+	// the known result durable and its actual monetary usage UNKNOWN. Only the
+	// original Source/Store conservative funding witness may admit a successor;
+	// a completed transport result alone is never financial authority.
 	usage := domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageUnknownV1}
 	if invokeErr != nil {
 		outcome := domain.AttemptOperationRejectedBeforeSendV1
@@ -140,6 +143,11 @@ func (s *localState) invokeMCP(caller, call context.Context, op domain.AttemptOp
 	if e != nil || call.Err() != nil || !time.Now().Before(op.Deadline) {
 		return result, ErrIncomplete
 	}
-	// Explicit cost uncertainty is a stop, not successful #190 completion.
-	return result, ErrIncomplete
+	if parsed.IsError {
+		return result, ErrIncomplete
+	}
+	// Actual close/join below must succeed before the shared engine can prepare
+	// MODEL2. Its original Store route, not this return value, authenticates the
+	// unknown/full-reserved financial witness and matched terminal feasibility.
+	return result, nil
 }

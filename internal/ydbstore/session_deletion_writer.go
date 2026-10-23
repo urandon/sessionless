@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // Historical SQL DATA only. No live invocation entry, residual receipt or
@@ -75,8 +76,17 @@ func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery,
 			return nil, q.budget.deny()
 		}
 		row, e := c.decode(q, scope, sequence)
-		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(parent.Authority, parent.Reservation) != nil || indexed != sequence || indexedDigest != c.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) || row.observation == nil || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) || row.observation.ObservedAt.After(v.Run.TerminalCustody.LocalEvidence.StoppedAt) {
+		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(parent.Authority, parent.Reservation) != nil || indexed != sequence || indexedDigest != c.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) || row.observation == nil || row.observation.ObservedAt.After(v.Run.TerminalCustody.LocalEvidence.StoppedAt) {
 			return nil, q.budget.deny()
+		}
+		if !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
+			// SQL DATA collection only, not deletion eligibility or fresh effect
+			// authority. This arm MUST subsequently match an actual V2 capsule,
+			// complete V3 accounting and canonical seal outside this callback.
+			candidate, err := ports.BuildOwnedOperationAccountingRowV3(row.reservation, *row.observation, parent, source)
+			if err != nil || candidate.Kind != domain.AttemptOperationMCPToolV1 || candidate.Disposition != ports.OwnedOperationUnknownFullReservedV3 {
+				return nil, q.budget.deny()
+			}
 		}
 		if len(result) > 0 && row.reservation.ReservedAt.Before(result[len(result)-1].observation.ObservedAt) {
 			return nil, q.budget.deny()
@@ -204,7 +214,7 @@ func (v retainedDeletionWriterData) matchesCapsule(c localRetainedTerminalCapsul
 		return false
 	}
 	for i, row := range v.operations {
-		if row.observation == nil || !reflect.DeepEqual(row.reservation, c.Operations[i].Reservation) || !reflect.DeepEqual(*row.observation, c.Operations[i].Observation) {
+		if row.observation == nil || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) || !reflect.DeepEqual(row.reservation, c.Operations[i].Reservation) || !reflect.DeepEqual(*row.observation, c.Operations[i].Observation) {
 			return false
 		}
 	}

@@ -144,6 +144,9 @@ func (entry *LocalInvocationEntryV1) PrepareCompaction(ctx context.Context) (*lo
 	defer finish()
 	call, cancel := ownedAuthorityCallContext(call)
 	defer cancel()
+	if err := entry.prepareMCPConservativeLocked(call); err != nil {
+		return nil, err
+	}
 	source, err := entry.captureCompactionSource(call, localSourcePreparation)
 	if err != nil {
 		return nil, err
@@ -283,8 +286,11 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 			Tools []json.RawMessage `json:"tools"`
 		}
 		kind := operation.Reservation.Operation.Kind
-		if (kind != domain.AttemptOperationModelV1 && kind != domain.AttemptOperationCompactionV1 && kind != domain.AttemptOperationMCPToolV1) ||
-			json.Unmarshal(operation.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
+		if kind == domain.AttemptOperationMCPToolV1 {
+			if _, err := mcpadmission.DecodeSealedToolResultDataV1(operation.Reservation, operation.Observation, operation.Response); err != nil {
+				return deny()
+			}
+		} else if (kind != domain.AttemptOperationModelV1 && kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(operation.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
 			return deny()
 		}
 		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
@@ -305,7 +311,16 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if chargeOwnedAuthorityBody(call, bodyBytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, tools, state.history.runs)
+	data, v2, err := entry.localContextDataV2(source)
+	if err != nil {
+		return deny()
+	}
+	var program *compactioncontext.GenerationV1
+	if v2 {
+		program, err = compactioncontext.BuildGenerationV2(configuration, effective, *policy, state.digest, records, operations, parent, tools, data)
+	} else {
+		program, err = compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, tools, state.history.runs)
+	}
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit

@@ -124,9 +124,10 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 		return deny()
 	}
 	events := p.canonical.Events()
-	if len(events) != len(p.drafts) || len(events) != 1 {
+	if len(events) != len(p.drafts) || p.capsuleVersion != 1 && p.capsuleVersion != 2 || p.capsuleVersion == 1 && len(events) != 1 || p.capsuleVersion == 2 && (len(events) < 3 || len(events) > 9 || len(events)%2 != 1) {
 		return deny()
 	}
+	bodies := make([][]byte, len(events))
 	for i, event := range events {
 		expected := p.drafts[i]
 		// One sealed uploader copy, its prepared canonical material and exact
@@ -134,9 +135,13 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 		if !alive() || int64(len(event.Payload)) != expected.Payload.Size || chargeOwnedAuthorityBody(call, 3*uint64(len(event.Payload))) != nil {
 			return deny()
 		}
-		if h.entry.terminalOutputs.WriteCanonicalAssistant(call, postimage, expected, event.Payload) != nil || !alive() {
+		bodies[i] = event.Payload
+		if p.capsuleVersion == 1 && (h.entry.terminalOutputs.WriteCanonicalAssistant(call, postimage, expected, event.Payload) != nil || !alive()) {
 			return deny()
 		}
+	}
+	if p.capsuleVersion == 2 && (h.entry.terminalOutputs.WriteCanonicalEventsV2(call, postimage, p.drafts, bodies) != nil || !alive()) {
+		return deny()
 	}
 	// Recheck current authority after storage I/O. Registered residue remains on
 	// failure; no claim that Session deletion joins other admitted writers yet.

@@ -25,6 +25,8 @@ type terminalOutputState struct {
 	capsule                outputSlot
 	failure                outputSlot
 	assistantUsed          bool
+	canonicalToolEvents    uint32
+	canonicalToolBytes     uint64
 }
 
 type outputSlot struct {
@@ -32,6 +34,7 @@ type outputSlot struct {
 	limit   uint64
 	used    bool
 	failure bool
+	ref     domain.BlobRef
 }
 
 // TerminalOutputV1 is original process-local physical capacity only. Copies
@@ -69,6 +72,7 @@ func (s *StoreV1) AdmitTerminalOutput(ctx context.Context, product domain.Produc
 		return nil, ErrBody
 	}
 	owner := &terminalOutputState{maxArtifacts: uint64(product.MaxArtifacts), maxBytes: substrate.ArtifactBytes, artifacts: 1, charged: LocalTerminalCapsuleBytesV1, bodyLimit: st.maxBytes - LocalTerminalCapsuleBytesV1}
+	owner.canonicalToolEvents, owner.canonicalToolBytes = product.EffectiveToolEventLimits()
 	owner.capsule = outputSlot{owner: owner, limit: LocalTerminalCapsuleBytesV1}
 	owner.failure = outputSlot{owner: owner, limit: LocalTerminalFailureNoticeBytesV1, failure: true}
 	st.terminal = owner
@@ -166,6 +170,7 @@ func writeOutput(ctx context.Context, st *bodyState, slot *outputSlot, ref domai
 		return ErrBody
 	}
 	slot.used = true
+	slot.ref = ref
 	priorFailure := st.writeFailed
 	st.writeFailed = true
 	sealed := bytes.Clone(body)

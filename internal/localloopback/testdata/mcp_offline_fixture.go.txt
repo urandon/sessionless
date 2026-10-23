@@ -20,7 +20,7 @@ func (k *KeeperV1) ConfigureMCPOfflineNetwork(lookup func(context.Context, strin
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if !k.credentialed || k.closed || k.active != nil || k.credentialScopeUsed || k.credentialScope != nil || k.credentialEnded || k.mcpCatalogConsumed || k.sourceLifetime == nil || k.sourceLifetime.Err() != nil || k.mcpDeps.lookup != nil || k.mcpDeps.dial != nil || k.mcpDeps.roots != nil {
+	if k.closed || k.active != nil || k.credentialScopeUsed || k.credentialScope != nil || k.credentialEnded || k.mcpCatalogConsumed || k.sourceLifetime == nil || k.sourceLifetime.Err() != nil || k.mcpDeps.lookup != nil || k.mcpDeps.dial != nil || k.mcpDeps.roots != nil {
 		return domain.ErrMembershipDenied
 	}
 	if _, _, e := k.bootstrap.RuntimeFor(k); e != nil {

@@ -147,6 +147,9 @@ func (entry *LocalInvocationEntryV1) PrepareModel(ctx context.Context) (*localPr
 	defer finish()
 	call, cancel := ownedAuthorityCallContext(call)
 	defer cancel()
+	if err := entry.prepareMCPConservativeLocked(call); err != nil {
+		return nil, err
+	}
 	source, err := entry.captureCompactionSource(call, localSourcePreparation)
 	if err != nil {
 		return nil, err
@@ -325,7 +328,14 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 		var request struct {
 			Tools []json.RawMessage `json:"tools"`
 		}
-		if json.Unmarshal(o.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
+		if o.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			// MCP has its own exact JSON-RPC request grammar. Its original
+			// call/grant/result correlation was checked by source materialization;
+			// it is not a MODEL with a conveniently missing installed catalog.
+			if _, err := mcpadmission.DecodeSealedToolResultDataV1(o.Reservation, o.Observation, o.Response); err != nil {
+				return deny()
+			}
+		} else if (o.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && o.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(o.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
 			return deny()
 		}
 		operations[i] = compactioncontext.CompletedOperationV1{Reservation: o.Reservation, Observation: o.Observation, Request: o.Request, Response: o.Response}
@@ -337,7 +347,16 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if chargeOwnedAuthorityBody(ctx, bytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	frozen, err := compactioncontext.BuildOrdinaryV1(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, source.state.history.runs)
+	data, v2, err := entry.localContextDataV2(source)
+	if err != nil {
+		return deny()
+	}
+	var frozen *configuredinference.FrozenRequestV1
+	if v2 {
+		frozen, err = compactioncontext.BuildOrdinaryV2(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, data)
+	} else {
+		frozen, err = compactioncontext.BuildOrdinaryV1(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, source.state.history.runs)
+	}
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit

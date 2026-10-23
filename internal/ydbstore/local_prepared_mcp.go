@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
+	"sync/atomic"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
@@ -29,6 +30,7 @@ type localPreparedMCPV1 struct {
 	reservationAttempted bool
 	reservation          domain.AttemptOperationReservationV1
 	observation          ports.AuthenticatedAttemptOperationObservationV1
+	conservative         *atomic.Pointer[localMCPConservativeV2]
 }
 
 func (m *localPreparedMCPV1) originalForPhase(entry *LocalInvocationEntryV1, phase localCompactionGenerationPhase) bool {
@@ -56,7 +58,7 @@ func (m *localPreparedMCPV1) originalForPhase(entry *LocalInvocationEntryV1, pha
 	case localCompactionCompleted:
 		return m.reservation.Validate() == nil && reflect.DeepEqual(m.reservation.Operation, m.operation) &&
 			m.observation.Validate() == nil && reflect.DeepEqual(m.observation.Reservation, m.reservation) &&
-			ownedObservationAllowsSuccessor(m.reservation, m.observation.Observation) && entry.owner.store.attemptOperationIssuer.VerifyAttemptOperationObservation(m.observation.Clone()) == nil
+			entry.originalObservationAllowsSuccessor(m.reservation, m.observation.Observation) && entry.owner.store.attemptOperationIssuer.VerifyAttemptOperationObservation(m.observation.Clone()) == nil
 	default:
 		return false
 	}
@@ -117,8 +119,17 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		return nil, domain.ErrMembershipDenied
 	}
 	defer unlock()
-	if old := entry.preparedMCP.Load(); old != nil {
-		return nil, domain.ErrMembershipDenied
+	old := entry.preparedMCP.Load()
+	if old != nil {
+		if old.source == nil || old.source.state == nil {
+			return nil, domain.ErrMembershipDenied
+		}
+		old.source.state.mu.Lock()
+		completed := old.originalForPhase(entry, localCompactionCompleted)
+		old.source.state.mu.Unlock()
+		if !completed {
+			return nil, domain.ErrMembershipDenied
+		}
 	}
 	callCtx, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
@@ -155,6 +166,12 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		return nil, nil
 	}
 	defer clear(decoded.Call.Arguments)
+	// The existing one-catalog-page envelope cannot admit a second MCP setup.
+	// Preserve the completed original holder; a final MODEL above is a verified
+	// no-op, not permission to reset this holder or refill any budget.
+	if old != nil {
+		return nil, domain.ErrMembershipDenied
+	}
 	if decoded.Stop != configuredinference.StopToolV1 {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -196,7 +213,7 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 	if err := entry.terminalFitSourceLocked(callCtx, nil, source, operation, nil); err != nil {
 		return nil, err
 	}
-	m := &localPreparedMCPV1{entry: entry, source: source, call: bound, request: request, grant: grant, operation: operation}
+	m := &localPreparedMCPV1{entry: entry, source: source, call: bound, request: request, grant: grant, operation: operation, conservative: new(atomic.Pointer[localMCPConservativeV2])}
 	m.self = m
 	if !entry.preparedMCP.CompareAndSwap(nil, m) {
 		return nil, domain.ErrMembershipDenied

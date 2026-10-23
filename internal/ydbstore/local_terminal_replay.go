@@ -56,6 +56,12 @@ func (c *localTerminalCompletionV2) readRetained(ctx context.Context) (_ *ports.
 	if chargeOwnedAuthorityBody(ctx, uint64(len(body))) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	if p.capsuleVersion == 2 {
+		return c.readRetainedV2(ctx, body)
+	}
+	if p.capsuleVersion != 1 {
+		return nil, domain.ErrMembershipDenied
+	}
 	var capsule localRetainedTerminalCapsuleV1
 	if decodeOwnedEffectCanonicalJSON(string(body), &capsule) != nil || capsule.Schema != "sessionless.terminal-custody.v1" ||
 		capsule.CodecVersion != 1 || capsule.Scope != plan.Scope || capsule.FrontierDigest != plan.FrontierDigest ||
@@ -101,6 +107,11 @@ func (c *localTerminalCompletionV2) readRetained(ctx context.Context) (_ *ports.
 	if p.verifyCleanupRetained(ctx) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	return c.readCanonicalMaterials(ctx)
+}
+
+func (c *localTerminalCompletionV2) readCanonicalMaterials(ctx context.Context) (_ *ports.CanonicalEventMaterialSetV1, err error) {
+	entry := c.cleanup.owner.parent.entry
 	materials := ports.NewCanonicalEventMaterialSetV1()
 	defer func() {
 		if err != nil {

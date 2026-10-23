@@ -31,16 +31,18 @@ type RetainedEvidenceV1 struct {
 }
 
 type retainedOperationV1 struct {
-	Reservation domain.AttemptOperationReservationV1 `json:"reservation"`
-	Observation domain.AttemptOperationObservationV1 `json:"observation"`
+	Reservation  domain.AttemptOperationReservationV1 `json:"reservation"`
+	Observation  domain.AttemptOperationObservationV1 `json:"observation"`
+	Conservative *MCPConservativeDataV2               `json:"conservative,omitempty"`
 }
 
 // Only original identity/immutable-reference metadata is retained here, never
 // original source text. Canonical and operational identities stay disjoint.
 type retainedSourceV1 struct {
-	SourceID  string               `json:"source_id"`
-	Canonical *domain.SessionEvent `json:"canonical"`
-	Operation *retainedOperationV1 `json:"operation"`
+	SourceID   string                `json:"source_id"`
+	Canonical  *domain.SessionEvent  `json:"canonical"`
+	Operation  *retainedOperationV1  `json:"operation"`
+	Projection *projectedOperationV2 `json:"projection,omitempty"`
 }
 
 type retainedCutV1 struct {
@@ -155,7 +157,7 @@ func (v *RetainedV1) Parent() *ParentV1 {
 	for _, index := range v.manifest.Cut.Covered {
 		ids = append(ids, v.manifest.Cut.Sources[index].SourceID)
 	}
-	parent := &ParentV1{Plan: v.plan, Summary: v.SummaryText(), CoveredSourceIDs: ids, CompatibilityDigest: v.manifest.Core.CompatibilityDigest}
+	parent := &ParentV1{Plan: v.plan, Summary: v.SummaryText(), CoveredSourceIDs: ids, CompatibilityDigest: v.manifest.Core.CompatibilityDigest, version: v.manifest.Core.Version}
 	if v.manifest.Parent != nil {
 		parent.PriorPlans = []domain.DerivedContextPlanV1{*v.manifest.Parent}
 	}
@@ -193,6 +195,13 @@ func (p *GenerationV1) retainedCut() retainedCutV1 {
 // caller's fit records are checked as DATA only; the original Source must have
 // computed and must recheck them before the real publication transaction.
 func (p *GenerationV1) BuildRetainedV1(e RetainedEvidenceV1) (*RetainedV1, error) {
+	if p == nil || p.version != 1 {
+		return nil, ErrCanonical
+	}
+	return p.buildRetained(e, 1)
+}
+
+func (p *GenerationV1) buildRetained(e RetainedEvidenceV1, version uint32) (*RetainedV1, error) {
 	if p == nil || p.frozen == nil || len(p.sources) == 0 || len(e.Summary) == 0 || len(e.Summary) > configuredinference.MaxCompactionSummaryBytesV1 {
 		return nil, ErrCanonical
 	}
@@ -219,12 +228,15 @@ func (p *GenerationV1) BuildRetainedV1(e RetainedEvidenceV1) (*RetainedV1, error
 	if err != nil {
 		return nil, ErrCanonical
 	}
-	core := retainedCoreV1{Version: 1, Scope: e.Reservation.Operation.Scope, Generation: p.generation, OperationSequence: e.Reservation.Operation.Sequence,
+	core := retainedCoreV1{Version: version, Scope: e.Reservation.Operation.Scope, Generation: p.generation, OperationSequence: e.Reservation.Operation.Sequence,
 		ReservationDigest: rd, ObservationDigest: od, NormalizedResponseDigest: e.Observation.ResponseDigest, SourceViewDigest: p.source,
 		CanonicalDigest: p.canonicalDigest, FirstCanonicalSequence: first, ThroughCanonicalSequence: through, ThroughCanonicalEventID: eventID,
 		ProfileDigest: pd, PolicyDigest: string(policyDigest), BundleDigest: CompactionPolicyDigestV1(), CompatibilityDigest: p.compatibility,
 		CalibrationDigest: p.profile.CalibrationDigest, GenerationRequestDigest: p.frozen.Digest(), NextRequestDigest: next.Digest(), CutDigest: retainedDigest(cutBody), SummaryDigest: retainedDigest(e.Summary), SummaryTokenUpperBound: e.SummaryTokenUpperBound}
 	summary := retainedSummaryV1{Schema: "sessionless.retained-compaction-summary.v1", Core: core, Summary: bytes.Clone(e.Summary)}
+	if version == 2 {
+		summary.Schema = "sessionless.retained-compaction-summary.v2"
+	}
 	sb, err := encodeRetainedSummary(summary)
 	if err != nil || len(sb) > MaxRetainedSummaryBytesV1 {
 		return nil, ErrCanonical
@@ -237,6 +249,9 @@ func (p *GenerationV1) BuildRetainedV1(e RetainedEvidenceV1) (*RetainedV1, error
 	}
 	m := retainedManifestV1{Schema: "sessionless.compaction-manifest.v1", Core: core, Summary: plan.Summary, Cut: cut,
 		Reservation: e.Reservation.Clone(), Observation: e.Observation.Clone(), GenerationFit: retainedFit(e.GenerationFit), NextFit: retainedFit(e.NextFit), Closure: 1}
+	if version == 2 {
+		m.Schema = "sessionless.compaction-manifest.v2"
+	}
 	if e.Parent != nil {
 		value := e.Parent.Plan()
 		m.Parent = &value
@@ -250,7 +265,7 @@ func (p *GenerationV1) BuildRetainedV1(e RetainedEvidenceV1) (*RetainedV1, error
 	if err != nil {
 		return nil, ErrCanonical
 	}
-	v, err := DecodeRetainedV1(p.profile, p.policy, plan, sb, mb, e.Parent)
+	v, err := decodeRetainedV1(&p.profile, pd, p.policy, plan, sb, mb, e.Parent, version)
 	if err != nil || v.ValidateForGeneration(p) != nil {
 		return nil, ErrCanonical
 	}
@@ -296,7 +311,7 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 		return nil, ErrCanonical
 	}
 	pd, _ := profile.Digest()
-	return decodeRetainedV1(&profile, pd, policy, plan, summaryArtifact, manifest, parent)
+	return decodeRetainedV1(&profile, pd, policy, plan, summaryArtifact, manifest, parent, 1)
 }
 
 // DecodeSealedRetainedV1 is historical DATA-only. Original full profile/model
@@ -307,19 +322,24 @@ func DecodeSealedRetainedV1(profileDigest string, policy domain.AgentLoopPolicyV
 	if !retainedValidDigest(profileDigest) || policy.Backend.BackendProfileDigest != profileDigest {
 		return nil, ErrCanonical
 	}
-	return decodeRetainedV1(nil, profileDigest, policy, plan, summaryArtifact, manifest, parent)
+	return decodeRetainedV1(nil, profileDigest, policy, plan, summaryArtifact, manifest, parent, 1)
 }
 
-func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, policy domain.AgentLoopPolicyV1, plan domain.DerivedContextPlanV1, summaryArtifact, manifest []byte, parent *RetainedV1) (*RetainedV1, error) {
+func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, policy domain.AgentLoopPolicyV1, plan domain.DerivedContextPlanV1, summaryArtifact, manifest []byte, parent *RetainedV1, version uint32) (*RetainedV1, error) {
 	if policy.Validate() != nil || plan.Validate() != nil ||
+		(version != 1 && version != 2) || (version == 1 && parent != nil && parent.manifest.Core.Version != 1) ||
 		len(summaryArtifact) > MaxRetainedSummaryBytesV1 || len(manifest) > MaxRetainedManifestBytesV1 ||
 		!retainedBodyMatches(plan.Summary, summaryArtifact) || !retainedBodyMatches(plan.Manifest, manifest) {
 		return nil, ErrCanonical
 	}
 	var s retainedSummaryV1
 	var m retainedManifestV1
+	summarySchema, manifestSchema := "sessionless.retained-compaction-summary.v1", "sessionless.compaction-manifest.v1"
+	if version == 2 {
+		summarySchema, manifestSchema = "sessionless.retained-compaction-summary.v2", "sessionless.compaction-manifest.v2"
+	}
 	if decodeRetainedSummary(summaryArtifact, &s) != nil || strictRetained(manifest, MaxRetainedManifestBytesV1, &m) != nil ||
-		s.Schema != "sessionless.retained-compaction-summary.v1" || m.Schema != "sessionless.compaction-manifest.v1" || s.Core != m.Core || m.Summary != plan.Summary {
+		s.Schema != summarySchema || m.Schema != manifestSchema || s.Core != m.Core || m.Summary != plan.Summary {
 		return nil, ErrCanonical
 	}
 	c := m.Core
@@ -328,7 +348,7 @@ func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, p
 	policyDigest, _ := policy.Digest()
 	rd, re := r.Digest()
 	od, oe := o.Digest()
-	if c.Version != 1 || c.Generation < 1 || c.Generation > 2 || c.Scope != plan.Scope || c.Generation != plan.Generation || c.OperationSequence != plan.OperationSequence ||
+	if c.Version != version || c.Generation < 1 || c.Generation > 2 || c.Scope != plan.Scope || c.Generation != plan.Generation || c.OperationSequence != plan.OperationSequence ||
 		c.ReservationDigest != plan.ReservationDigest || c.ObservationDigest != plan.ObservationDigest || c.NormalizedResponseDigest != plan.NormalizedResponseDigest || c.SourceViewDigest != plan.SourceViewDigest ||
 		re != nil || oe != nil || rd != c.ReservationDigest || od != c.ObservationDigest || r.Validate() != nil || o.ValidateForReservation(r) != nil ||
 		op.Scope != c.Scope || op.Sequence != c.OperationSequence || op.Kind != domain.AttemptOperationCompactionV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(op.Debit) ||
@@ -351,7 +371,7 @@ func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, p
 		!fitValid(m.NextFit) || m.NextFit.RequestDigest != c.NextRequestDigest {
 		return nil, ErrCanonical
 	}
-	refs, err := validateRetainedCut(m.Cut, c.Scope)
+	refs, err := validateRetainedCutVersion(m.Cut, c.Scope, version)
 	cutBody, _ := json.Marshal(m.Cut)
 	first, through, eventID := canonicalThrough(m.Cut.Sources)
 	if err != nil || c.CutDigest != retainedDigest(cutBody) || first != c.FirstCanonicalSequence || through != c.ThroughCanonicalSequence || eventID != c.ThroughCanonicalEventID {
@@ -359,6 +379,9 @@ func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, p
 	}
 	for _, row := range m.Cut.Sources {
 		if row.Operation != nil && row.Operation.Reservation.Operation.Scope == c.Scope && row.Operation.Reservation.Operation.Sequence >= op.Sequence {
+			return nil, ErrCanonical
+		}
+		if row.Operation != nil && row.Operation.Conservative != nil && row.Operation.Reservation.Operation.Scope == c.Scope && !conservativePolicyMatchesV2(*row.Operation.Conservative, row.Operation.Reservation, row.Operation.Observation, policy) {
 			return nil, ErrCanonical
 		}
 	}
@@ -382,7 +405,7 @@ func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, p
 		}
 		for _, i := range parent.manifest.Cut.Covered {
 			row := parent.manifest.Cut.Sources[i]
-			if !currentCovered[row.SourceID] || !hasExactRetainedSource(m.Cut.Sources, row) {
+			if !currentCovered[row.SourceID] || !hasExactRetainedSourceVersion(m.Cut.Sources, row, version) {
 				return nil, ErrCanonical
 			}
 		}
@@ -396,6 +419,13 @@ func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, p
 // DependenciesV1 returns copies of exact original owning references, not
 // deletion permission. A deletion verifier resolves each against SQL ownership.
 func (v *RetainedV1) DependenciesV1() ([]domain.SessionEvent, []domain.DerivedContextPlanV1) {
+	if v == nil || v.manifest.Core.Version != 1 {
+		return nil, nil
+	}
+	return v.dependencies()
+}
+
+func (v *RetainedV1) dependencies() ([]domain.SessionEvent, []domain.DerivedContextPlanV1) {
 	if v == nil {
 		return nil, nil
 	}
@@ -442,6 +472,9 @@ func boundedRetainedCut(c retainedCutV1) bool {
 		}
 		if row.Canonical != nil {
 			if len(row.Canonical.Payload.Key) > MaxRetainedManifestBytesV1 || row.Canonical.Validate() != nil {
+				return false
+			}
+			if row.Projection != nil && !row.Projection.validFor(*row.Canonical) {
 				return false
 			}
 		} else if row.Operation.Reservation.Validate() != nil || row.Operation.Observation.ValidateForReservation(row.Operation.Reservation) != nil {
@@ -536,6 +569,10 @@ func canonicalThrough(sources []retainedSourceV1) (uint64, uint64, domain.Sessio
 }
 
 func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) ([]configuredinference.CompactionReferenceV1, error) {
+	return validateRetainedCutVersion(c, scope, 1)
+}
+
+func validateRetainedCutVersion(c retainedCutV1, scope domain.AttemptOperationScopeV1, version uint32) ([]configuredinference.CompactionReferenceV1, error) {
 	if len(c.Sources) < 2 || len(c.Sources) > 4096 || c.Cut == 0 || uint64(c.Cut) >= uint64(len(c.Sources)) || len(c.Covered) == 0 || len(c.Suffix) != len(c.Sources)-int(c.Cut) ||
 		c.Protected == nil || c.Covered == nil || c.Suffix == nil {
 		return nil, ErrCanonical
@@ -556,20 +593,55 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 	lastOperations := make(map[domain.AttemptOperationScopeV1]uint64)
 	currentOperationSeen := false
 	refs := make([]configuredinference.CompactionReferenceV1, 0, len(c.Sources))
+	projectedRuns := make(map[domain.RunID]bool)
+	if version == 2 {
+		for _, row := range c.Sources {
+			if row.Projection != nil {
+				projectedRuns[row.Projection.Reservation.Operation.Scope.RunID] = true
+			}
+		}
+	}
 	for i, row := range c.Sources {
 		if parts[i] == 0 || !retainedValidDigest(row.SourceID) || seen[row.SourceID] || (row.Canonical == nil) == (row.Operation == nil) {
+			return nil, ErrCanonical
+		}
+		if (version == 1 && (row.Projection != nil || (row.Operation != nil && row.Operation.Conservative != nil))) || (row.Projection != nil && row.Canonical == nil) {
 			return nil, ErrCanonical
 		}
 		seen[row.SourceID] = true
 		kind := configuredinference.CompactionCanonicalReferenceV1
 		if row.Canonical != nil {
 			e := *row.Canonical
+			if e.RunID != nil && projectedRuns[*e.RunID] && (e.Kind == domain.SessionEventToolCall || e.Kind == domain.SessionEventToolResult || e.Kind == domain.SessionEventAssistantMessage) && row.Projection == nil {
+				return nil, ErrCanonical
+			}
 			key, err := CanonicalSourceKeyV1(e)
+			if version == 2 && row.Projection != nil && (e.Kind == domain.SessionEventToolCall || e.Kind == domain.SessionEventToolResult) {
+				key, err = OperationSourceKeyV1(row.Projection.Reservation, row.Projection.Observation)
+				kind = configuredinference.CompactionOperationReferenceV1
+			}
 			if err != nil || key != row.SourceID || seenEvents[e.ID] || e.TenantID != scope.TenantID || e.SessionID != scope.SessionID || currentOperationSeen || (lastCanonical == 0 && e.Sequence != 1) || (lastCanonical != 0 && e.Sequence != lastCanonical+1) {
 				return nil, ErrCanonical
 			}
 			seenEvents[e.ID] = true
 			lastCanonical = e.Sequence
+			if row.Projection != nil {
+				p := row.Projection
+				original := p.Reservation.Operation.Scope
+				if version != 2 || !p.validFor(e) || original == scope || original.RunID == scope.RunID || original.OwnerUserID != scope.OwnerUserID || p.Reservation.Operation.Sequence <= lastOperations[original] {
+					return nil, ErrCanonical
+				}
+				if e.Kind == domain.SessionEventToolResult {
+					if i == 0 || c.Sources[i-1].Canonical == nil || c.Sources[i-1].Canonical.Kind != domain.SessionEventToolCall || c.Sources[i-1].Projection == nil || parts[i] != parts[i-1] || i == int(c.Cut) || p.Reservation.Operation.ValidatePredecessor(c.Sources[i-1].Projection.Reservation, c.Sources[i-1].Projection.Observation) != nil {
+						return nil, ErrCanonical
+					}
+				} else if e.Kind == domain.SessionEventToolCall {
+					if i+1 >= len(c.Sources) || c.Sources[i+1].Canonical == nil || c.Sources[i+1].Canonical.Kind != domain.SessionEventToolResult || c.Sources[i+1].Projection == nil {
+						return nil, ErrCanonical
+					}
+				}
+				lastOperations[original] = p.Reservation.Operation.Sequence
+			}
 			// Protected correlation components may contain tools/assistants too;
 			// every original user/system is nevertheless always protected.
 			protected := e.Kind == domain.SessionEventUserMessage || e.Kind == domain.SessionEventSystemNotice
@@ -587,13 +659,17 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 				return nil, ErrCanonical
 			}
 			if isTool {
-				if i == 0 || c.Sources[i-1].Operation == nil || !toolUsageContinuable(o) {
+				conservative := row.Operation.Conservative
+				validConservative := version == 2 && conservative != nil && conservative.matches(r, o)
+				if (conservative != nil && !validConservative) || i == 0 || c.Sources[i-1].Operation == nil || (!toolUsageContinuable(o) && !validConservative) {
 					return nil, ErrCanonical
 				}
 				before := c.Sources[i-1].Operation
 				if before.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || r.Operation.ValidatePredecessor(before.Reservation, before.Observation) != nil || parts[i] != parts[i-1] || (i == int(c.Cut)) {
 					return nil, ErrCanonical
 				}
+			} else if row.Operation.Conservative != nil {
+				return nil, ErrCanonical
 			}
 			if original != scope {
 				anchored := false
@@ -682,7 +758,7 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 	for i, row := range c.Sources {
 		if parts[i] < 3 || protectedIndices[i] {
 			kind := configuredinference.CompactionCanonicalReferenceV1
-			if row.Operation != nil {
+			if row.Operation != nil || (row.Projection != nil && row.Canonical != nil && (row.Canonical.Kind == domain.SessionEventToolCall || row.Canonical.Kind == domain.SessionEventToolResult)) {
 				kind = configuredinference.CompactionOperationReferenceV1
 			}
 			refs = append(refs, configuredinference.CompactionReferenceV1{SourceID: row.SourceID, Kind: kind})
@@ -694,8 +770,17 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 const scopeSequenceLimit = uint64(13)
 
 func hasExactRetainedSource(rows []retainedSourceV1, wanted retainedSourceV1) bool {
+	return hasExactRetainedSourceVersion(rows, wanted, 1)
+}
+
+func hasExactRetainedSourceVersion(rows []retainedSourceV1, wanted retainedSourceV1, version uint32) bool {
 	for _, row := range rows {
 		if row.SourceID == wanted.SourceID {
+			if version == 2 && wanted.Operation != nil && row.Canonical != nil && row.Projection != nil && (row.Canonical.Kind == domain.SessionEventToolCall || row.Canonical.Kind == domain.SessionEventToolResult) {
+				// Only the exact retained operation may acquire its verified
+				// immutable canonical projection, never a replacement source.
+				return reflect.DeepEqual(wanted.Operation, &retainedOperationV1{Reservation: row.Projection.Reservation, Observation: row.Projection.Observation, Conservative: row.Projection.Conservative})
+			}
 			return reflect.DeepEqual(row, wanted)
 		}
 	}
@@ -707,6 +792,7 @@ func hasExactRetainedSource(rows []retainedSourceV1, wanted retainedSourceV1) bo
 // independent concrete Source fit calculations, not this comparison.
 func (v *RetainedV1) ValidateForGeneration(p *GenerationV1) error {
 	if v == nil || p == nil || p.frozen == nil || v.manifest.Core.SourceViewDigest != p.source || v.manifest.Core.Generation != p.generation ||
+		v.manifest.Core.Version != p.version ||
 		v.manifest.Core.CanonicalDigest != p.canonicalDigest || v.manifest.Core.CompatibilityDigest != p.compatibility ||
 		!reflect.DeepEqual(v.manifest.Cut, p.retainedCut()) || !reflect.DeepEqual(v.manifest.Parent, p.parentPlan) || v.manifest.GenerationFit.RequestDigest != p.frozen.Digest() {
 		return ErrCanonical

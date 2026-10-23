@@ -114,8 +114,9 @@ type localRuntimeActualPrebuild struct {
 	sourceParent                                            context.Context
 	endpoint                                                string
 	laterPriceObservation                                   bool
-	compiledCompaction                                      bool   // closed synthetic declaration, installed BEFORE Source intake
-	mcpModelDescription                                     string // optional bounded public tool prose, installed BEFORE all grant/policy/source seals
+	compiledCompaction                                      bool    // closed synthetic declaration, installed BEFORE Source intake
+	mcpModelDescription                                     string  // optional bounded public tool prose, installed BEFORE all grant/policy/source seals
+	mcpSyntheticPriceMicrounits                             *uint64 // optional independent finite price BEFORE intake; nil preserves the original paid fixture
 	inputTokens, outputTokens, modelWindowTokens            uint64
 	networkOperation, cleanupTimeout                        time.Duration
 	bodyBytes, artifactBytes                                uint64 // closed pre-intake narrowing only
@@ -325,6 +326,20 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		}
 		observed, expires := p.CostCeiling.PriceObservedAt, p.CostCeiling.PriceExpiresAt
 		localSearchDeclaration(t, &manifest)
+		if declared := prebuild[0].mcpSyntheticPriceMicrounits; declared != nil {
+			amount := *declared
+			cost := p.CostCeiling.MCPToolCost
+			total := p.CostCeiling.MaxTotalAmountMicrounits
+			if cost == nil || cost.MaxAmountMicrounits == nil || total == nil || amount > 10000 || *cost.MaxAmountMicrounits > *total || amount > ^uint64(0)-(*total-*cost.MaxAmountMicrounits) {
+				t.Fatal("bounded coherent pre-intake synthetic MCP tariff required")
+			}
+			nextTotal := *total - *cost.MaxAmountMicrounits + amount
+			cost.PriceState, cost.MaxAmountMicrounits = domain.ExternalServicePriceKnownPaidV1, &amount
+			if amount == 0 {
+				cost.PriceState = domain.ExternalServicePriceKnownFreeV1
+			}
+			p.CostCeiling.MaxTotalAmountMicrounits = &nextTotal
+		}
 		if prebuild[0].mcpModelDescription != "" {
 			localSourceMCPDeclaration(t, &manifest, prebuild[0].mcpModelDescription)
 		} else {

@@ -353,6 +353,12 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotWithBurn(ctx conte
 	if err != nil {
 		return deny()
 	}
+	// This is the current-authority wrapper, used again by reserve/before-send.
+	// Historical cleanup deliberately calls the separately guarded Body reader
+	// after publication and Source stop; it cannot mint new effect permission.
+	if err := entry.revalidateMCPConservativeFunding(ctx, q.at); err != nil {
+		return deny()
+	}
 	snapshot, err := entry.readLocalPreparedSnapshotBody(ctx, q, owner, phase)
 	if err != nil {
 		return localCompactionSnapshot{}, time.Time{}, err
@@ -466,7 +472,7 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Con
 			if row.observation != nil || !reflect.DeepEqual(row.reservation.Operation, owner.operation()) {
 				return nil, q.budget.deny()
 			}
-		} else if row.observation == nil || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
+		} else if row.observation == nil || !entry.originalObservationAllowsSuccessor(row.reservation, *row.observation) {
 			return nil, q.budget.deny()
 		}
 		if len(result) > 0 {

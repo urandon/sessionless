@@ -9,11 +9,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,13 +21,11 @@ import (
 	"net/http"
 	"net/netip"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/mcpwire"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 )
@@ -257,28 +253,12 @@ func (p *offlineMCPPeer) wait(t *testing.T) {
 	}
 }
 
-func offlineStoredBody(t *testing.T, b *connectedOperationBlobs, ref, digest string) []byte {
-	t.Helper()
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for key, raw := range b.objects {
-		if strings.HasSuffix(key, "/"+ref) {
-			h := sha256.Sum256(raw)
-			if hex.EncodeToString(h[:]) != digest {
-				t.Fatal("durable exact body digest mismatch")
-			}
-			return bytes.Clone(raw)
-		}
-	}
-	t.Fatal("durable exact body missing")
-	return nil
-}
-
 func TestLocalSessionCredentialedMCPOfflineJoined(t *testing.T) {
-	for _, mode := range []string{"known_result_unknown_money", "revoke_after_catalog", "missing_store_call_index", "lost_reply"} {
+	t.Run("known_result_unknown_money", testOfflineMCPChainCredentialed)
+	for _, mode := range []string{"revoke_after_catalog", "missing_store_call_index", "lost_reply"} {
 		t.Run(mode, func(t *testing.T) {
 			modelPeer := newLocalLoopbackPeer(t, true)
-			seed, blobs, credentials, _, session := newCredentialedConnectedSessionAt(t, modelPeer.endpoint())
+			seed, _, credentials, _, session := newCredentialedConnectedSessionAt(t, modelPeer.endpoint())
 			grant := seed.MCPOfflineInstalledGrant(t)
 			want := 4
 			var fault func()
@@ -383,42 +363,7 @@ func TestLocalSessionCredentialedMCPOfflineJoined(t *testing.T) {
 			if stats.Parent != before.Parent+1 || stats.Burn != before.Burn+1 || stats.Allocation != before.Allocation+1 || stats.Operation != before.Operation+2 || stats.Call != before.Call+2 {
 				t.Fatalf("same original Store did not reserve exact MODEL+MCP pair: %+v", stats)
 			}
-			if mode == "known_result_unknown_money" {
-				tool := result.Tool.Observation
-				model := result.Model.Observation
-				if !result.Tool.SendAttempted || tool.Observation.Outcome != domain.AttemptOperationCompletedV1 || tool.Observation.Reason != domain.AttemptOperationReasonNoneV1 || tool.Observation.Usage.State != domain.AttemptOperationUsageUnknownV1 || tool.Observation.Usage.AmountMicrounits != nil || tool.Observation.Usage.InputTokens != nil || tool.Observation.Usage.OutputTokens != nil || seed.Operate.VerifyAttemptOperationObservation(tool) != nil {
-					t.Fatal("known MCP result fabricated money or lacked original issuer observation")
-				}
-				if tool.Reservation.Operation.Kind != domain.AttemptOperationMCPToolV1 || tool.Reservation.Operation.Sequence != 2 || tool.Reservation.Operation.CallID != "offline-call-1" || tool.Reservation.Operation.Scope != model.Reservation.Operation.Scope || tool.Reservation.RegisteredAllocationDigest != model.Reservation.RegisteredAllocationDigest {
-					t.Fatal("MCP escaped original MODEL scope/allocation")
-				}
-				pred, _ := model.Observation.Digest()
-				total, e := model.Reservation.AggregateDebit.Add(tool.Reservation.Operation.Debit)
-				if e != nil || tool.Reservation.Operation.PredecessorObservationDigest != pred || total != tool.Reservation.AggregateDebit {
-					t.Fatal("original bounded budget chain changed", e)
-				}
-				if observed := seed.PersistedCompactionObservations(t); !reflect.DeepEqual(observed, []domain.AttemptOperationObservationV1{model.Observation, tool.Observation}) {
-					t.Fatal("known MCP result was not the exact second durable observation")
-				}
-				request := offlineStoredBody(t, blobs.operations, tool.Reservation.Operation.RequestRef, tool.Reservation.Operation.RequestDigest)
-				defer clear(request)
-				normalized := offlineStoredBody(t, blobs.operations, tool.Observation.ResponseRef, tool.Observation.ResponseDigest)
-				defer clear(normalized)
-				decoded, e := mcpadmission.DecodeSealedToolResultDataV1(tool.Reservation, tool.Observation, normalized)
-				if e != nil || decoded.IsError() || !reflect.DeepEqual(decoded.Content(), []string{"offline public docs result"}) || decoded.Usage().AmountMicrounits != nil {
-					t.Fatal("durable normalized MCP result/unknown usage mismatch", e)
-				}
-				if _, e = mcpadmission.DecodeToolResultV1(grant, tool.Reservation.Operation, request, normalized); e != nil {
-					t.Fatal("exact installed grant/request/result linkage", e)
-				}
-				mcp.mu.Lock()
-				same := bytes.Equal(request, mcp.bodies[3])
-				methods := append([]string(nil), mcp.methods...)
-				mcp.mu.Unlock()
-				if !same || !reflect.DeepEqual(methods, []string{"initialize", "notifications/initialized", "tools/list", "tools/call"}) {
-					t.Fatal("four actual protocol messages did not include exact prepared call")
-				}
-			} else if mode == "lost_reply" {
+			if mode == "lost_reply" {
 				tool := result.Tool.Observation
 				if !result.Tool.SendAttempted || tool.Observation.Outcome != domain.AttemptOperationAcceptedOutcomeUnknownV1 || tool.Observation.Reason != domain.AttemptOperationReasonTransportUnknownV1 || tool.Observation.Usage.State != domain.AttemptOperationUsageUnknownV1 || tool.Observation.ResponseRef != "" || tool.Observation.ResponseDigest != "" || tool.Observation.ResponseBytes != 0 || seed.Operate.VerifyAttemptOperationObservation(tool) != nil {
 					t.Fatal("lost actual MCP reply was misclassified as before-send rejection or known result")

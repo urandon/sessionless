@@ -79,14 +79,48 @@ func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptE
 		}
 		return attachedWorkerReceiptEnvelope{v1: &record}, nil
 	case 2:
-		var record AttachedWorkerOutputReceiptV2
-		if decodeOwnedEffectCanonicalJSON(string(payload), &record) != nil {
+		record, err := decodeInlineReceiptMetadataV2(payload)
+		if err != nil {
 			return zero, ErrAttachedWorkerAttemptConflict
 		}
 		return attachedWorkerReceiptEnvelope{v2: &record}, nil
 	default:
 		return zero, ErrAttachedWorkerAttemptConflict
 	}
+}
+
+// Keep the existing canonical-shape guard, but never feed it two escaped
+// copies of the large answer. Only exact original string tokens are projected;
+// field presence/null/array/case/numeric semantics remain the same. Decoding
+// content is allowed only after projection has bounded both original strings
+// and the complete document. This is not an authority/storage format. Do not
+// impose a smaller metadata ceiling: stored Usage/Substrate fields and harmless
+// JsonDocument whitespace/escaping retain their existing decoder semantics.
+func decodeInlineReceiptMetadataV2(payload []byte) (AttachedWorkerOutputReceiptV2, error) {
+	var record AttachedWorkerOutputReceiptV2
+	metadata, original, err := strictjson.ProjectStrings(payload, maxInlineReceiptRecordBytesV2, []strictjson.StringProjection{
+		{Path: []string{"candidate", "summary"}, MaxBytes: attachedworkeroutput.MaxInlineAnswerBytesV2},
+		{Path: []string{"materialization", "Completion", "Events", "0", "display_text"}, MaxBytes: attachedworkeroutput.MaxInlineAnswerBytesV2},
+	})
+	if err != nil {
+		return record, ErrAttachedWorkerAttemptConflict
+	}
+	defer func() { clear(metadata) }()
+	if decodeOwnedEffectCanonicalJSON(string(metadata), &record) != nil {
+		return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
+	}
+	clear(metadata)
+	metadata = nil
+	if original[0] != nil && json.Unmarshal(original[0], &record.Candidate.Summary) != nil {
+		return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
+	}
+	if original[1] != nil {
+		completion := record.Materialization.Completion
+		if completion == nil || len(completion.Events) == 0 || json.Unmarshal(original[1], &completion.Events[0].DisplayText) != nil {
+			return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
+		}
+	}
+	return record, nil
 }
 
 // The caller first validates the complete document's lexical limits and

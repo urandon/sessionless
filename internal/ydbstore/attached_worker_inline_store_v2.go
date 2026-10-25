@@ -266,9 +266,51 @@ func newInlineWriteIdentityV2() (string, error) {
 }
 
 func sameInlineReceiptV2(left, right AttachedWorkerOutputReceiptV2) bool {
+	// These are validated V2 records. Compare their two large UTF-8 contents
+	// directly before encoding metadata: two full JSON snapshots can exceed
+	// the entire invocation payload budget for an admitted escaped answer.
+	if left.Candidate.Summary != right.Candidate.Summary {
+		return false
+	}
+	l, r := left.Materialization.Completion, right.Materialization.Completion
+	if (l == nil) != (r == nil) {
+		return false
+	}
+	if l != nil {
+		if len(l.Events) != len(r.Events) {
+			return false
+		}
+		for i := range l.Events {
+			if l.Events[i].DisplayText != r.Events[i].DisplayText {
+				return false
+			}
+		}
+	}
+	left = inlineReceiptComparisonMetadataV2(left)
+	right = inlineReceiptComparisonMetadataV2(right)
 	a, ae := json.Marshal(left)
 	b, be := json.Marshal(right)
 	return ae == nil && be == nil && string(a) == string(b)
+}
+
+// This local comparison projection is never persisted or used as authority.
+// All other JSON identity semantics stay unchanged, including timestamps,
+// nil/empty slices, ignored fields and future metadata. Clone before clearing
+// contents so the original receipt and any shared aliases remain untouched.
+func inlineReceiptComparisonMetadataV2(record AttachedWorkerOutputReceiptV2) AttachedWorkerOutputReceiptV2 {
+	record.Candidate.Summary = ""
+	if original := record.Materialization.Completion; original != nil {
+		completion := *original
+		if original.Events != nil {
+			completion.Events = make([]domain.SessionEventDraft, len(original.Events))
+			copy(completion.Events, original.Events)
+			for i := range completion.Events {
+				completion.Events[i].DisplayText = ""
+			}
+		}
+		record.Materialization.Completion = &completion
+	}
+	return record
 }
 
 func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOutputReceiptV2, insert bool) error {

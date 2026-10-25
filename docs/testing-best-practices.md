@@ -213,10 +213,15 @@ GitHub CI has ten required jobs. Its 30-minute Go verification job runs
 with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
 position before build and integration. The base runs the
 first three original ordinary commands sequentially. A parallel 30-minute
-`go-local` job runs `make test-ordinary-ci-tail`, exactly the original fourth
-ordinary command over the same complete package patterns. Together these two
-CI partitions cover every original ordinary command exactly once, with unchanged
-selectors, race detection, `-count=1` and 15-minute per-binary bounds.
+`go-local` job runs `make test-ordinary-ci-tail` over the same complete package
+patterns in two sequential executions: `^TestLocalTerminal`, then `^TestLocal`
+excluding `^TestLocal(Session|Compaction|Terminal)`. These disjoint selections
+together cover exactly the original fourth ordinary command, including future
+families through the remainder. CI therefore has five ordinary executions;
+local/release retains four. No test is omitted or duplicated. Race detection,
+`-count=1`, 15-minute per-binary bounds and the 30-minute job ceiling are unchanged.
+This addresses an observed cumulative binary timeout, not an inference that
+the test named in its final stack was hung. Actual timings still qualify the split.
 Local/release `make test-ordinary` and `ci-core` retain the complete four-command
 ordinary contract. A parallel 30-minute `go-connected` job runs the two
 sequential normal executions over the same full package patterns, followed by

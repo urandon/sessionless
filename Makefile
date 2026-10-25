@@ -205,7 +205,8 @@ test-ordinary-ci-base: prepare fmt-check lint
 	go test -race -count=1 -timeout=15m -run='^TestLocalCompaction' $(GO_PACKAGE_PATTERNS)
 
 test-ordinary-ci-tail: prepare
-	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction)' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)
 
 test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)

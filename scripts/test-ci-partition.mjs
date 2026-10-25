@@ -25,6 +25,10 @@ const ordinary = [
   "go test -race -count=1 -timeout=15m -run='^TestLocalCompaction' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction)' $(GO_PACKAGE_PATTERNS)",
 ];
+const ordinaryTail = [
+  "go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)",
+  "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
+];
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
   assert.equal(matches.length, 1, `unique ${name} recipe`);
@@ -73,7 +77,7 @@ function verify({ make, ci, release }) {
   assert.deepEqual(assignment(make, 'GO_PACKAGE_PATTERNS'), words('./cmd/... ./internal/... ./migrations/...'), 'complete Go corpus');
   assert.equal(recipe(make, 'test-ordinary'), ordinary.join('\n\t'), 'exact sequential ordinary partition');
   assert.equal(recipe(make, 'test-ordinary-ci-base'), ordinary.slice(0, 3).join('\n\t'), 'exact CI base partition');
-  assert.equal(recipe(make, 'test-ordinary-ci-tail'), ordinary[3], 'exact CI tail partition');
+  assert.equal(recipe(make, 'test-ordinary-ci-tail'), ordinaryTail.join('\n\t'), 'exact CI tail partition');
   assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}\n\t$(MAKE) test-mcp-offline`, 'exact sequential connected partition');
   assert.deepEqual(target(make, 'test-mcp-offline'), ['prepare'], 'offline MCP preparation');
   assert.equal(recipe(make, 'test-mcp-offline'), [
@@ -155,15 +159,28 @@ test('ordered core expansion changes only the ordinary prerequisite for CI', () 
   assert.equal(local.indexOf('build') + 1, local.indexOf('integration'));
 });
 
-test('CI base and tail are a one-for-one complement of the complete local ordinary commands', () => {
+test('CI base and tail preserve the complete local ordinary coverage', () => {
   const commands = name => recipe(original.make, name).split('\n\t');
   const local = commands('test-ordinary');
   const base = commands('test-ordinary-ci-base');
   const tail = commands('test-ordinary-ci-tail');
   assert.deepEqual(base, local.slice(0, 3));
-  assert.deepEqual(tail, local.slice(3));
-  assert.deepEqual([...base, ...tail], ordinary);
-  assert.equal(new Set([...base, ...tail]).size, 4, 'no omitted or duplicate CI command');
+  assert.deepEqual(local, ordinary);
+  assert.deepEqual(tail, ordinaryTail);
+  assert.equal(new Set([...base, ...tail]).size, 5, 'no duplicate CI command');
+  for (const name of [
+    'TestLocal', 'TestLocalFuture', 'TestLocalTerminal', 'TestLocalTerminalFuture',
+    'TestLocalTerminalCompaction', 'TestLocalTerminalSession', 'TestLocalCompactionTerminal',
+    'TestLocalTerminalMCPV2FreshOwnerCompactionAndNextModel',
+    'TestLocalPrepared', 'TestLocalPreparedFuture', 'TestLocalCompaction',
+    'TestLocalCompactionFuture', 'TestLocalSession', 'TestLocalSessionTerminal',
+    'TestOther', 'Example', 'ExampleLocalTerminal', 'FuzzLocalTerminal',
+  ]) {
+    const originalTail = /^TestLocal/.test(name) && !/^TestLocal(Session|Compaction)/.test(name);
+    const terminal = /^TestLocalTerminal/.test(name);
+    const remainder = /^TestLocal/.test(name) && !/^TestLocal(Session|Compaction|Terminal)/.test(name);
+    assert.equal(Number(terminal) + Number(remainder), Number(originalTail), `${name}: exact original tail union`);
+  }
 });
 
 test('offline MCP overlay adds only two absent test fixture files', () => {
@@ -218,6 +235,11 @@ test('ordinary selectors and connected selectors partition the complete test-nam
   }
 });
 const mutations = [
+  ['missing tail remainder', 'make', `${ordinaryTail[1]}\n`, '', /exact CI tail partition/],
+  ['duplicate tail remainder', 'make', ordinaryTail.join('\n\t'), `${ordinaryTail.join('\n\t')}\n\t${ordinaryTail[1]}`, /exact CI tail partition/],
+  ['reversed tail halves', 'make', ordinaryTail.join('\n\t'), [...ordinaryTail].reverse().join('\n\t'), /exact CI tail partition/],
+  ['tail halves overlap', 'make', ordinaryTail[1], ordinaryTail[1].replace('|Terminal', ''), /exact CI tail partition/],
+  ['terminal family gap', 'make', ordinaryTail[0], ordinaryTail[0].replace("^TestLocalTerminal", "^TestLocalTerminalMCP"), /exact CI tail partition/],
   ['missing core check', 'make', 'CI_CORE_CHECKS := docs-check ', 'CI_CORE_CHECKS := ', /complete core prerequisites/],
   ['missing local ordinary core prerequisite', 'make', 'ci-core: $(CI_CORE_CHECKS)', 'ci-core:', /complete local core variant/],
   ['missing CI base prerequisite', 'make', `ci-core-base: ${ciCoreBasePrerequisites}`, 'ci-core-base: $(CI_CORE_CHECKS)', /complete CI core variant/],
@@ -341,7 +363,7 @@ for (const [half, command] of [['terminal', connectedTerminal], ['other', connec
 }
 for (const [name, commands, prerequisites, expected] of [
   ['test-ordinary-ci-base', ordinary.slice(0, 3), 'prepare fmt-check lint', /exact CI base partition/],
-  ['test-ordinary-ci-tail', ordinary.slice(3), 'prepare', /exact CI tail partition/],
+  ['test-ordinary-ci-tail', ordinaryTail, 'prepare', /exact CI tail partition/],
 ]) {
   const before = `${name}: ${prerequisites}\n\t${commands.join('\n\t')}\n`;
   mutations.push([`${name} missing command`, 'make', before,

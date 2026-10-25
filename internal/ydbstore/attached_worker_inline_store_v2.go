@@ -127,19 +127,25 @@ func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobSt
 	defer cancel()
 	var content []byte
 	if !answerOnly {
-		content, err = io.ReadAll(io.LimitReader(body, length+1))
-		defer clear(content)
-		if err != nil || int64(len(content)) != length || bounded.Err() != nil {
+		content, err = readExactReceiptBytes(bounded, body, length, attachedworkeroutput.MaxInlineTotalBytesV2)
+		defer func() { clear(content) }()
+		if err != nil || bounded.Err() != nil {
 			return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 		}
 	}
 	verified, err := attachedworkeroutput.VerifyInlineV2(r.Candidate, content)
+	clear(content)
+	content = nil
 	if err != nil {
 		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	defer verified.Clear()
-	planned := &plannedReceiptBlobs{upstream: blobs}
+	planned := &plannedReceiptBlobs{upstream: blobs, maxBytes: 320 << 10}
 	materialization, err := attachedworkeroutput.MaterializeInlineV2(bounded, planned, loaded, r.Binding.LeaseID, r.Binding.LeaseGeneration, verified, r.CreatedAt)
+	// This owner was created from the received server body, not the private
+	// native result retained through TerminalAck. Materialization has copied its
+	// bytes into the canonical plan; no transition needs this temporary copy.
+	verified.Clear()
 	if err != nil {
 		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
@@ -169,6 +175,7 @@ func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobSt
 	if err = planned.Commit(bounded); err != nil {
 		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
+	planned.clearBodies()
 	ready := prepared
 	ready.Stage = attachedworkeroutput.InlineReadyV2
 	if err = store.transitionInlineReceiptV2(bounded, request.Authorization, prepared, ready); err != nil {
@@ -315,6 +322,7 @@ func inlineReceiptComparisonMetadataV2(record AttachedWorkerOutputReceiptV2) Att
 
 func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOutputReceiptV2, insert bool) error {
 	encoded, err := json.Marshal(r)
+	defer clear(encoded)
 	if err != nil || len(encoded) > maxInlineReceiptRecordBytesV2 {
 		return ErrAttachedWorkerAttemptConflict
 	}
@@ -322,10 +330,10 @@ func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOu
 	if insert {
 		_, err = tx.sqlTx.ExecContext(ctx, `INSERT INTO attached_worker_output_receipts
  (tenant_id,run_id,owner_user_id,worker_id,attempt_id,lease_generation,canonical_digest,candidate_fingerprint,created_at,payload)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument))`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, r.CandidateFingerprint, r.CreatedAt, string(encoded))
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument))`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, r.CandidateFingerprint, r.CreatedAt, encoded)
 	} else {
 		_, err = tx.sqlTx.ExecContext(ctx, `UPDATE attached_worker_output_receipts SET canonical_digest=$7,payload=CAST($8 AS JsonDocument)
- WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, string(encoded))
+ WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, encoded)
 	}
 	return err
 }

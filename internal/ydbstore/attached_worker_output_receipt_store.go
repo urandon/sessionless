@@ -482,7 +482,10 @@ func readAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, run dom
 func readAttachedWorkerReceiptEnvelopeTx(ctx context.Context, tx *stateTx, run domain.RunID, owner domain.UserID,
 	worker domain.AttachedWorkerID, attempt domain.AttemptID, generation uint64,
 ) (record attachedWorkerReceiptEnvelope, found bool, err error) {
-	var payload string
+	// JsonDocument is a driver []byte. Scan owns one copy directly, avoiding
+	// an intermediate string and another full document conversion.
+	var payload []byte
+	defer func() { clear(payload) }()
 	err = tx.sqlTx.QueryRowContext(ctx,
 		`SELECT payload FROM attached_worker_output_receipts
 		 WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`,
@@ -494,7 +497,9 @@ func readAttachedWorkerReceiptEnvelopeTx(ctx context.Context, tx *stateTx, run d
 	if err != nil {
 		return record, false, err
 	}
-	record, err = decodeAttachedWorkerReceiptEnvelope([]byte(payload))
+	record, err = decodeAttachedWorkerReceiptEnvelope(payload)
+	clear(payload)
+	payload = nil
 	if err != nil {
 		return record, false, err
 	}

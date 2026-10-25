@@ -132,11 +132,18 @@ type inlineNativeBlobsV2 struct {
 	copyDigest     domain.AttachedWorkerTerminalEvidenceDigest
 	checkedPuts    int
 	loseFirstReply bool
+	beforePut      func() error
+	borrowedBodies []*bytes.Reader
 }
 
 var errInlineNativeLostPutV2 = errors.New("controlled lost native blob Put acknowledgement")
 
 func (b *inlineNativeBlobsV2) Put(ctx context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
+	if b.beforePut != nil {
+		if err := b.beforePut(); err != nil {
+			return domain.BlobRef{}, err
+		}
+	}
 	// A separate DB read must see the COMMITTED canonical plan before even
 	// consuming this first physical peer Put's bytes. No fake SQL callback.
 	record, err := readInlineNativeReceiptV2(ctx, b.db, b.auth)
@@ -170,6 +177,9 @@ func (b *inlineNativeBlobsV2) Put(ctx context.Context, tenant domain.TenantID, k
 	}
 	b.copyOwner, b.copyDigest = record.CopyOwnerID, record.CanonicalDigest
 	b.checkedPuts++
+	if borrowed, ok := body.(*bytes.Reader); ok {
+		b.borrowedBodies = append(b.borrowedBodies, borrowed)
+	}
 	lose := b.loseFirstReply && b.checkedPuts == 1
 	b.mu.Unlock()
 	ref, err := b.attachedHistoryNativeBlobs.Put(ctx, tenant, key, body)
@@ -195,6 +205,7 @@ type inlineNativeClaimReaderV2 struct {
 	start    sync.Once
 	release  sync.Once
 	claimErr error
+	borrowed [][]byte
 }
 
 func (r *inlineNativeClaimReaderV2) Read(p []byte) (int, error) {
@@ -214,7 +225,11 @@ func (r *inlineNativeClaimReaderV2) Read(p []byte) (int, error) {
 	if r.claimErr != nil {
 		return 0, r.claimErr
 	}
-	return r.body.Read(p)
+	n, err := r.body.Read(p)
+	if n > 0 {
+		r.borrowed = append(r.borrowed, p[:n])
+	}
+	return n, err
 }
 
 type inlineNativeDeniedReaderV2 struct{ reads int }
@@ -231,6 +246,22 @@ func TestAttachedInlineOutputYDBClaimAndWriteCustody(t *testing.T) {
 		t.Fatalf("duplicate native Prepare minted another capability: %v", err)
 	}
 	reader := &inlineNativeClaimReaderV2{ctx: f.ctx, db: f.db, auth: request.Authorization, nonce: request.Nonce, fp: request.Fingerprint, body: bytes.NewReader(f.body), entered: make(chan struct{}), observed: make(chan error, 1), resume: make(chan struct{})}
+	f.blobs.beforePut = func() error {
+		// Executed by the SAME handler after body reading/materialization, not
+		// a polling goroutine. Borrowed probe references deliberately keep its
+		// read buffer reachable: this proves erasure, not heap/GC reclamation.
+		total := 0
+		for _, raw := range reader.borrowed {
+			total += len(raw)
+			if cap(raw) > len(f.body) || !bytes.Equal(raw, make([]byte, len(raw))) {
+				return errors.New("raw native request copy survived until physical Put or exceeded exact capacity")
+			}
+		}
+		if total != len(f.body) {
+			return errors.New("raw native request erasure probe missed original bytes")
+		}
+		return nil
+	}
 	type outcome struct {
 		result attachedworkeroutput.AttachedWorkerInlineResultV2
 		err    error
@@ -284,6 +315,21 @@ func TestAttachedInlineOutputYDBClaimAndWriteCustody(t *testing.T) {
 	if completed.err != nil || completed.result.Stage != attachedworkeroutput.InlineReadyV2 || completed.result.Capability != "" || completed.result.CanonicalDigest == "" || f.blobs.writes() != [2]uint64{2, 0} {
 		t.Fatalf("native canonical promotion: stage=%s writes=%v err=%v", completed.result.Stage, f.blobs.writes(), completed.err)
 	}
+	f.blobs.mu.Lock()
+	if len(f.blobs.borrowedBodies) != 2 {
+		t.Error("successful native copy did not observe both original planned readers")
+	}
+	for _, retained := range f.blobs.borrowedBodies {
+		if _, err := retained.Seek(0, io.SeekStart); err != nil {
+			t.Error(err)
+			continue
+		}
+		raw, err := io.ReadAll(retained)
+		if err != nil || len(raw) == 0 || !bytes.Equal(raw, make([]byte, len(raw))) {
+			t.Error("server planner copy remained after successful writes/rereads", err)
+		}
+	}
+	f.blobs.mu.Unlock()
 	record, err := readInlineNativeReceiptV2(f.ctx, f.db, request.Authorization)
 	if err != nil || record.Stage != attachedworkeroutput.InlineReadyV2 || record.CanonicalDigest != completed.result.CanonicalDigest || record.CopyOwnerID != f.blobs.copyOwner {
 		t.Fatalf("native READY did not retain original committed copy identity: stage=%s err=%v", record.Stage, err)
@@ -327,6 +373,18 @@ func TestAttachedInlineOutputYDBAmbiguousPutRetainsCustody(t *testing.T) {
 	if !errors.Is(err, errInlineNativeLostPutV2) || f.blobs.writes() != [2]uint64{1, 0} {
 		t.Fatalf("native ambiguous Put was hidden or repeated: writes=%v err=%v", f.blobs.writes(), err)
 	}
+	f.blobs.mu.Lock()
+	if len(f.blobs.borrowedBodies) != 1 {
+		t.Error("ambiguous Put did not retain exactly its original reader")
+	} else {
+		retained := f.blobs.borrowedBodies[0]
+		if _, seekErr := retained.Seek(0, io.SeekStart); seekErr != nil {
+			t.Error(seekErr)
+		} else if raw, readErr := io.ReadAll(retained); readErr != nil || !bytes.Equal(raw, f.body) {
+			t.Error("ambiguous Put borrowed reader was erased without quiescence", readErr)
+		}
+	}
+	f.blobs.mu.Unlock()
 	before, err := readInlineNativeReceiptV2(f.ctx, f.db, request.Authorization)
 	if err != nil || before.Stage != attachedworkeroutput.InlineCanonicalCopyingV2 || before.CopyOwnerID != f.blobs.copyOwner || before.CanonicalDigest != f.blobs.copyDigest {
 		t.Fatalf("native ambiguous Put lost durable writer custody: stage=%s err=%v", before.Stage, err)

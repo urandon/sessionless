@@ -208,13 +208,22 @@ selections; both connected executions explicitly disable result caching. The CI 
 30-minute budget is unchanged and still needs actual verification. See the Go
 command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
 
-GitHub CI has nine required jobs. Its Go verification job runs `make ci-core`,
-including `test-ordinary`; a parallel 30-minute `go-connected` job runs the two
+GitHub CI has ten required jobs. Its 30-minute Go verification job runs
+`make ci-core-base`: the same canonical ordered prerequisite list as `ci-core`,
+with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
+position before build and integration. The base runs the
+first three original ordinary commands sequentially. A parallel 30-minute
+`go-local` job runs `make test-ordinary-ci-tail`, exactly the original fourth
+ordinary command over the same complete package patterns. Together these two
+CI partitions cover every original ordinary command exactly once, with unchanged
+selectors, race detection, `-count=1` and 15-minute per-binary bounds.
+Local/release `make test-ordinary` and `ci-core` retain the complete four-command
+ordinary contract. A parallel 30-minute `go-connected` job runs the two
 sequential normal executions over the same full package patterns, followed by
 the bounded additive MCP offline gate in `make test-connected`. It needs no Web build:
-the committed embed placeholder suffices for compilation. Neither job requires
+the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
-join both Go jobs, preserving their original complete-unit-test predecessor.
+join all three Go jobs, preserving their original complete-unit-test predecessor.
 The unchanged offline
 `attached-worker-security-gate`, including both crash/restart prerequisites,
 and the complete unchanged `serverless-egress-conformance` target run in the
@@ -222,9 +231,11 @@ existing isolated YDB security job before that job starts YDB.
 That offline step removes the job's YDB connection and credential environment
 variables. Local and release `make ci` still require core, connected tests and
 both offline gates. Images retain all seven original predecessors and also
-require `go-connected`. `make ci-partition-test` checks the partition's static coverage.
+require `go-connected` and `go-local`. `make ci-partition-test` checks exact local
+and CI complements, original core prerequisite order and its sole substitution,
+and the complete dependency graph.
 The 25-minute isolated-job bound is unchanged: actual exact-head CI must prove
-both parallel 30-minute jobs and the relocated checks/native gates fit on a cold
+all three parallel 30-minute Go jobs and the checks/native gates fit on a cold
 cache miss; the partition alone is not proof. No previous-head CI qualifies a
 changed graph.
 

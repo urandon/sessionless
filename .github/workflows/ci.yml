@@ -42,7 +42,24 @@ jobs:
         run: npm install --global npm@11.17.0
 
       - name: Run repository CI contract
-        run: make ci-core
+        run: make ci-core-base
+
+  go-local:
+    name: Go ordinary local-tail verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run ordinary local-tail tests over all packages
+        run: make test-ordinary-ci-tail
 
   go-connected:
     name: Go connected-session verification
@@ -87,7 +104,7 @@ jobs:
 
   ydb:
     name: YDB schema and state store
-    needs: [verify, go-connected]
+    needs: [verify, go-connected, go-local]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -156,7 +173,7 @@ jobs:
 
   ydb-security-isolated:
     name: Attached-worker isolated YDB security gate
-    needs: [verify, go-connected]
+    needs: [verify, go-connected, go-local]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -212,7 +229,7 @@ jobs:
 
   local-stand:
     name: Local multi-service stand
-    needs: [verify, go-connected]
+    needs: [verify, go-connected, go-local]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -242,7 +259,7 @@ jobs:
 
   terraform:
     name: Terraform environments
-    needs: [verify, go-connected]
+    needs: [verify, go-connected, go-local]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -283,6 +300,7 @@ jobs:
     needs:
       - verify
       - go-connected
+      - go-local
       - ydb
       - ydb-security-isolated
       - local-stand

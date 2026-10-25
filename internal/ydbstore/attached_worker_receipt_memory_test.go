@@ -172,10 +172,12 @@ func TestInlineReceiptPlannerAdmitsSizeBeforeRead(t *testing.T) {
 
 type receiptMemorySQL struct {
 	*ratedSQLFixture
-	payload     []byte
-	borrowedArg []byte
-	written     []byte
-	execErr     error
+	payload    []byte
+	written    []byte
+	execErr    error
+	execCalls  int
+	duringExec func([]byte) error
+	discard    bool
 }
 
 func (f *receiptMemorySQL) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -189,12 +191,21 @@ func (f *receiptMemorySQL) ExecContext(_ context.Context, statement string, args
 	if !strings.Contains(statement, "attached_worker_output_receipts") || !strings.Contains(statement, "AS JsonDocument)") {
 		return nil, errors.New("unexpected SQL write")
 	}
-	var ok bool
-	f.borrowedArg, ok = args[len(args)-1].Value.([]byte)
+	f.execCalls++
+	payload, ok := args[len(args)-1].Value.([]byte)
 	if !ok {
 		return nil, errors.New("receipt payload acquired an extra string representation")
 	}
-	f.written = bytes.Clone(f.borrowedArg)
+	// The driver borrows this parameter only until Exec returns. Retain a
+	// test-owned copy, never the Encoder's pooled buffer or an interior view.
+	if !f.discard {
+		f.written = bytes.Clone(payload)
+	}
+	if f.duringExec != nil {
+		if err := f.duringExec(payload); err != nil {
+			return nil, err
+		}
+	}
 	if f.execErr != nil {
 		return nil, f.execErr
 	}
@@ -225,17 +236,17 @@ func TestInlineReceiptSQLUsesOwnedBytePayload(t *testing.T) {
 	if err != nil || !found || got.v2 == nil || !sameInlineReceiptV2(r, *got.v2) || !bytes.Equal(raw, fixture.payload) {
 		t.Fatal("SQL byte scan changed valid receipt or borrowed driver buffer", err)
 	}
-	for _, insert := range []bool{true, false} {
+	for i, insert := range []bool{true, false} {
 		if err := writeInlineReceiptTxV2(t.Context(), state, r, insert); err != nil {
 			t.Fatal("byte receipt write failed", err)
 		}
-		if !bytes.Equal(fixture.written, raw) || !bytes.Equal(fixture.borrowedArg, make([]byte, len(fixture.borrowedArg))) {
-			t.Fatal("SQL payload semantics changed or owned encode copy was retained")
+		if !bytes.Equal(fixture.written, raw) || fixture.execCalls != i+1 {
+			t.Fatal("SQL payload semantics or single-Exec ownership changed")
 		}
 	}
 	fixture.execErr = io.ErrClosedPipe
-	if err := writeInlineReceiptTxV2(t.Context(), state, r, false); !errors.Is(err, io.ErrClosedPipe) || !bytes.Equal(fixture.borrowedArg, make([]byte, len(fixture.borrowedArg))) {
-		t.Fatal("failed SQL write lost cause or retained owned encoded payload", err)
+	if err := writeInlineReceiptTxV2(t.Context(), state, r, false); !errors.Is(err, io.ErrClosedPipe) || fixture.execCalls != 3 {
+		t.Fatal("failed SQL write lost cause or repeated Exec", err)
 	}
 	clear(fixture.payload)
 	if got.v2.Candidate.Summary != r.Candidate.Summary || got.v2.Materialization.Completion.Events[0].DisplayText != r.Materialization.Completion.Events[0].DisplayText {
@@ -257,6 +268,180 @@ func TestInlineReceiptSQLUsesOwnedBytePayload(t *testing.T) {
 	if old.v1.Materialization.Completion.Events[0].DisplayText != r.Candidate.Summary {
 		t.Fatal("legacy typed receipt borrowed driver payload content")
 	}
+}
+
+func openReceiptMemoryWriterTx(t *testing.T) (*receiptMemorySQL, *stateTx) {
+	t.Helper()
+	f := &receiptMemorySQL{ratedSQLFixture: new(ratedSQLFixture)}
+	db := sql.OpenDB(f)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	return f, &stateTx{sqlTx: tx}
+}
+
+func maximumInlineArtifactSQLFixtureV2(t *testing.T) AttachedWorkerOutputReceiptV2 {
+	t.Helper()
+	r := maximumInlineIdentityFixtureV2(t)
+	_, loaded, _ := inlineReceiptFixtureV2(t)
+	body := make([]byte, 0, attachedworkeroutput.MaxInlineTotalBytesV2)
+	for i, name := range []string{strings.Repeat("<", 255), strings.Repeat(">", 255)} {
+		content := bytes.Repeat([]byte{byte('a' + i)}, attachedworkeroutput.MaxInlineArtifactBytesV2)
+		sum := sha256.Sum256(content)
+		r.Candidate.Artifacts = append(r.Candidate.Artifacts, attachedworkeroutput.InlineArtifactV2{Name: name,
+			MediaType: "text/plain", Size: uint64(len(content)), SHA256: hex.EncodeToString(sum[:])})
+		body = append(body, content...)
+		clear(content)
+	}
+	defer clear(body)
+	verified, err := attachedworkeroutput.VerifyInlineV2(r.Candidate, body)
+	if err != nil {
+		t.Fatal("maximum two-artifact input", err)
+	}
+	defer verified.Clear()
+	planned := new(plannedReceiptBlobs)
+	t.Cleanup(func() { planned.clearBodies() })
+	r.Materialization, err = attachedworkeroutput.MaterializeInlineV2(t.Context(), planned, loaded, r.Binding.LeaseID, r.Binding.LeaseGeneration, verified, r.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.CandidateFingerprint, err = inlineReceiptPlanFingerprintV2(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.CanonicalDigest, err = attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, r.Materialization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Materialization.EvidenceDigest = r.CanonicalDigest
+	if err := validateInlineFixtureV2(r); err != nil {
+		t.Fatal("maximum two-artifact receipt is not identity-valid", err)
+	}
+	return r
+}
+
+func TestInlineReceiptSQLEncoderMatchesMarshal(t *testing.T) {
+	for _, name := range []string{"prepared", "claimed", "copying", "ready", "retired", "maximum", "maximum_artifacts", "encoding_error", "oversized"} {
+		t.Run(name, func(t *testing.T) {
+			r := inlineCanonicalFixtureV2(t)
+			switch name {
+			case "prepared", "claimed", "retired":
+				r, _, _ = inlineReceiptFixtureV2(t)
+				if name != "prepared" {
+					r.Stage, r.BodyClaimID = attachedworkeroutput.InlineBodyClaimedV2, strings.Repeat("c", 64)
+				}
+				if name == "retired" {
+					r.Stage = attachedworkeroutput.InlineRetiredWithoutWritesV2
+				}
+			case "ready":
+				r.Stage = attachedworkeroutput.InlineReadyV2
+			case "maximum":
+				r = maximumInlineIdentityFixtureV2(t)
+			case "maximum_artifacts":
+				r = maximumInlineArtifactSQLFixtureV2(t)
+			case "encoding_error":
+				r.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+			case "oversized":
+				r.Candidate.Summary = strings.Repeat("<", maxInlineReceiptRecordBytesV2/6)
+			}
+			raw, marshalErr := json.Marshal(r)
+			f, state := openReceiptMemoryWriterTx(t)
+			for _, insert := range []bool{true, false} {
+				before := f.execCalls
+				err := writeInlineReceiptTxV2(t.Context(), state, r, insert)
+				if marshalErr != nil || len(raw) > maxInlineReceiptRecordBytesV2 {
+					if !errors.Is(err, ErrAttachedWorkerAttemptConflict) || f.execCalls != before {
+						t.Fatal("encoding/size denial reached SQL", err, f.execCalls-before)
+					}
+				} else if err != nil || f.execCalls != before+1 || !bytes.Equal(f.written, raw) {
+					t.Fatal("Encoder changed Marshal bytes or single Exec", err, f.execCalls-before)
+				}
+			}
+		})
+	}
+}
+
+func TestInlineReceiptSQLWriterBorrowAndOneShot(t *testing.T) {
+	for _, name := range []string{"exact_cap", "oversized", "missing_lf", "empty", "sql_error", "canceled"} {
+		t.Run(name, func(t *testing.T) {
+			f, state := openReceiptMemoryWriterTx(t)
+			p := []byte("{\"answer\":\"<>&\\n\\u2028\"}\n")
+			switch name {
+			case "exact_cap", "oversized":
+				size := maxInlineReceiptRecordBytesV2
+				if name == "oversized" {
+					size++
+				}
+				p = []byte("\"" + strings.Repeat("x", size-2) + "\"\n")
+			case "missing_lf":
+				p = p[:len(p)-1]
+			case "empty":
+				p = nil
+			case "sql_error":
+				f.execErr = io.ErrClosedPipe
+			}
+			original := bytes.Clone(p)
+			f.duringExec = func(payload []byte) error {
+				if len(payload) != len(p)-1 || &payload[0] != &p[0] || !bytes.Equal(payload, original[:len(original)-1]) {
+					return errors.New("SQL copied or modified the borrowed complete payload")
+				}
+				return nil
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if name == "canceled" {
+				cancel()
+			}
+			w := inlineReceiptSQLWriterV2{ctx: ctx, tx: state}
+			n, err := w.Write(p)
+			wantCalls := 1
+			var wantErr error
+			switch name {
+			case "oversized", "missing_lf", "empty":
+				wantCalls, wantErr = 0, ErrAttachedWorkerAttemptConflict
+			case "sql_error":
+				wantErr = io.ErrClosedPipe
+			case "canceled":
+				wantCalls, wantErr = 0, context.Canceled
+			}
+			if !errors.Is(err, wantErr) || f.execCalls != wantCalls || !bytes.Equal(p, original) || (err == nil && n != len(p)) || (err != nil && n != 0) {
+				t.Fatalf("borrowed write: n=%d err=%v calls=%d wantErr=%v wantCalls=%d", n, err, f.execCalls, wantErr, wantCalls)
+			}
+			if n, err := w.Write([]byte("{}\n")); n != 0 || !errors.Is(err, ErrAttachedWorkerAttemptConflict) || f.execCalls != wantCalls {
+				t.Fatal("second Write reacquired SQL mutation", n, err, f.execCalls)
+			}
+		})
+	}
+}
+
+func TestInlineReceiptSQLSerializationAllocationEvidence(t *testing.T) {
+	r := maximumInlineArtifactSQLFixtureV2(t)
+	f, state := openReceiptMemoryWriterTx(t)
+	f.discard = true
+	var bytesSeen int
+	f.duringExec = func(p []byte) error {
+		bytesSeen = len(p)
+		_ = sha256.Sum256(p)
+		return nil
+	}
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := writeInlineReceiptTxV2(t.Context(), state, r, false); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// Evidence only: pooled capacity depends on other JSON and race-detector
+	// pool eviction. This is not an aggregate peak or zeroization assertion.
+	t.Logf("SQL serialization allocated=%d B/op, payload=%d B; not aggregate memory proof", result.AllocedBytesPerOp(), bytesSeen)
 }
 
 type receiptMemoryReadback struct {

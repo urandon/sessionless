@@ -133,7 +133,7 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 			// Allocate one bounded read buffer at its declared size, instead of
 			// io.ReadAll's growth capacity above the admitted control ceiling.
 			raw := make([]byte, int(r.ContentLength))
-			defer clear(raw)
+			defer func() { clear(raw) }()
 			_, readErr := io.ReadFull(r.Body, raw)
 			if readErr != nil {
 				inlineHTTPErrorV2(w, ErrInvalid)
@@ -152,6 +152,12 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 					inlineHTTPErrorV2(w, ErrInvalid)
 					return
 				}
+				// Typed strings own their decoded content. Erase and release the
+				// encoded request before synchronous answer-only materialization
+				// can allocate canonical plans/SQL read buffers. The deferred
+				// closure captures this variable, not the old backing array.
+				clear(raw)
+				raw = nil
 				if input.ExpiresAt.IsZero() {
 					inlineHTTPErrorV2(w, ErrInvalid)
 					return
@@ -176,6 +182,8 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 					inlineHTTPErrorV2(w, ErrInvalid)
 					return
 				}
+				clear(raw)
+				raw = nil
 				result, err = service.Reconcile(ctx, bearer, input)
 			}
 		}

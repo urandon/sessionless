@@ -19,7 +19,9 @@ func maximumInlineIdentityFixtureV2(t *testing.T) AttachedWorkerOutputReceiptV2 
 	r, loaded, _ := inlineReceiptFixtureV2(t)
 	// Both byte and rune maxima are admitted. Every rune needs six JSON
 	// bytes, while a native final can retain the literal UTF-8 representation.
-	r.Candidate.Summary = strings.Repeat("<", 31_616) + strings.Repeat("\u2028", 384)
+	// Keep Unicode whitespace inside the answer: TrimSpace must not reduce
+	// the canonical DisplayText while exercising the full escaped maximum.
+	r.Candidate.Summary = strings.Repeat("<", 15_808) + strings.Repeat("\u2028", 384) + strings.Repeat("<", 15_808)
 	r.Candidate.Artifacts = nil
 	if len(r.Candidate.Summary) != 32<<10 || utf8.RuneCountInString(r.Candidate.Summary) != 32_000 || r.Candidate.Validate() != nil {
 		t.Fatal("maximum valid semantic answer fixture")

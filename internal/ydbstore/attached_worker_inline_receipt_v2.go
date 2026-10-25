@@ -1,6 +1,7 @@
 package ydbstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -66,17 +67,8 @@ func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptE
 	if strictjson.ValidateDocument(payload, maxInlineReceiptRecordBytesV2, 64, maxInlineReceiptRecordBytesV2) != nil {
 		return zero, ErrAttachedWorkerAttemptConflict
 	}
-	var header map[string]json.RawMessage
-	if json.Unmarshal(payload, &header) != nil {
-		return zero, ErrAttachedWorkerAttemptConflict
-	}
-	for name := range header {
-		if strings.EqualFold(name, "version") && name != "version" {
-			return zero, ErrAttachedWorkerAttemptConflict
-		}
-	}
-	var version uint32
-	if raw, exists := header["version"]; !exists || json.Unmarshal(raw, &version) != nil {
+	version, err := attachedWorkerReceiptVersion(payload)
+	if err != nil {
 		return zero, ErrAttachedWorkerAttemptConflict
 	}
 	switch version {
@@ -95,6 +87,47 @@ func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptE
 	default:
 		return zero, ErrAttachedWorkerAttemptConflict
 	}
+}
+
+// The caller first validates the complete document's lexical limits and
+// duplicates. Version dispatch is not canonical-shape or identity validation.
+func attachedWorkerReceiptVersion(payload []byte) (uint32, error) {
+	// Values consume only a tiny scalar probe, not a RawMessage copy of each
+	// candidate/materialization. The complete typed/closed-shape decoder below
+	// remains the authority; this map only selects its explicit version.
+	var header map[string]attachedWorkerReceiptVersionProbe
+	if json.Unmarshal(payload, &header) != nil {
+		return 0, ErrAttachedWorkerAttemptConflict
+	}
+	for name := range header {
+		if strings.EqualFold(name, "version") && name != "version" {
+			return 0, ErrAttachedWorkerAttemptConflict
+		}
+	}
+	version, exists := header["version"]
+	if !exists || !version.valid {
+		return 0, ErrAttachedWorkerAttemptConflict
+	}
+	return version.value, nil
+}
+
+type attachedWorkerReceiptVersionProbe struct {
+	value uint32
+	valid bool
+}
+
+func (p *attachedWorkerReceiptVersionProbe) UnmarshalJSON(raw []byte) error {
+	*p = attachedWorkerReceiptVersionProbe{}
+	raw = bytes.TrimSpace(raw)
+	// Ignore non-numeric values without decoding/retaining their content.
+	// Preserve uint32's old null->zero behavior; zero is still an unsupported
+	// envelope version. No raw slice escapes this callback.
+	if bytes.Equal(raw, []byte("null")) {
+		p.valid = true
+	} else if len(raw) > 0 && raw[0] >= '0' && raw[0] <= '9' {
+		p.valid = json.Unmarshal(raw, &p.value) == nil
+	}
+	return nil
 }
 
 func (record attachedWorkerReceiptEnvelope) binding() ports.AttachedWorkerSealedInputAuthorization {

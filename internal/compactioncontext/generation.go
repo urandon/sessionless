@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
@@ -49,6 +50,7 @@ type ParentV1 struct {
 	CoveredSourceIDs    []string
 	ProtectedSourceIDs  []string
 	CompatibilityDigest string
+	version             uint32
 }
 
 type historicalFrameV1 struct {
@@ -81,6 +83,7 @@ type GenerationV1 struct {
 	canonicalDigest       string
 	parentPlan            *domain.DerivedContextPlanV1
 	closure               uint32
+	version               uint32
 }
 
 func (GenerationV1) String() string               { return "CompactionGenerationV1{content:[redacted]}" }
@@ -143,6 +146,14 @@ type generationSourceV1 struct {
 // prompt, native transcript, fit assertion or restored effect permission.
 func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
 	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1) (*generationSourceV1, error) {
+	return buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, history, nil)
+}
+
+func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1, route *contextRouteV2) (*generationSourceV1, error) {
+	if route == nil && parent != nil && parent.version == 2 {
+		return nil, ErrCanonical
+	}
 	if profile.Validate() != nil || limits.Validate() != nil || policy.Validate() != nil || domain.ValidateSHA256Digest("compaction.source", sourceDigest) != nil ||
 		policy.InstructionVersion != InstructionVersionV1 || policy.CompactionPolicyDigest != CompactionPolicyDigestV1() ||
 		policy.TenantID != profile.TenantID || policy.OwnerUserID != profile.OwnerUserID || policy.ModelVendorID != profile.ModelVendorID || policy.ModelID != profile.ModelID ||
@@ -203,9 +214,67 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		}
 		byAnchor[old.Anchor] = old
 	}
+	type historicalV2Frames struct {
+		frames  []historicalFrameV1
+		sources []retainedSourceV1
+	}
+	byAnchorV2 := make(map[domain.SessionEventID]historicalV2Frames)
+	beforeV2 := make(map[domain.SessionEventID]historicalV2Frames)
+	if route != nil {
+		if len(route.history)+len(history) > len(records) {
+			return nil, ErrCanonical
+		}
+		seenScopes := make(map[domain.AttemptOperationScopeV1]bool)
+		for _, old := range history {
+			seenScopes[old.Scope] = true
+		}
+		historyBudget := MaxBytesV1
+		for _, old := range route.history {
+			if old.Scope.Validate() != nil || old.Anchor.Validate() != nil || len(old.Operations) < 3 || len(old.Operations) > 12 || len(old.ConservativeMCP) > 4 || len(old.Projections) < 3 || len(old.Projections) > 9 {
+				return nil, ErrCanonical
+			}
+			if _, exists := byAnchorV2[old.Anchor]; exists || seenScopes[old.Scope] || old.Scope.RunID == policy.RunID {
+				return nil, ErrCanonical
+			}
+			if _, exists := byAnchor[old.Anchor]; exists {
+				return nil, ErrCanonical
+			}
+			seenScopes[old.Scope] = true
+			for _, item := range old.Operations {
+				if !take(&historyBudget, uint64(len(item.Normalized))) {
+					return nil, ErrCanonical
+				}
+			}
+			f, r, err := route.historical(profile, old, records)
+			if err != nil {
+				return nil, ErrCanonical
+			}
+			byAnchorV2[old.Anchor] = historicalV2Frames{}
+			for i, frame := range f {
+				at := old.Anchor
+				for _, projection := range old.Projections {
+					if projection.OperationSequence > frame.Sequence {
+						at = projection.EventID
+						break
+					}
+				}
+				slot := beforeV2[at]
+				slot.frames, slot.sources = append(slot.frames, frame), append(slot.sources, r[i])
+				beforeV2[at] = slot
+			}
+		}
+	}
 	starts := make([]int, len(records)+1)
 	for index, record := range records {
 		starts[index] = len(frames)
+		if prior, ok := beforeV2[record.Event.ID]; ok {
+			frames, sources = append(frames, prior.frames...), append(sources, prior.sources...)
+			delete(beforeV2, record.Event.ID)
+		}
+		if old, ok := byAnchorV2[record.Event.ID]; ok {
+			frames, sources = append(frames, old.frames...), append(sources, old.sources...)
+			delete(byAnchorV2, record.Event.ID)
+		}
 		if old, ok := byAnchor[record.Event.ID]; ok {
 			if record.Event.Kind != domain.SessionEventAssistantMessage || record.Event.RunID == nil || *record.Event.RunID != old.Scope.RunID {
 				return nil, ErrCanonical
@@ -246,9 +315,27 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			value := *event.RunID
 			event.RunID = &value
 		}
-		sources = append(sources, retainedSourceV1{SourceID: key, Canonical: &event})
+		row := retainedSourceV1{SourceID: key, Canonical: &event}
+		if route != nil {
+			if projected, ok := route.projected[event.ID]; ok {
+				row.Projection = &projected
+				if event.Kind == domain.SessionEventToolCall || event.Kind == domain.SessionEventToolResult {
+					// Preserve original operation citation identity across terminal
+					// projection; render the verified canonical body only once.
+					key, e := OperationSourceKeyV1(projected.Reservation, projected.Observation)
+					if e != nil {
+						return nil, ErrCanonical
+					}
+					row.SourceID = key
+					frames[len(frames)-1].SourceID = key
+					frames[len(frames)-1].Kind = "operation"
+					frames[len(frames)-1].Digest = projected.Observation.ResponseDigest
+				}
+			}
+		}
+		sources = append(sources, row)
 	}
-	if len(byAnchor) != 0 {
+	if len(byAnchor) != 0 || len(byAnchorV2) != 0 || len(beforeV2) != 0 {
 		return nil, ErrCanonical
 	}
 	starts[len(records)] = len(frames)
@@ -313,9 +400,28 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			}
 		}
 	}
+	if route != nil {
+		for _, old := range route.history {
+			for _, item := range old.Operations {
+				if item.Reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
+					response, err := configuredinference.DecodeRetainedNormalizedDataV1(profile, item.Reservation, item.Observation, item.Normalized)
+					if err != nil || !matchCompaction(item.Reservation, item.Observation, response.Text) {
+						return nil, ErrCanonical
+					}
+				}
+			}
+		}
+	}
+	var pending *configuredinference.FunctionCallV1
+	var pendingObservation domain.AttemptOperationObservationV1
+	pendingStart := -1
+	usedCalls := make(map[string]bool)
 	for i, op := range operations {
 		r, o := op.Reservation, op.Observation
-		if r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence != uint64(i+1) ||
+		if route != nil && r.AggregateDebit.ValidateForPolicy(policy) != nil {
+			return nil, ErrCanonical
+		}
+		if r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence != uint64(i+1) ||
 			r.Operation.Scope.AgentLoopPolicyDigest != policyDigest ||
 			r.Operation.Scope.TenantID != profile.TenantID || r.Operation.Scope.OwnerUserID != profile.OwnerUserID || r.Operation.Scope.RunID != policy.RunID || r.Operation.Scope.AttemptID != policy.AttemptID ||
 			r.Operation.Scope.SessionID != records[0].Event.SessionID || (i > 0 && r.Operation.Scope != operations[0].Reservation.Operation.Scope) ||
@@ -329,13 +435,35 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		if hex.EncodeToString(requestHash[:]) != r.Operation.RequestDigest || hex.EncodeToString(responseHash[:]) != o.ResponseDigest {
 			return nil, ErrCanonical
 		}
+		if r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			var conservative *MCPConservativeDataV2
+			if route != nil {
+				conservative = route.current(r, o, policy)
+			}
+			result, err := mcpadmission.DecodeSealedToolResultDataV1(r, o, op.Response)
+			if err != nil || pending == nil || i == 0 || r.Operation.ToolGrantDigest != policy.MCPToolGrantDigest || result.ValidateConfiguredCallV1(profile, operations[i-1].Reservation, operations[i-1].Observation, operations[i-1].Request, operations[i-1].Response) != nil || (!toolUsageContinuable(o) && conservative == nil) || !toolPairMatches(pending, pendingObservation, result) || (conservative != nil && result.IsError()) {
+				return nil, ErrCanonical
+			}
+			key, err := OperationSourceKeyV1(r, o)
+			if err != nil {
+				return nil, err
+			}
+			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "tool_result", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: toolResultPayload(result), Digest: o.ResponseDigest})
+			sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone(), Conservative: conservative}})
+			units = append(units, UnitV1{Start: pendingStart, End: len(frames)})
+			pending = nil
+			continue
+		}
+		if pending != nil || o.Reason != domain.AttemptOperationReasonNoneV1 {
+			return nil, ErrCanonical
+		}
 		decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(profile, op.Request, op.Response, r.Operation.Kind)
 		usage, usageErr := decoded.Usage.OperationUsage()
-		if e != nil || usageErr != nil || decoded.Call != nil || decoded.Stop != configuredinference.StopFinalV1 || !reflect.DeepEqual(usage, o.Usage) {
+		if e != nil || usageErr != nil || !reflect.DeepEqual(usage, o.Usage) || (decoded.Stop != configuredinference.StopFinalV1 && (decoded.Stop != configuredinference.StopToolV1 || decoded.Call == nil)) {
 			return nil, ErrCanonical
 		}
 		if r.Operation.Kind == domain.AttemptOperationCompactionV1 {
-			if !matchCompaction(r, o, decoded.Text) {
+			if decoded.Call != nil || !matchCompaction(r, o, decoded.Text) {
 				return nil, ErrCanonical
 			}
 			continue
@@ -348,15 +476,33 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			return nil, e
 		}
 		start := len(frames)
-		frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "assistant_message", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: decoded.Text, Digest: o.ResponseDigest})
+		role, payload := "assistant_message", decoded.Text
+		if decoded.Call != nil {
+			if usedCalls[decoded.Call.ID] {
+				return nil, ErrCanonical
+			}
+			usedCalls[decoded.Call.ID] = true
+			pending, pendingObservation, pendingStart = decoded.Call, o, start
+			role, payload = "tool_call", toolCallPayload(decoded.Call)
+		}
+		frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: role, RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: payload, Digest: o.ResponseDigest})
 		sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
-		units = append(units, UnitV1{Start: start, End: start + 1})
+		if pending == nil {
+			units = append(units, UnitV1{Start: start, End: start + 1})
+		}
 	}
-	if len(matchedPlans) != len(parentPlans) || len(units) == 0 {
+	if pending != nil || len(matchedPlans) != len(parentPlans) || len(units) == 0 {
 		return nil, ErrCanonical
 	}
+	version := uint32(1)
+	if route != nil {
+		if len(route.used) != len(route.conservative) {
+			return nil, ErrCanonical
+		}
+		version = 2
+	}
 	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
-		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest(), closure: uint32(len(parentPlans) + 1)}
+		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest(), closure: uint32(len(parentPlans) + 1), version: version}
 	if parent != nil {
 		value := parent.Plan
 		p.parentPlan = &value
@@ -366,8 +512,8 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 
 // BuildGenerationV1 renders actual admitted source DATA, never a caller prompt
 // override. Media without a qualified encoding is explicitly unsupported. The
-// current base supports tool-heavy CANONICAL history and completed tool-free
-// model operations; real current tool continuations remain #191's typed join.
+// Current MODEL-call/MCP-result pairs are validated together and retained as
+// atomic historical DATA units; these values never restore dispatch authority.
 func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
 	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history ...[]HistoricalRunV1) (*GenerationV1, error) {
 	if len(history) > 1 {
@@ -381,9 +527,14 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 	if err != nil {
 		return nil, err
 	}
+	return buildGenerationSourceProgramV1(s, parent)
+}
+
+func buildGenerationSourceProgramV1(s *generationSourceV1, parent *ParentV1) (*GenerationV1, error) {
 	p := s.program
+	policy := p.policy
 	frames, units, protectedIndex, covered := s.frames, s.units, s.protectedIndex, s.covered
-	limits = p.limits
+	limits := p.limits
 	if p.generation > 2 || p.closure > 2 || len(units) < 2 {
 		return nil, ErrCanonical
 	}
@@ -449,7 +600,7 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 		return nil, e
 	}
 	out := min(uint64(2048), limits.MaxOutputTokens, policy.Limits.MaxOutputTokensPerCall)
-	p.frozen, e = configuredinference.FreezeRequestV1(profile, limits, configuredinference.RequestV1{Messages: []configuredinference.MessageV1{{Role: configuredinference.RoleSystemV1, Text: summarizerInstructionsV1}, {Role: configuredinference.RoleUserV1, Text: text}}, MaxOutputTokens: out})
+	p.frozen, e = configuredinference.FreezeRequestV1(p.profile, limits, configuredinference.RequestV1{Messages: []configuredinference.MessageV1{{Role: configuredinference.RoleSystemV1, Text: summarizerInstructionsV1}, {Role: configuredinference.RoleUserV1, Text: text}}, MaxOutputTokens: out})
 	if e != nil {
 		return nil, configuredinference.ErrContextNoFit
 	}

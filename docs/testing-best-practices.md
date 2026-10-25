@@ -188,6 +188,13 @@ selections are disjoint and together cover the original complete
 subtests, examples or fuzz seed corpora or shorten scenarios. Every execution
 covers the same complete package patterns: matching names exist outside the
 state-store package too.
+After the two normal connected partitions, `make test-connected` runs
+`make test-mcp-offline`: a separate uncached race/shuffle execution with a
+five-minute bound for the explicitly tagged synthetic MCP transport fixture.
+Its fixed additive overlay introduces only absent test-support files; it must
+never replace production source or authority checks. Normal keeper/session
+packages are separately built without the overlay. This instrumentation is
+offline evidence only, not live DNS/TLS endpoint qualification.
 Keep all ordinary and connected commands as sequential recipe lines: a failure
 stops the target before its next execution, including under `make -j`; do not
 background any partition.
@@ -203,8 +210,8 @@ command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#h
 
 GitHub CI has nine required jobs. Its Go verification job runs `make ci-core`,
 including `test-ordinary`; a parallel 30-minute `go-connected` job runs the two
-sequential executions of `make test-connected` over the same full package
-patterns. It needs no Web build:
+sequential normal executions over the same full package patterns, followed by
+the bounded additive MCP offline gate in `make test-connected`. It needs no Web build:
 the committed embed placeholder suffices for compilation. Neither job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join both Go jobs, preserving their original complete-unit-test predecessor.

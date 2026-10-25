@@ -174,7 +174,16 @@ func (g *localCompactionGenerationV1) completedRetainedLocked(ctx context.Contex
 	if err != nil || ctx.Err() != nil {
 		return deny()
 	}
-	retained, err := g.program.BuildRetainedV1(compactioncontext.RetainedEvidenceV1{Reservation: g.reservation, Observation: observation, Summary: summary, GenerationFit: fit, NextFit: nextFit, SummaryTokenUpperBound: bound, Parent: g.parentRetained})
+	evidence := compactioncontext.RetainedEvidenceV1{Reservation: g.reservation, Observation: observation, Summary: summary, GenerationFit: fit, NextFit: nextFit, SummaryTokenUpperBound: bound, Parent: g.parentRetained}
+	var retained *compactioncontext.RetainedV1
+	switch g.program.RetainedCodecVersion() {
+	case 1:
+		retained, err = g.program.BuildRetainedV1(evidence)
+	case 2:
+		retained, err = g.program.BuildRetainedV2(evidence)
+	default:
+		return deny()
+	}
 	if err != nil || ctx.Err() != nil {
 		return deny()
 	}
@@ -219,12 +228,12 @@ func (g *localCompactionGenerationV1) readRetainedLocked(ctx context.Context, pl
 		if e != nil {
 			return deny()
 		}
-		parent, err = compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, parentPolicy, parentPlan, pb, mb, nil)
+		parent, err = decodeLocalRetainedGeneration(&g.entry.owner.configuration, "", parentPolicy, parentPlan, pb, mb, nil)
 		if err != nil {
 			return deny()
 		}
 	}
-	decoded, err := compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, *policy, plan, summary, manifest, parent)
+	decoded, err := decodeLocalRetainedGeneration(&g.entry.owner.configuration, "", *policy, plan, summary, manifest, parent)
 	if err != nil || decoded.ValidateForGeneration(g.program) != nil {
 		return deny()
 	}

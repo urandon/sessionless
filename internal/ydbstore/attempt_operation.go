@@ -171,6 +171,9 @@ func (store *Store) ReserveAttemptOperation(ctx context.Context, request ports.R
 	if evidence.compaction != nil {
 		return store.reservePreparedLocalCompaction(ctx, op, evidence)
 	}
+	if evidence.mcp != nil {
+		return store.reservePreparedLocalMCP(ctx, op, evidence)
+	}
 	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
 	if err != nil {
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
@@ -239,8 +242,10 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 		if expected != "" || allocation.current.ValidateAt(q.at) != nil || proxy.current.ValidateAt(q.at) != nil || op.Deadline.After(proxy.current.Window.ExpiresAt) || op.Deadline.After(allocation.current.Window.ExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
 			return q.budget.deny()
 		}
-		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
-			return err
+		if evidence == nil || evidence.mcp == nil {
+			if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+				return err
+			}
 		}
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
 		if err != nil || accounting == nil || !accounting.SetupReservedAt.Equal(burnAt) {
@@ -319,11 +324,14 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 	if evidence.compaction != nil {
 		return store.authorizePreparedLocalCompaction(ctx, capability, evidence)
 	}
-	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
+	if evidence.mcp != nil {
+		return store.authorizePreparedLocalMCP(ctx, capability, evidence)
+	}
+	localUnlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
 	if err != nil {
 		return domain.ErrMembershipDenied
 	}
-	defer unlock()
+	defer localUnlock()
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		request, parent, source, burnAt, err := store.operationParent(ctx, q, op.Scope)
@@ -346,8 +354,10 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		if proxy.current.ServiceKind != ownedOperationProxyService(op.Kind) || store.validateOwnedOperationEvidence(ctx, q, op, evidence, parent, source) != nil {
 			return q.budget.deny()
 		}
-		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
-			return err
+		if evidence == nil || evidence.mcp == nil {
+			if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+				return err
+			}
 		}
 		if op.Kind == domain.AttemptOperationWebSearchV1 && (evidence == nil || evidence.tool == nil || store.validateOwnedOperationConsent(ctx, q, op, parent, source, nil, *evidence.tool) != nil) {
 			return q.budget.deny()
@@ -364,7 +374,10 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		}
 		return nil
 	})
-	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
+	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) || (evidence.mcp != nil && !evidence.mcp.lifetimeCurrent()) || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
+		return domain.ErrMembershipDenied
+	}
+	if evidence.mcp != nil && !evidence.mcp.lifetimeCurrent() {
 		return domain.ErrMembershipDenied
 	}
 	return nil
@@ -379,7 +392,11 @@ func (store *Store) RecordAttemptOperationObservation(ctx context.Context, reque
 	r := request.Observation.Reservation.Clone()
 	o := request.Observation.Observation.Clone()
 	if o.Outcome == domain.AttemptOperationCompletedV1 {
-		if store.localNormalizedModelSuccess(r.Operation, o) {
+		if store.localNormalizedMCPSuccess(r.Operation, o) {
+			if store.validateLocalNormalizedMCP(ctx, r.Operation, o) != nil {
+				return domain.ErrMembershipDenied
+			}
+		} else if store.localNormalizedModelSuccess(r.Operation, o) {
 			if store.validateLocalNormalizedModel(ctx, r.Operation, o) != nil {
 				return domain.ErrMembershipDenied
 			}
@@ -457,7 +474,11 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 	if err != nil || ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 	}
-	if store.localNormalizedModelSuccess(grant.Reservation.Operation, observation) && store.validateLocalNormalizedModel(ctx, grant.Reservation.Operation, observation) != nil {
+	if store.localNormalizedMCPSuccess(grant.Reservation.Operation, observation) {
+		if store.validateLocalNormalizedMCP(ctx, grant.Reservation.Operation, observation) != nil {
+			return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
+		}
+	} else if store.localNormalizedModelSuccess(grant.Reservation.Operation, observation) && store.validateLocalNormalizedModel(ctx, grant.Reservation.Operation, observation) != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 	}
 	if ctx.Err() != nil {
@@ -467,6 +488,7 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 	if err == nil {
 		store.rememberLocalCompactionObservation(ctx, authenticated)
 		store.rememberLocalModelObservation(ctx, authenticated)
+		store.rememberLocalMCPObservation(ctx, authenticated)
 	}
 	if ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied

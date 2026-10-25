@@ -38,23 +38,33 @@ type ResultV1 struct {
 }
 
 type KeeperV1 struct {
-	mu                         sync.Mutex
-	self                       *KeeperV1
-	source                     *localoperator.Source
-	sourceLifetime             context.Context
-	issuer                     *serverlessharness.OperationCapabilityIssuer
-	bootstrap                  *ydbstore.LocalOwnedStoreBootstrapV1
-	config                     domain.ConfiguredInferenceProfileV1
-	policy                     ports.LocalLoopbackEgressPolicyV1
-	configDigest, policyDigest string
-	key                        [32]byte
-	active                     *ConnectionV1
-	closed                     bool
-	terminalDeadline           time.Time
-	terminalEligible           bool
-	terminalJoined             bool
-	terminalTainted            bool
-	terminalSealed             chan struct{}
+	mu                               sync.Mutex
+	self                             *KeeperV1
+	source                           *localoperator.Source
+	sourceLifetime                   context.Context
+	issuer                           *serverlessharness.OperationCapabilityIssuer
+	bootstrap                        *ydbstore.LocalOwnedStoreBootstrapV1
+	config                           domain.ConfiguredInferenceProfileV1
+	policy                           ports.LocalLoopbackEgressPolicyV1
+	configDigest, policyDigest       string
+	key                              [32]byte
+	active                           *ConnectionV1
+	closed                           bool
+	terminalDeadline                 time.Time
+	terminalEligible                 bool
+	terminalJoined                   bool
+	terminalTainted                  bool
+	terminalSealed                   chan struct{}
+	credentialed                     bool
+	credentialScopeUsed              bool
+	credentialEnded                  bool
+	credentialTainted                bool
+	credentialDeadline               time.Time
+	credentialSealed                 chan struct{}
+	credentialScope                  *credentialScopeV1
+	mcpMessages, mcpFrames, mcpBytes uint64
+	mcpCatalogConsumed               bool
+	mcpDeps                          mcpHTTPSDependencies
 }
 
 type ConnectionV1 struct {
@@ -68,10 +78,13 @@ type ConnectionV1 struct {
 	operation                              domain.AttemptOperationV1
 	publication                            ports.OwnedProxyPublicationV2
 	payload, request                       []byte
-	conn                                   *net.TCPConn
+	conn                                   net.Conn
+	mcp                                    *mcpConnectionV1
 	ctx                                    context.Context
 	cancel                                 context.CancelFunc
 	stopCaller                             func() bool
+	stopCredential                         func() bool
+	credentialScope                        *credentialScopeV1
 	preflightDone, invokeDone, cleanupDone chan struct{}
 	ready, used, closed                    bool
 	cleanupTainted, cleanupCommitted       bool
@@ -79,11 +92,19 @@ type ConnectionV1 struct {
 }
 
 func NewKeeperV1(source *localoperator.Source, issuer *serverlessharness.OperationCapabilityIssuer, bootstrap *ydbstore.LocalOwnedStoreBootstrapV1) (*KeeperV1, error) {
+	return newKeeperV1(source, issuer, bootstrap, false)
+}
+
+func newKeeperV1(source *localoperator.Source, issuer *serverlessharness.OperationCapabilityIssuer, bootstrap *ydbstore.LocalOwnedStoreBootstrapV1, credentialed bool) (*KeeperV1, error) {
 	if !bootstrap.HasLocalConnectorIdentity(source, issuer) {
 		return nil, domain.ErrMembershipDenied
 	}
 	c, err := source.Configuration()
-	if err != nil || c.Auth != domain.ConfiguredInferenceAuthNoneV1 {
+	auth := domain.ConfiguredInferenceAuthNoneV1
+	if credentialed {
+		auth = domain.ConfiguredInferenceAuthBearerV1
+	}
+	if err != nil || c.Auth != auth {
 		return nil, domain.ErrMembershipDenied
 	}
 	p, err := ports.BuildLocalLoopbackEgressPolicyV1(c)
@@ -99,7 +120,7 @@ func NewKeeperV1(source *localoperator.Source, issuer *serverlessharness.Operati
 	if err != nil || lifetime.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd, terminalSealed: make(chan struct{})}
+	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd, terminalSealed: make(chan struct{}), credentialed: credentialed, credentialSealed: make(chan struct{})}
 	if _, err = rand.Read(k.key[:]); err != nil {
 		clear(k.key[:])
 		return nil, domain.ErrMembershipDenied
@@ -156,8 +177,12 @@ func literalAddress(baseURL string) (network, address string, ip net.IP, port in
 }
 
 func operationMatches(op domain.AttemptOperationV1, a domain.RegisteredAllocationV2, s domain.AttemptExecutionSourceV1) bool {
+	return (op.Kind == domain.AttemptOperationModelV1 || op.Kind == domain.AttemptOperationCompactionV1) && operationScopeMatches(op, a, s)
+}
+
+func operationScopeMatches(op domain.AttemptOperationV1, a domain.RegisteredAllocationV2, s domain.AttemptExecutionSourceV1) bool {
 	x := op.Scope
-	return (op.Kind == domain.AttemptOperationModelV1 || op.Kind == domain.AttemptOperationCompactionV1) && x.TenantID == s.Scope.TenantID && x.OwnerUserID == s.Scope.OwnerUserID && x.SessionID == s.Scope.SessionID && x.RunID == s.Scope.RunID && x.AttemptID == s.Scope.AttemptID && x.LeaseID == a.Lease.ID && x.FenceToken == a.Lease.FenceToken && x.PhysicalInvocationClaimID == a.ParentReservation.PhysicalInvocationClaimID && x.EffectReservationDigest == a.ParentReservationDigest && x.InvocationAuthorityDigest == a.ParentReservation.InvocationAuthorityDigest && x.HarnessBindingDigest == s.HarnessBindingDigest && x.AgentLoopPolicyDigest == s.AgentLoopPolicyDigest
+	return x.TenantID == s.Scope.TenantID && x.OwnerUserID == s.Scope.OwnerUserID && x.SessionID == s.Scope.SessionID && x.RunID == s.Scope.RunID && x.AttemptID == s.Scope.AttemptID && x.LeaseID == a.Lease.ID && x.FenceToken == a.Lease.FenceToken && x.PhysicalInvocationClaimID == a.ParentReservation.PhysicalInvocationClaimID && x.EffectReservationDigest == a.ParentReservationDigest && x.InvocationAuthorityDigest == a.ParentReservation.InvocationAuthorityDigest && x.HarnessBindingDigest == s.HarnessBindingDigest && x.AgentLoopPolicyDigest == s.AgentLoopPolicyDigest
 }
 
 func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAllocationV2, source domain.AttemptExecutionSourceV1, operation domain.AttemptOperationV1, payload []byte) (_ *ConnectionV1, err error) {
@@ -185,7 +210,7 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 		clear(owned)
 		return nil, e
 	}
-	request := append([]byte("POST /v1/chat/completions HTTP/1.1\r\nHost: "+address+"\r\nContent-Type: application/json\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: "+strconv.Itoa(len(owned))+"\r\n\r\n"), owned...)
+	var request []byte
 	store, bridge, e := k.bootstrap.RuntimeFor(k)
 	if e != nil {
 		clear(owned)
@@ -193,23 +218,35 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 		return nil, domain.ErrMembershipDenied
 	}
 	k.mu.Lock()
-	if k.closed || k.active != nil || k.sourceLifetime.Err() != nil {
+	if k.closed || k.active != nil || k.sourceLifetime.Err() != nil || !k.credentialAdmittedLocked(k.credentialScope, a, s, op, now) || (k.credentialed && len(k.credentialScope.joins) >= 12) {
 		k.mu.Unlock()
 		clear(owned)
 		clear(request)
 		return nil, domain.ErrMembershipDenied
 	}
+	var credential []byte
+	if k.credentialed {
+		credential = k.credentialScope.borrowed
+	}
+	// The sole credential-bearing wire copy is created under admission's lock
+	// and registered in active before unlocking. End cannot miss an untracked copy.
+	request = requestWire(address, owned, credential)
+	credential = nil
 	lease, e := bridge.BeginLocalModelOperation(k.source, a, op, now)
 	if e != nil {
-		k.mu.Unlock()
 		clear(owned)
 		clear(request)
+		k.mu.Unlock()
 		return nil, domain.ErrMembershipDenied
 	}
 	ownedCtx, cancel := context.WithCancel(lease.Context())
-	c := &ConnectionV1{keeper: k, store: store, lease: lease, allocation: a, source: s, operation: op, payload: owned, request: request, ctx: ownedCtx, cancel: cancel, preflightDone: make(chan struct{}), invokeDone: make(chan struct{}), cleanupDone: make(chan struct{}), cleanupTimeout: op.CleanupDuration}
+	c := &ConnectionV1{keeper: k, store: store, lease: lease, allocation: a, source: s, operation: op, payload: owned, request: request, ctx: ownedCtx, cancel: cancel, preflightDone: make(chan struct{}), invokeDone: make(chan struct{}), cleanupDone: make(chan struct{}), cleanupTimeout: op.CleanupDuration, credentialScope: k.credentialScope}
 	c.self = c
 	c.stopCaller = context.AfterFunc(ctx, cancel)
+	if k.credentialed {
+		c.stopCredential = context.AfterFunc(k.credentialScope.ctx, cancel)
+		k.credentialScope.joins = append(k.credentialScope.joins, c.cleanupDone)
+	}
 	k.active = c
 	k.mu.Unlock()
 	go c.monitor()
@@ -255,7 +292,7 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 	pub.Authenticator = k.authenticate(intent)
 	k.mu.Lock()
 	c.mu.Lock()
-	if k.closed || k.active != c || c.closed || c.ctx.Err() != nil || k.sourceLifetime.Err() != nil {
+	if k.closed || k.active != c || c.closed || c.ctx.Err() != nil || k.sourceLifetime.Err() != nil || !k.credentialAdmittedLocked(c.credentialScope, a, s, op, time.Now()) {
 		c.mu.Unlock()
 		k.mu.Unlock()
 		_ = tcp.Close()
@@ -283,6 +320,9 @@ func (k *KeeperV1) authenticate(intent []byte) []byte {
 // Historical authentication deliberately survives Close and later operations.
 // It never samples a clock, touches a socket, or claims current permission.
 func (k *KeeperV1) VerifyOwnedProxyPublication(pub ports.OwnedProxyPublicationV2, at time.Time) error {
+	if pub.TransportKind == domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1 {
+		return k.verifyMCPPublication(pub, at)
+	}
 	if k == nil || k.self != k || pub.Validate() != nil || pub.TransportKind != domain.RegisteredProxyTransportLocalLoopbackHTTPV2 || at.Before(pub.ObservedAt) {
 		return domain.ErrMembershipDenied
 	}
@@ -312,7 +352,7 @@ func (k *KeeperV1) VerifyOwnedProxyPublicationCurrent(pub ports.OwnedProxyPublic
 	c := k.active
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.self != c || c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || !at.Before(c.operation.Deadline) || !samePublication(pub, c.publication) {
+	if c.self != c || c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || !at.Before(c.operation.Deadline) || !samePublication(pub, c.publication) || !k.credentialAdmittedLocked(c.credentialScope, c.allocation, c.source, c.operation, at) {
 		return domain.ErrMembershipDenied
 	}
 	return nil
@@ -330,19 +370,22 @@ func (c *ConnectionV1) Publication() (ports.OwnedProxyPublicationV2, error) {
 	defer c.keeper.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
+	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil || !c.keeper.credentialAdmittedLocked(c.credentialScope, c.allocation, c.source, c.operation, time.Now()) {
 		return ports.OwnedProxyPublicationV2{}, domain.ErrMembershipDenied
 	}
 	return c.publication.Clone(), nil
 }
 
 func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredProxyAttestationV2, capability ports.AttemptOperationCapabilityV1, payload []byte) (result ResultV1, err error) {
+	if c != nil && c.mcp != nil {
+		return c.invokeMCP(ctx, registered, capability, payload)
+	}
 	if c == nil || c.self != c {
 		return result, domain.ErrMembershipDenied
 	}
 	c.keeper.mu.Lock()
 	c.mu.Lock()
-	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
+	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil || !c.keeper.credentialAdmittedLocked(c.credentialScope, c.allocation, c.source, c.operation, time.Now()) {
 		c.mu.Unlock()
 		c.keeper.mu.Unlock()
 		return result, domain.ErrMembershipDenied
@@ -401,7 +444,7 @@ func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredP
 	// Admission closure is not an I/O join: an invocation already past this
 	// check may still be in flight until the original monitor joins it.
 	c.keeper.mu.Lock()
-	sealed := c.keeper.closed
+	sealed := c.keeper.closed || !c.keeper.credentialAdmittedLocked(c.credentialScope, c.allocation, c.source, c.operation, time.Now())
 	c.keeper.mu.Unlock()
 	if sealed {
 		return result, domain.ErrMembershipDenied
@@ -455,6 +498,9 @@ func (c *ConnectionV1) monitor() {
 	if c.stopCaller != nil {
 		c.stopCaller()
 	}
+	if c.stopCredential != nil {
+		c.stopCredential()
+	}
 	clear(c.payload)
 	clear(c.request)
 	c.mu.Lock()
@@ -486,6 +532,9 @@ func (c *ConnectionV1) Close() error {
 		if d := c.keeper.terminalDeadline; !d.IsZero() && d.Before(deadline) {
 			deadline = d
 		}
+		if d := c.keeper.credentialDeadline; !d.IsZero() && d.Before(deadline) {
+			deadline = d
+		}
 		c.keeper.mu.Unlock()
 	}
 	return c.closeUntil(context.Background(), deadline)
@@ -493,13 +542,18 @@ func (c *ConnectionV1) Close() error {
 
 func (c *ConnectionV1) closeUntil(ctx context.Context, deadline time.Time) error {
 	c.cancel()
-	var sealed <-chan struct{}
+	var sealed, credentialSealed <-chan struct{}
 	if c.keeper != nil {
 		c.keeper.mu.Lock()
 		sealed = c.keeper.terminalSealed
+		credentialSealed = c.keeper.credentialSealed
 		if d := c.keeper.terminalDeadline; !d.IsZero() {
 			deadline = minTime(deadline, d)
 			sealed = nil
+		}
+		if d := c.keeper.credentialDeadline; !d.IsZero() {
+			deadline = minTime(deadline, d)
+			credentialSealed = nil
 		}
 		c.keeper.mu.Unlock()
 	}
@@ -519,6 +573,12 @@ func (c *ConnectionV1) closeUntil(ctx context.Context, deadline time.Time) error
 			sealed = nil
 			c.keeper.mu.Lock()
 			deadline = minTime(deadline, c.keeper.terminalDeadline)
+			c.keeper.mu.Unlock()
+			timer.Reset(max(time.Until(deadline), 0))
+		case <-credentialSealed:
+			credentialSealed = nil
+			c.keeper.mu.Lock()
+			deadline = minTime(deadline, c.keeper.credentialDeadline)
 			c.keeper.mu.Unlock()
 			timer.Reset(max(time.Until(deadline), 0))
 		}
@@ -594,7 +654,7 @@ func (k *KeeperV1) SealTerminal(deadline time.Time) error {
 		return domain.ErrMembershipDenied
 	}
 	k.terminalDeadline = deadline
-	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil
+	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil && !k.credentialTainted && (!k.credentialed || k.credentialEnded)
 	k.closed = true
 	close(k.terminalSealed)
 	if !k.terminalEligible {

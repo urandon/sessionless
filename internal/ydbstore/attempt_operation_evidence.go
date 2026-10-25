@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -26,6 +27,7 @@ type ownedOperationEvidence struct {
 	price       *ownedProviderPriceEvidence
 	compaction  *localCompactionGenerationV1
 	model       *localPreparedModelV1
+	mcp         *localPreparedMCPV1
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
@@ -44,6 +46,9 @@ func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain
 		}
 	}
 	if evidence, handled, err := store.prepareLocalModelEvidence(ctx, op); handled {
+		return evidence, err
+	}
+	if evidence, handled, err := store.prepareLocalMCPEvidence(ctx, op); handled {
 		return evidence, err
 	}
 	if evidence, handled, err := store.prepareLocalCompactionEvidence(ctx, op); handled {
@@ -153,6 +158,17 @@ func (store *Store) validateOwnedOperationEvidence(ctx context.Context, q *owned
 	actualOD, _ := row.observation.Digest()
 	if expected != actual || od != actualOD {
 		return q.budget.deny()
+	}
+	if op.Kind == domain.AttemptOperationMCPToolV1 && evidence.mcp != nil {
+		m := evidence.mcp
+		phase := localCompactionReserve
+		if m.reservation.Version != 0 {
+			phase = localCompactionBeforeSend
+		}
+		if !reflect.DeepEqual(m.operation, op) || m.entry.owner.store != store || m.rejoinAndValidateCurrent(ctx, q, phase, parent, source) != nil {
+			return q.budget.deny()
+		}
+		return nil
 	}
 	if op.Kind == domain.AttemptOperationMCPToolV1 || op.Kind == domain.AttemptOperationWebSearchV1 {
 		if evidence.tool == nil {

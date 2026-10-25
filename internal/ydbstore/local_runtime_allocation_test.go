@@ -107,15 +107,18 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
-	authenticFunding                                        bool // genuine Source + Store four-component publication, never live service evidence
+	authenticFunding                                        bool                             // genuine Source + Store four-component publication, never live service evidence
+	auth                                                    domain.ConfiguredInferenceAuthV1 // optional private pre-intake auth mode; empty preserves the no-auth fixture
 	scope                                                   domain.AttemptExecutionSourceScopeV1
 	setupDuration                                           time.Duration
 	sourceParent                                            context.Context
 	endpoint                                                string
 	laterPriceObservation                                   bool
-	compiledCompaction                                      bool // closed synthetic declaration, installed BEFORE Source intake
+	compiledCompaction                                      bool    // closed synthetic declaration, installed BEFORE Source intake
+	mcpModelDescription                                     string  // optional bounded public tool prose, installed BEFORE all grant/policy/source seals
+	mcpSyntheticPriceMicrounits                             *uint64 // optional independent finite price BEFORE intake; nil preserves the original paid fixture
 	inputTokens, outputTokens, modelWindowTokens            uint64
-	networkOperation                                        time.Duration
+	networkOperation, cleanupTimeout                        time.Duration
 	bodyBytes, artifactBytes                                uint64 // closed pre-intake narrowing only
 	modelCalls, aggregateInputTokens, aggregateOutputTokens uint64 // closed pre-intake narrowing only
 	finalTextBytes, responseBytes                           uint64 // closed pre-intake format narrowing only
@@ -212,6 +215,12 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 				t.Fatal("pre-intake operation duration may only narrow")
 			}
 			c.Limits.OperationTimeout, p.Limits.MaxNetworkOperationDuration = d, d
+		}
+		if d := prebuild[0].cleanupTimeout; d != 0 {
+			if d < 0 || d > c.Limits.CleanupTimeout || d > p.Limits.MaxCleanupDuration {
+				t.Fatal("pre-intake cleanup duration may only narrow")
+			}
+			c.Limits.CleanupTimeout, p.Limits.MaxCleanupDuration = d, d
 		}
 		if err := p.Limits.Validate(); err != nil {
 			t.Fatalf("pre-intake narrowed policy limits: %v", err)
@@ -317,7 +326,25 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		}
 		observed, expires := p.CostCeiling.PriceObservedAt, p.CostCeiling.PriceExpiresAt
 		localSearchDeclaration(t, &manifest)
-		localSourceMCPDeclaration(t, &manifest)
+		if declared := prebuild[0].mcpSyntheticPriceMicrounits; declared != nil {
+			amount := *declared
+			cost := p.CostCeiling.MCPToolCost
+			total := p.CostCeiling.MaxTotalAmountMicrounits
+			if cost == nil || cost.MaxAmountMicrounits == nil || total == nil || amount > 10000 || *cost.MaxAmountMicrounits > *total || amount > ^uint64(0)-(*total-*cost.MaxAmountMicrounits) {
+				t.Fatal("bounded coherent pre-intake synthetic MCP tariff required")
+			}
+			nextTotal := *total - *cost.MaxAmountMicrounits + amount
+			cost.PriceState, cost.MaxAmountMicrounits = domain.ExternalServicePriceKnownPaidV1, &amount
+			if amount == 0 {
+				cost.PriceState = domain.ExternalServicePriceKnownFreeV1
+			}
+			p.CostCeiling.MaxTotalAmountMicrounits = &nextTotal
+		}
+		if prebuild[0].mcpModelDescription != "" {
+			localSourceMCPDeclaration(t, &manifest, prebuild[0].mcpModelDescription)
+		} else {
+			localSourceMCPDeclaration(t, &manifest)
+		}
 		// The installed external documents have a narrower original interval
 		// than some structural fixture defaults. Preserve a later observation,
 		// but never restore a wider outer window around those service reports.
@@ -330,6 +357,29 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+	if len(prebuild) == 1 && prebuild[0].auth != "" {
+		switch prebuild[0].auth {
+		case domain.ConfiguredInferenceAuthNoneV1:
+			c.Auth = domain.ConfiguredInferenceAuthNoneV1
+			c.Resource.CredentialMode, c.Resource.CredentialGeneration = domain.ProviderCredentialNoneV1, 0
+			p.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryNoneV1
+		case domain.ConfiguredInferenceAuthBearerV1:
+			c.Auth = domain.ConfiguredInferenceAuthBearerV1
+			c.Resource.CredentialMode, c.Resource.CredentialGeneration = domain.ProviderCredentialInvocationV1, 1
+			p.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1
+		default:
+			t.Fatal("pre-intake auth mode must be a supported local profile mode")
+		}
+		p.Resource = c.Resource
+		policy, err := ports.BuildLocalLoopbackEgressPolicyV1(*c)
+		if err != nil {
+			t.Fatal("rebuild original local egress policy after pre-intake auth selection")
+		}
+		p.Substrate.EgressPolicyDigest, err = policy.Digest()
+		if err != nil {
+			t.Fatal("digest original local egress policy after pre-intake auth selection")
 		}
 	}
 	writeLocalOperatorManifest(t, root, manifest) // before OpenFresh or any seal

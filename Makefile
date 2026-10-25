@@ -55,6 +55,7 @@ help:
 		'make web-browser-test run the separately gated Playwright and axe suites' \
 		'make generate       run Go generators' \
 		'make test           formatting, static analysis, unit tests, race detector' \
+		'make test-mcp-offline verify synthetic joined TLS/Store MCP flow; no public traffic' \
 		'make build          build all component binaries' \
 		'make dockerless-build build only native binaries used by the Dockerless stand' \
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
@@ -190,7 +191,7 @@ test:
 	$(MAKE) test-ordinary
 	$(MAKE) test-connected
 
-.PHONY: test-ordinary test-connected
+.PHONY: test-ordinary test-connected test-mcp-offline
 test-ordinary: prepare fmt-check lint
 	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
@@ -200,6 +201,16 @@ test-ordinary: prepare fmt-check lint
 test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
+	$(MAKE) test-mcp-offline
+
+# Additive test instrumentation only: neither normal Go package exposes a
+# resolver/dialer/CA override. The overlay must never replace an existing file.
+test-mcp-offline: prepare
+	test ! -e internal/localloopback/mcp_offline_fixture.go
+	test ! -e internal/providerloopsession/mcp_offline_fixture.go
+	mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"
+	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' ./internal/ydbstore
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

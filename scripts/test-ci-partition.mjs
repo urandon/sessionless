@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 // Deliberately checks this repository's fixed, indentation-sensitive format,
@@ -55,7 +55,15 @@ function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'test-connected'), ['prepare'], 'connected preparation');
   assert.match(make, /^GO_PACKAGE_PATTERNS := \.\/cmd\/\.\.\. \.\/internal\/\.\.\. \.\/migrations\/\.\.\.$/m, 'complete Go corpus');
   assert.equal(recipe(make, 'test-ordinary'), ordinary.join('\n\t'), 'exact sequential ordinary partition');
-  assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}`, 'exact sequential connected partition');
+  assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}\n\t$(MAKE) test-mcp-offline`, 'exact sequential connected partition');
+  assert.deepEqual(target(make, 'test-mcp-offline'), ['prepare'], 'offline MCP preparation');
+  assert.equal(recipe(make, 'test-mcp-offline'), [
+    'test ! -e internal/localloopback/mcp_offline_fixture.go',
+    'test ! -e internal/providerloopsession/mcp_offline_fixture.go',
+    'mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"',
+    'go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession',
+    "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' ./internal/ydbstore",
+  ].join('\n\t'), 'exact additive offline MCP gate');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
   assert.equal(recipe(make, 'ci-partition-test'), 'node --test scripts/test-ci-partition.mjs\n\tnode --test scripts/test-ci-ydb-readiness.mjs');
@@ -103,6 +111,20 @@ function verify({ make, ci, release }) {
 }
 
 test('local, release and mirrored CI retain the complete partition', () => verify(original));
+
+test('offline MCP overlay adds only two absent test fixture files', () => {
+  const expected = {
+    Replace: {
+      'internal/localloopback/mcp_offline_fixture.go': 'internal/localloopback/testdata/mcp_offline_fixture.go.txt',
+      'internal/providerloopsession/mcp_offline_fixture.go': 'internal/providerloopsession/testdata/mcp_offline_fixture.go.txt',
+    },
+  };
+  assert.deepEqual(JSON.parse(read('test/mcp-offline-overlay.json')), expected);
+  for (const [destination, source] of Object.entries(expected.Replace)) {
+    assert.equal(existsSync(new URL(`../${destination}`, import.meta.url)), false, 'overlay cannot replace a production file');
+    assert.match(read(source), /^\/\/go:build sessionless_mcp_offline\n/m, 'fixture is also explicitly build-tagged');
+  }
+});
 test('connected selectors are disjoint and cover the original complete prefix', () => {
   for (const name of [
     'TestLocalSession', 'TestLocalSessionTerminal',
@@ -187,6 +209,9 @@ const mutations = [
   ['overlap in ordinary selectors', 'make', ordinary[0], ordinary[0].replace("-skip='^(TestLocal|TestOwned|TestPrivate)'", "-skip='^(TestOwned|TestPrivate)'"), /exact sequential ordinary partition/],
   ['missing terminal half', 'make', `\t${connectedTerminal}\n`, '', /exact sequential connected partition/],
   ['missing other half', 'make', `\t${connectedOther}\n`, '', /exact sequential connected partition/],
+  ['missing offline MCP join', 'make', '\t$(MAKE) test-mcp-offline\n', '', /exact sequential connected partition/],
+  ['offline MCP replaces production', 'make', 'test ! -e internal/localloopback/mcp_offline_fixture.go', 'true', /exact additive offline MCP gate/],
+  ['offline MCP loses race', 'make', 'go test -race -count=1 -shuffle=190351', 'go test -count=1 -shuffle=190351', /exact additive offline MCP gate/],
   ['overlapping connected halves', 'make', connectedOther, connectedOther.replace(" -skip='^TestLocalSessionTerminal'", ''), /exact sequential connected partition/],
   ['gap in terminal half', 'make', connectedTerminal, connectedTerminal.replace("^TestLocalSessionTerminal", '^TestLocalSessionTerminalCleanup'), /exact sequential connected partition/],
   ['gap in other half', 'make', connectedOther, connectedOther.replace("-skip='^TestLocalSessionTerminal'", "-skip='^TestLocalSession'"), /exact sequential connected partition/],

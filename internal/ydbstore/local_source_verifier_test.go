@@ -23,8 +23,18 @@ import (
 // These closed, synthetic documents are only operator declarations. Real file
 // intake, receipts, source authentication and Store publications are exercised;
 // no live tariff, model, MCP/search send or native database is claimed.
-func localSourceMCPDeclaration(t *testing.T, m *localoperator.ManifestV1) {
+func localSourceMCPDeclaration(t *testing.T, m *localoperator.ManifestV1, modelDescription ...string) {
 	t.Helper()
+	if len(modelDescription) > 1 {
+		t.Fatal("one bounded pre-intake MCP description")
+	}
+	description := "synthetic installed docs lookup"
+	if len(modelDescription) == 1 {
+		if len(modelDescription[0]) == 0 || len(modelDescription[0]) > 4096 {
+			t.Fatal("pre-intake MCP description must contain 1..4096 bytes")
+		}
+		description = modelDescription[0]
+	}
 	body := func(id string, value any) localoperator.EvidenceBodyV1 {
 		t.Helper()
 		raw, err := json.Marshal(value)
@@ -41,7 +51,7 @@ func localSourceMCPDeclaration(t *testing.T, m *localoperator.ManifestV1) {
 	grant := mcpadmission.MCPToolGrantV1{Version: 1, TenantID: cost.TenantID, OwnerUserID: cost.OwnerUserID, BillingOwnerUserID: cost.BillingOwnerUserID,
 		ResourceID: cost.ResourceID, ResourceRevision: cost.ResourceRevision, RevocationGeneration: cost.RevocationGeneration, ProfileID: cost.ProfileID, ProfileRevision: cost.ProfileRevision,
 		DataPolicyDigest: p.PrivacyPolicyDigest, DataClass: "public", ConsentMode: "owner_public_query", ConsentRevision: 1,
-		Endpoint: "https://developers.openai.com/mcp", Transport: "streamable_http", ProtocolVersion: mcpwire.ProtocolVersionV1, SchemaValidator: domain.ConfiguredToolSchemaValidatorV1, ModelDescription: "synthetic installed docs lookup",
+		Endpoint: "https://developers.openai.com/mcp", Transport: "streamable_http", ProtocolVersion: mcpwire.ProtocolVersionV1, SchemaValidator: domain.ConfiguredToolSchemaValidatorV1, ModelDescription: description,
 		Descriptor: json.RawMessage(`{"annotations":{"readOnlyHint":true},"description":"synthetic descriptor, not a live catalog","inputSchema":{"additionalProperties":false,"properties":{"query":{"maxLength":30,"minLength":1,"type":"string"}},"required":["query"],"type":"object"},"name":"search_openai_docs"}`),
 		Limits:     mcpwire.LimitsV1{MessageBytes: 64 << 10, AggregateBytes: 256 << 10, JSONDepth: 32, JSONMembers: 4096, SSELineBytes: 64 << 10, SSEEventBytes: 64 << 10, SSEEvents: 128, Tools: 1, DescriptorBytes: 32 << 10, ArgumentBytes: 4 << 10, ResultTextBytes: 4096, ContentItems: 16},
 		IssuedAt:   m.Configuration.IssuedAt, ExpiresAt: m.Configuration.ExpiresAt}

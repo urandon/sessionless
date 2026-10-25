@@ -52,11 +52,23 @@ type localOwnedStoreTupleV1 struct {
 }
 
 func NewLocalOwnedStoreBootstrapV1(source *localoperator.Source, prepare *serverlessharness.CapabilityIssuer, operate *serverlessharness.OperationCapabilityIssuer) (*LocalOwnedStoreBootstrapV1, error) {
+	return newLocalOwnedStoreBootstrap(source, prepare, operate, domain.ConfiguredInferenceAuthNoneV1)
+}
+
+// NewCredentialedLocalOwnedStoreBootstrapV1 is the explicit trusted Bearer arm.
+// It does not issue or materialize a credential, admit an invocation or enable
+// a profile. The original session must still consume its fresh entry and own
+// the one synchronous credential scope around the fixed engine.
+func NewCredentialedLocalOwnedStoreBootstrapV1(source *localoperator.Source, prepare *serverlessharness.CapabilityIssuer, operate *serverlessharness.OperationCapabilityIssuer) (*LocalOwnedStoreBootstrapV1, error) {
+	return newLocalOwnedStoreBootstrap(source, prepare, operate, domain.ConfiguredInferenceAuthBearerV1)
+}
+
+func newLocalOwnedStoreBootstrap(source *localoperator.Source, prepare *serverlessharness.CapabilityIssuer, operate *serverlessharness.OperationCapabilityIssuer, auth domain.ConfiguredInferenceAuthV1) (*LocalOwnedStoreBootstrapV1, error) {
 	if source == nil || prepare == nil || operate == nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	c, err := source.Configuration()
-	if err != nil || c.Auth != domain.ConfiguredInferenceAuthNoneV1 {
+	if err != nil || c.Auth != auth || (auth != domain.ConfiguredInferenceAuthNoneV1 && auth != domain.ConfiguredInferenceAuthBearerV1) {
 		return nil, domain.ErrMembershipDenied
 	}
 	b := &LocalOwnedStoreBootstrapV1{source: source, prepare: prepare, operate: operate, configuration: c.Clone()}

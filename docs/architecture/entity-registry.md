@@ -95,6 +95,22 @@ debit/components and reported-or-unknown usage remain reserved, not refunded
 or presented as measured cost. The canonical finalization transaction owns
 the Run/Attempt/quota, event, manifest, evidence and replay marker together.
 
+The original public-MCP continuation uses an explicit terminal capsule V2 and
+accounting/residual V3 within these same immutable objects and rows. Its capsule
+retains the complete UNKNOWN/full-reserved disposition and exact operation to
+canonical tool-call/result/assistant event mapping; a digest alone is not a
+replacement for those retained facts. Old capsule V1 and accounting/residual V2
+remain strict, without cross-version decode fallback. Current execution still
+requires the original private Source/Store funding witness on every admission
+join. Historical restore and deletion authenticate the original terminal seal,
+V3 financial parent/accounting correspondence and all actual canonical bodies;
+their bounded SQL candidate collection cannot recreate financial or dispatch
+authority. Retained compaction V2 preserves operation citation provenance at
+canonical pair rows without emitting the same pair twice. No new table, TTL,
+financial settlement store, namespace-erasure shortcut or larger Run/body/event
+ceiling is introduced. See the [versioned contract](../design/mcp-conservative-continuation.md)
+for implementation and separate live-profile acceptance requirements.
+
 Before fencing the ordinary body namespace, the original cleanup owner also
 uploads one deterministic prepaid cancellation SystemNotice body. This object
 is separate from the success capsule's event list. The owning registered Run
@@ -241,11 +257,22 @@ Owned connector observations use the canonical tagged
 existing `attempt_effect_reservations` original/current/body columns; later
 sequences still use `attempt_operation_proxies_v1`. The table suffix is not a
 record-codec fallback. V2 seals the original operation digest and sequence, with
-exclusive HTTPS versus local-loopback facts, and is reread by reservation,
+exclusive pinned-HTTPS, local MODEL-loopback, or local public-MCP HTTPS facts,
+and is reread by reservation,
 before-send and history/custody consumers. No new endpoint or observation table
 is needed. Retained V1 rows are not rewritten or promoted into V2 authority;
 their presence blocks unsupported serving/recovery and needs the separately
 authorized [drained format cutover](../serverless-egress.md#owned-observation-format-and-cutover).
+The explicit `local_public_mcp_https.v1` arm binds the original local runtime
+installation/profile/host/namespace to the independent retained MCP grant,
+descriptor, fixed endpoint, public-address resolution and verified TLS peer.
+It does not reinterpret MODEL loopback as a tool proxy. Its stateless POST-only
+protocol counters remain bounded process-local execution state; durable
+operation reservation/observation and exact proxy bodies reuse the records
+above. Missing local state cannot authorize protocol or tool replay. This
+component enables no real profile; unknown service money remains unknown and
+cannot authorize MODEL continuation. No table, index, migration or operational
+progress ledger is added.
 Local observation data cannot be relabelled as an image-backed allocation or
 replace the actual retained local connector.
 

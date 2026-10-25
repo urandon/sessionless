@@ -14,6 +14,8 @@ import (
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
+	"gitcode.com/urandon/sessionless/internal/mcpwire"
 	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -142,6 +144,9 @@ func (entry *LocalInvocationEntryV1) PrepareCompaction(ctx context.Context) (*lo
 	defer finish()
 	call, cancel := ownedAuthorityCallContext(call)
 	defer cancel()
+	if err := entry.prepareMCPConservativeLocked(call); err != nil {
+		return nil, err
+	}
 	source, err := entry.captureCompactionSource(call, localSourcePreparation)
 	if err != nil {
 		return nil, err
@@ -196,18 +201,6 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if policy == nil || policy.Validate() != nil {
 		return deny()
 	}
-	// There is no current native-catalog owner in this base. Never silently drop
-	// a captured catalog or treat a prior compaction as an ordinary message.
-	operations := make([]compactioncontext.CompletedOperationV1, len(state.operations))
-	for i, operation := range state.operations {
-		var request struct {
-			Tools []json.RawMessage `json:"tools"`
-		}
-		if (operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && operation.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
-			return deny()
-		}
-		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
-	}
 	root, finishRoot, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
 		return deny()
@@ -223,6 +216,7 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	store := entry.owner.store
 	var at time.Time
 	var currentProfile domain.OwnedAgentProfileCurrentV1
+	var currentGrant mcpadmission.MCPToolGrantV1
 	err = store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		at, currentProfile = time.Time{}, domain.OwnedAgentProfileCurrentV1{}
 		if _, err := source.rejoinRunLocked(ctx, q, nil, nil); err != nil {
@@ -232,6 +226,15 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 		currentProfile, err = readOwnedProfileCurrent(ctx, q, entry.source.Profile)
 		if err != nil {
 			return err
+		}
+		currentGrant, err = entry.owner.source.ReadMCPToolGrant(ctx, entry.source.Profile, q.at)
+		if err != nil {
+			return q.budget.deny()
+		}
+		grantDigest, grantErr := currentGrant.Digest()
+		mcpCost := entry.parent.Authority.AdmissionCostCeiling.MCPToolCost
+		if grantErr != nil || grantDigest != currentProfile.MCPToolGrantDigest || grantDigest != policy.MCPToolGrantDigest || mcpCost == nil || mcpCost.ValidateAt(q.at) != nil || mcpCost.ScopedGrantDigest != grantDigest {
+			return q.budget.deny()
 		}
 		at = q.at
 		return nil
@@ -271,6 +274,27 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	effective := configuration.Limits
 	effective.MaxInputTokens = min(effective.MaxInputTokens, limits.MaxInputTokensPerCall, limits.MaxAggregateInputTokens-used.InputTokens)
 	effective.MaxOutputTokens = min(effective.MaxOutputTokens, limits.MaxOutputTokensPerCall, limits.MaxAggregateOutputTokens-used.OutputTokens)
+	descriptor, err := mcpwire.ParseDescriptorV1(currentGrant.Descriptor, currentGrant.Limits)
+	if err != nil {
+		return deny()
+	}
+	tools := []configuredinference.ToolV1{{Name: descriptor.Name(), Description: currentGrant.ModelDescription, Parameters: descriptor.InputSchema()}}
+	defer clear(tools[0].Parameters)
+	operations := make([]compactioncontext.CompletedOperationV1, len(state.operations))
+	for i, operation := range state.operations {
+		var request struct {
+			Tools []json.RawMessage `json:"tools"`
+		}
+		kind := operation.Reservation.Operation.Kind
+		if kind == domain.AttemptOperationMCPToolV1 {
+			if _, err := mcpadmission.DecodeSealedToolResultDataV1(operation.Reservation, operation.Observation, operation.Response); err != nil {
+				return deny()
+			}
+		} else if (kind != domain.AttemptOperationModelV1 && kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(operation.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
+			return deny()
+		}
+		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
+	}
 	records := state.view.Records()
 	defer func() {
 		for i := range records {
@@ -287,7 +311,16 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if chargeOwnedAuthorityBody(call, bodyBytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, nil, state.history.runs)
+	data, v2, err := entry.localContextDataV2(source)
+	if err != nil {
+		return deny()
+	}
+	var program *compactioncontext.GenerationV1
+	if v2 {
+		program, err = compactioncontext.BuildGenerationV2(configuration, effective, *policy, state.digest, records, operations, parent, tools, data)
+	} else {
+		program, err = compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, tools, state.history.runs)
+	}
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit

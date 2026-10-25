@@ -29,6 +29,11 @@ func localPreparedModelFixture(t *testing.T, input uint64, barrier ...func()) (*
 	if len(barrier) == 1 {
 		prebuild.operationClockBarrier = barrier[0]
 	}
+	return localPreparedModelFixtureWithPrebuild(t, prebuild)
+}
+
+func localPreparedModelFixtureWithPrebuild(t *testing.T, prebuild localRuntimeActualPrebuild) (*compactionSourceFixture, *compactionPublicationSQL) {
+	t.Helper()
 	f := newCompactionSourceFixtureWithPrebuild(t, true, prebuild, true)
 	f.store.ownedProviderPriceCustody = localInvoiceRejectStandardCustody{}
 	engine := &compactionPublicationSQL{compactionEffectSQL: &compactionEffectSQL{compactionSourceSQL: f.queries}}

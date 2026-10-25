@@ -1,8 +1,10 @@
 package ydbstore_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -13,10 +15,41 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpwire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
+
+// assertInstalledModelTools pins the exact closed synthetic grant declared by
+// localSourceMCPDeclaration. It accepts neither an arbitrary caller tool nor
+// a catalog-only name match; any fixture contract change must update this wire
+// expectation explicitly.
+func assertInstalledModelTools(t *testing.T, got []json.RawMessage) {
+	t.Helper()
+	limits := mcpwire.LimitsV1{MessageBytes: 64 << 10, AggregateBytes: 256 << 10, JSONDepth: 32, JSONMembers: 4096,
+		SSELineBytes: 64 << 10, SSEEventBytes: 64 << 10, SSEEvents: 128, Tools: 1, DescriptorBytes: 32 << 10,
+		ArgumentBytes: 4096, ResultTextBytes: 4096, ContentItems: 16}
+	descriptor, err := mcpwire.ParseDescriptorV1([]byte(`{"annotations":{"readOnlyHint":true},"description":"synthetic descriptor, not a live catalog","inputSchema":{"additionalProperties":false,"properties":{"query":{"maxLength":30,"minLength":1,"type":"string"}},"required":["query"],"type":"object"},"name":"search_openai_docs"}`), limits)
+	if err != nil {
+		t.Fatal("retained installed MCP descriptor", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("model request must carry exactly the one retained installed tool, got %d", len(got))
+	}
+	var tool struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(got[0], &tool); err != nil || tool.Type != "function" || tool.Function.Name != descriptor.Name() || tool.Function.Description != "synthetic installed docs lookup" ||
+		!bytes.Equal(bytes.TrimSpace(tool.Function.Parameters), bytes.TrimSpace(descriptor.InputSchema())) {
+		t.Fatalf("model tool differs from exact retained MCP grant: type=%q name=%q description=%q schema=%s err=%v", tool.Type, tool.Function.Name, tool.Function.Description, tool.Function.Parameters, err)
+	}
+}
 
 type v1ConsumerBlobs struct {
 	*globalClosureBlobs
@@ -74,9 +107,10 @@ func assertV1ConsumerWire(t *testing.T, recorder *globalClosurePeer, seed *ydbst
 	}
 	var request globalClosureWire
 	decodeGlobalClosureJSON(t, wires[len(wires)-1], &request)
-	if request.Model != seed.Profile.ModelID || request.Stream || request.N != 1 || request.MaxTokens != min(uint64(2048), seed.Profile.Limits.MaxOutputTokens) || len(request.Tools) != 0 || len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
+	if request.Model != seed.Profile.ModelID || request.Stream || request.N != 1 || request.MaxTokens != min(uint64(2048), seed.Profile.Limits.MaxOutputTokens) || len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
 		t.Fatal("actual fresh MODEL wire shape")
 	}
+	assertInstalledModelTools(t, request.Tools)
 	var got globalClosureHistory
 	decodeGlobalClosureJSON(t, []byte(request.Messages[1].Content), &got)
 	want := globalClosureHistory{Schema: "sessionless.history.v1"}

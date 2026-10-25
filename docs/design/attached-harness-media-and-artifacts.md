@@ -420,6 +420,11 @@ an explicit V2 payload and stage-specific invariants. Do not add a table or
 parallel invocation lifecycle. Denormalized columns must agree with the V2
 stage; an absent canonical digest is not a fabricated valid digest.
 
+The [single-answer persistence contract](inline-receipt-persistence.md)
+defines the private V2 SQL encoding without changing this custody owner or
+the public/canonical byte contracts. Codec implementation and aggregate-memory
+qualification remain separate from engineering design acceptance.
+
 | Stage | Meaning and permitted transition |
 | --- | --- |
 | prepared | Exact authenticated plan/expiry registered; no body identity consumed and no canonical write authority issued. One atomic claim may advance it. |

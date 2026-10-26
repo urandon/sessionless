@@ -187,9 +187,9 @@ Every new attempt's immutable resource CredentialGeneration must equal the
 local binding generation. Never upgrade a sealed job after refresh, reinterpret
 the generation as a lower bound or silently reuse its previous binding.
 New native launch/egress remains subject to existing currentness checks.
-The necessary authenticated metadata-only publication/acknowledgement into
-the existing resource/admission owner must be designed in #133 composition;
-on a missing/stale publication, new admission stays disabled. No secret/ref
+The separate [generation publication design](attached-resource-generation-publication.md)
+specifies metadata-only publication/acknowledgement and evidence/admission
+handoff under #133. On a missing/stale publication, new admission stays disabled. No secret/ref
 leaves the owner host and no second authority table is introduced by this plan.
 
 Successful WriteBack by the original completed invocation must not invalidate

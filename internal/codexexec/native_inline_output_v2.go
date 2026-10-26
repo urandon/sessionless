@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"reflect"
 	"time"
 
@@ -140,11 +141,41 @@ func (v *NativeInlineOutputV2) currentLocked(ctx context.Context) error {
 	native := v.slot.original.native
 	now := v.owner.nativeNowV2()
 	if native == nil || native.self != native || native.child == nil || native.child.CheckReceiptScopeV2(ctx) != nil ||
-		validateNativeEnvelopeEvidenceV2(native.profileV2, native.evidenceV2, native.bindingV2, now) != nil ||
-		nativeCredentialCurrentV2(ctx, native.credentialBindingsV2, native.authority, now) != nil || ctx.Err() != nil {
+		validateNativeEnvelopeEvidenceV2(native.profileV2, native.evidenceV2, native.bindingV2, now) != nil {
+		return ErrAuthorityUnavailable
+	}
+	// Only this original private finalized slot supplies the writeback result.
+	// Do not upgrade its sealed N authority/evidence or revive its closed child:
+	// a successful own N->N+1 CAS authorizes receipt currentness, not execution.
+	expected, err := nativeReceiptGenerationV2(native.authority.ProviderResource.CredentialGeneration, v.slot.result, v.slot.runErr)
+	if err != nil {
+		return ErrAuthorityUnavailable
+	}
+	binding, err := readNativeCredentialMetadataV2(ctx, native.credentialBindingsV2, native.authority, now)
+	if err != nil || binding.Generation != expected || ctx.Err() != nil {
 		return ErrAuthorityUnavailable
 	}
 	return nil
+}
+
+// This arithmetic is not provenance by itself. Its sole production caller
+// first validates the original private successful finalized slot and receipt
+// scope. An unrelated advance or invalid lifecycle result never follows N.
+func nativeReceiptGenerationV2(original uint64, result attachedworkerdaemon.InvocationResult, runErr error) (uint64, error) {
+	if original == 0 || !result.CredentialReleaseRequired || !result.CredentialReleased || !result.Succeeded(runErr) {
+		return 0, ErrAuthorityUnavailable
+	}
+	expected := original
+	if result.CredentialChanged {
+		if original == math.MaxUint64 {
+			return 0, ErrAuthorityUnavailable
+		}
+		expected++
+	}
+	if result.CredentialGeneration != expected {
+		return 0, ErrAuthorityUnavailable
+	}
+	return expected, nil
 }
 
 // Declaration returns detached untrusted wire metadata, never body/provenance

@@ -170,7 +170,16 @@ func (p *nativeInlineHTTPPeer) snapshot() (int, int, int, []string) {
 // actual InlineClientV2 -> HTTP peer -> original Session ACK/retirement. This
 // qualifies local orchestration only, never actual native/provider/YDB custody.
 func TestNativeInlineTransportV2(t *testing.T) {
-	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t, attachedworkerstack.NativeInlineHeldACKV2ForTest)
+	testNativeInlineTransportV2(t, attachedworkerstack.NativeInlineHeldACKV2ForTest)
+}
+
+func TestNativeInlineTransportV2OwnRefresh(t *testing.T) {
+	testNativeInlineTransportV2(t, attachedworkerstack.NativeInlineOwnCredentialRefreshV2ForTest)
+}
+
+func testNativeInlineTransportV2(t *testing.T, fault attachedworkerstack.NativeInlineFaultV2ForTest) {
+	t.Helper()
+	f := attachedworkerstack.NewNativeInlineFixtureV2ForTest(t, fault)
 	peer := &nativeInlineHTTPPeer{fixture: f}
 	client, err := attachedworkerreceipt.NewInlineClientV2("https://native-inline.invalid", &http.Client{Transport: peer}, []byte(nativeInlineHTTPBearer))
 	if err != nil {
@@ -196,6 +205,7 @@ func TestNativeInlineTransportV2(t *testing.T) {
 		t.Fatalf("original offer/claim/materialization available=%v err=%v", available, err)
 	}
 	t.Cleanup(invocation.VerifiedInput.Clear)
+	originalBinding := invocation.VerifiedInput.Job.HarnessBinding.Clone()
 	type runOutcome struct {
 		result attachedworkerdaemon.InvocationResult
 		err    error
@@ -252,6 +262,16 @@ func TestNativeInlineTransportV2(t *testing.T) {
 	}
 	if !completed.result.Succeeded(completed.err) || !completed.result.CleanupComplete() {
 		t.Fatalf("original native prepared run failed: %+v err=%v", completed.result, completed.err)
+	}
+	expectedGeneration := originalBinding.Resource.CredentialGeneration
+	ownRefresh := fault == attachedworkerstack.NativeInlineOwnCredentialRefreshV2ForTest
+	if ownRefresh {
+		expectedGeneration++
+	}
+	if completed.result.CredentialChanged != ownRefresh || completed.result.CredentialGeneration != expectedGeneration ||
+		!reflect.DeepEqual(invocation.VerifiedInput.Job.HarnessBinding, originalBinding) ||
+		!reflect.DeepEqual(f.Original.VerifiedInput.Job.HarnessBinding, originalBinding) {
+		t.Fatalf("own WriteBack result or immutable original binding changed: changed=%t generation=%d want=%d", completed.result.CredentialChanged, completed.result.CredentialGeneration, expectedGeneration)
 	}
 	source, err := f.Stack.InlineReceiptCandidate(ctx, invocation.Identity, completed.result, completed.err)
 	if err != nil {

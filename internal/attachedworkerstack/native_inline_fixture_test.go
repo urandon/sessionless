@@ -109,6 +109,7 @@ const (
 	NativeInlineBoundaryReleaseFailureV2ForTest
 	NativeInlineWriteBackFailureV2ForTest
 	NativeInlineCredentialReleaseFailureV2ForTest
+	NativeInlineOwnCredentialRefreshV2ForTest
 )
 
 // NativeInlineFixtureV2ForTest exists only in this package's test binary. It
@@ -177,18 +178,23 @@ func (f *NativeInlineFixtureV2ForTest) record(event string) {
 }
 
 type nativeInlineCredentialFixture struct {
+	mu      sync.Mutex
 	fixture *NativeInlineFixtureV2ForTest
 	root    string
 	binding domain.CredentialBinding
 }
 
 func (c *nativeInlineCredentialFixture) LoadCredentialBinding(ctx context.Context, tenant domain.TenantID, connection domain.SubscriptionConnectionID) (domain.CredentialBinding, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if ctx.Err() != nil || tenant != c.binding.TenantID || connection != c.binding.SubscriptionConnectionID {
 		return domain.CredentialBinding{}, false, errors.New("synthetic metadata scope mismatch")
 	}
 	return c.binding, true, nil
 }
 func (c *nativeInlineCredentialFixture) Issue(ctx context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if ctx.Err() != nil || request.ValidateAt(c.fixture.CurrentTime()) != nil || request.ProviderResource.CredentialGeneration != c.binding.Generation {
 		return ports.CredentialHandle{}, errors.New("synthetic credential issue scope mismatch")
 	}
@@ -219,6 +225,15 @@ func (c *nativeInlineCredentialFixture) WriteBack(ctx context.Context, handle po
 		return ports.CredentialWriteBackResult{}, errors.New("controlled synthetic writeback failure")
 	}
 	c.fixture.record("writeback")
+	if c.fixture.fault == NativeInlineOwnCredentialRefreshV2ForTest {
+		// Advance only inside this original invocation's successful WriteBack,
+		// after process quiescence. Admission/evidence stay sealed at the old N.
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.binding.Generation++
+		c.binding.UpdatedAt = c.fixture.CurrentTime()
+		return ports.CredentialWriteBackResult{Changed: true, Generation: c.binding.Generation}, nil
+	}
 	return ports.CredentialWriteBackResult{Generation: handle.BindingGeneration}, nil
 }
 func (c *nativeInlineCredentialFixture) Release(context.Context, ports.CredentialHandle) error {
@@ -395,7 +410,7 @@ func (p *nativeInlineSessionPeer) Exchange(ctx context.Context, batch attachedwo
 // no Codex, bootstrap, relay, engine, model or provider is executed.
 func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForTest) *NativeInlineFixtureV2ForTest {
 	t.Helper()
-	if fault > NativeInlineCredentialReleaseFailureV2ForTest {
+	if fault > NativeInlineOwnCredentialRefreshV2ForTest {
 		t.Fatal("unknown closed native inline fixture fault")
 	}
 	base, _, _ := nativeStackFixtureV3(t)

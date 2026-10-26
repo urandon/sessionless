@@ -321,62 +321,35 @@ func inlineReceiptComparisonMetadataV2(record AttachedWorkerOutputReceiptV2) Att
 }
 
 func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOutputReceiptV2, insert bool) error {
-	stored, err := encodeInlineReceiptProjectionV2(r)
+	if ctx == nil || tx == nil || tx.sqlTx == nil {
+		return ErrAttachedWorkerAttemptConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	encoded, err := encodeInlineReceiptSQLBytesV2(r)
 	if err != nil {
 		return err
 	}
-	w := inlineReceiptSQLWriterV2{ctx: ctx, tx: tx, record: r, insert: insert}
-	err = json.NewEncoder(&w).Encode(stored)
-	if w.err != nil {
-		return w.err
+	// The SQL parameter is exclusively owned, exact-capacity JSON, not a view
+	// into encoding/json's shared pool. The synchronous SDK call may borrow it
+	// until ExecContext returns; do not clear it during send/reconciliation.
+	// SDK protobuf/transport copies have independent lifetimes and are not
+	// erased or accounted for by clearing this one owned representation.
+	defer clear(encoded)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if err != nil || !w.called {
-		return ErrAttachedWorkerAttemptConflict
-	}
-	return nil
-}
-
-// Encoder lends its complete encoding during Write, avoiding Marshal's second
-// full payload copy. Exec must finish before Write returns. Neither this writer
-// nor its caller may retain or modify p: it belongs to encoding/json's pool.
-// Encoder still buffers before Write and keeps its pool; this is not a bound on
-// aggregate memory, pooled capacity or zeroization. The cap below gates SQL.
-type inlineReceiptSQLWriterV2 struct {
-	ctx    context.Context
-	tx     *stateTx
-	record AttachedWorkerOutputReceiptV2
-	insert bool
-	called bool
-	err    error
-}
-
-func (w *inlineReceiptSQLWriterV2) Write(p []byte) (int, error) {
-	if w.called {
-		w.err = ErrAttachedWorkerAttemptConflict
-		return 0, w.err
-	}
-	w.called = true
-	if len(p) == 0 || p[len(p)-1] != '\n' || len(p)-1 > maxInlineReceiptStoredBytesV2 {
-		w.err = ErrAttachedWorkerAttemptConflict
-		return 0, w.err
-	}
-	// Default Encoder adds exactly one LF. Keep Marshal's exact SQL bytes,
-	// including every escaped interior newline and HTML-sensitive character.
-	encoded := p[:len(p)-1]
-	r := w.record
 	a := r.Binding
-	if w.insert {
-		_, w.err = w.tx.sqlTx.ExecContext(w.ctx, `INSERT INTO attached_worker_output_receipts
+	if insert {
+		_, err = tx.sqlTx.ExecContext(ctx, `INSERT INTO attached_worker_output_receipts
  (tenant_id,run_id,owner_user_id,worker_id,attempt_id,lease_generation,canonical_digest,candidate_fingerprint,created_at,payload)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument))`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, r.CandidateFingerprint, r.CreatedAt, encoded)
 	} else {
-		_, w.err = w.tx.sqlTx.ExecContext(w.ctx, `UPDATE attached_worker_output_receipts SET canonical_digest=$7,payload=CAST($8 AS JsonDocument)
+		_, err = tx.sqlTx.ExecContext(ctx, `UPDATE attached_worker_output_receipts SET canonical_digest=$7,payload=CAST($8 AS JsonDocument)
  WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration, r.CanonicalDigest, encoded)
 	}
-	if w.err != nil {
-		return 0, w.err
-	}
-	return len(p), nil
+	return err
 }
 
 // Called only inside the original authorized deletion transaction. The same

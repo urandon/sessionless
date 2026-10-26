@@ -197,7 +197,7 @@ func (f *receiptMemorySQL) ExecContext(_ context.Context, statement string, args
 		return nil, errors.New("receipt payload acquired an extra string representation")
 	}
 	// The driver borrows this parameter only until Exec returns. Retain a
-	// test-owned copy, never the Encoder's pooled buffer or an interior view.
+	// test-owned copy, never the writer's owned parameter or an interior view.
 	if !f.discard {
 		f.written = bytes.Clone(payload)
 	}
@@ -351,8 +351,8 @@ func maximumInlineArtifactSQLFixtureV2(t *testing.T) AttachedWorkerOutputReceipt
 	return r
 }
 
-func TestInlineReceiptSQLEncoderMatchesMarshal(t *testing.T) {
-	for _, name := range []string{"prepared", "claimed", "copying", "ready", "retired", "maximum", "maximum_artifacts", "encoding_error", "oversized"} {
+func TestInlineReceiptSQLSerializationMatchesMarshal(t *testing.T) {
+	for _, name := range []string{"prepared", "claimed", "copying", "ready", "retired", "maximum", "maximum_artifacts", "old_boundary", "encoding_error", "oversized"} {
 		t.Run(name, func(t *testing.T) {
 			r := inlineCanonicalFixtureV2(t)
 			switch name {
@@ -370,6 +370,8 @@ func TestInlineReceiptSQLEncoderMatchesMarshal(t *testing.T) {
 				r = maximumInlineIdentityFixtureV2(t)
 			case "maximum_artifacts":
 				r = maximumInlineArtifactSQLFixtureV2(t)
+			case "old_boundary":
+				r = nearLimitInlineCodecFixtureV2(t)
 			case "encoding_error":
 				r.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 			case "oversized":
@@ -389,61 +391,86 @@ func TestInlineReceiptSQLEncoderMatchesMarshal(t *testing.T) {
 						t.Fatal("encoding/size denial reached SQL", err, f.execCalls-before)
 					}
 				} else if err != nil || f.execCalls != before+1 || !bytes.Equal(f.written, raw) {
-					t.Fatal("Encoder changed private stored bytes or single Exec", err, f.execCalls-before)
+					t.Fatal("serialization changed private stored bytes or single Exec", err, f.execCalls-before)
 				}
 			}
 		})
 	}
 }
 
-func TestInlineReceiptSQLWriterBorrowAndOneShot(t *testing.T) {
-	for _, name := range []string{"exact_cap", "oversized", "missing_lf", "empty", "sql_error", "canceled"} {
+func TestInlineReceiptSQLWriterExactOwnedLifetime(t *testing.T) {
+	for _, name := range []string{"maximum", "old_boundary", "sql_error", "canceled", "expired", "cancel_during_exec", "invalid"} {
 		t.Run(name, func(t *testing.T) {
-			f, state := openReceiptMemoryWriterTx(t)
-			p := []byte("{\"answer\":\"<>&\\n\\u2028\"}\n")
-			switch name {
-			case "exact_cap", "oversized":
-				size := maxInlineReceiptStoredBytesV2
-				if name == "oversized" {
-					size++
-				}
-				p = []byte("\"" + strings.Repeat("x", size-2) + "\"\n")
-			case "missing_lf":
-				p = p[:len(p)-1]
-			case "empty":
-				p = nil
-			case "sql_error":
-				f.execErr = io.ErrClosedPipe
+			r := maximumInlineArtifactSQLFixtureV2(t)
+			if name == "old_boundary" {
+				r = nearLimitInlineCodecFixtureV2(t)
 			}
-			original := bytes.Clone(p)
-			f.duringExec = func(payload []byte) error {
-				if len(payload) != len(p)-1 || &payload[0] != &p[0] || !bytes.Equal(payload, original[:len(original)-1]) {
-					return errors.New("SQL copied or modified the borrowed complete payload")
-				}
-				return nil
+			expected := marshalInlineStoredReceiptTestV2(t, r)
+			if name == "invalid" {
+				r.Materialization.Completion.Events[0].DisplayText = "forged display"
 			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if name == "canceled" {
+			before, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clear(before)
+			for _, insert := range []bool{true, false} {
+				f, state := openReceiptMemoryWriterTx(t)
+				if name == "sql_error" {
+					f.execErr = io.ErrClosedPipe
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				if name == "expired" {
+					cancel()
+					ctx, cancel = context.WithDeadline(t.Context(), time.Unix(1, 0))
+				}
+				if name == "canceled" {
+					cancel()
+				}
+				var observed []byte
+				f.duringExec = func(payload []byte) error {
+					if len(payload) != cap(payload) || !bytes.Equal(payload, expected) {
+						return fmt.Errorf("SQL payload len=%d cap=%d differs from exact owned JSON len=%d", len(payload), cap(payload), len(expected))
+					}
+					// Deliberately retain an alias in this test-only driver to
+					// observe cleanup AFTER the synchronous call, never to
+					// authorize production use of a released parameter.
+					observed = payload
+					if name == "cancel_during_exec" {
+						cancel()
+						return ctx.Err()
+					}
+					return nil
+				}
+				err := writeInlineReceiptTxV2(ctx, state, r, insert)
 				cancel()
-			}
-			w := inlineReceiptSQLWriterV2{ctx: ctx, tx: state}
-			n, err := w.Write(p)
-			wantCalls := 1
-			var wantErr error
-			switch name {
-			case "oversized", "missing_lf", "empty":
-				wantCalls, wantErr = 0, ErrAttachedWorkerAttemptConflict
-			case "sql_error":
-				wantErr = io.ErrClosedPipe
-			case "canceled":
-				wantCalls, wantErr = 0, context.Canceled
-			}
-			if !errors.Is(err, wantErr) || f.execCalls != wantCalls || !bytes.Equal(p, original) || (err == nil && n != len(p)) || (err != nil && n != 0) {
-				t.Fatalf("borrowed write: n=%d err=%v calls=%d wantErr=%v wantCalls=%d", n, err, f.execCalls, wantErr, wantCalls)
-			}
-			if n, err := w.Write([]byte("{}\n")); n != 0 || !errors.Is(err, ErrAttachedWorkerAttemptConflict) || f.execCalls != wantCalls {
-				t.Fatal("second Write reacquired SQL mutation", n, err, f.execCalls)
+				wantCalls := 1
+				var wantErr error
+				switch name {
+				case "sql_error":
+					wantErr = io.ErrClosedPipe
+				case "canceled":
+					wantCalls, wantErr = 0, context.Canceled
+				case "expired":
+					wantCalls, wantErr = 0, context.DeadlineExceeded
+				case "cancel_during_exec":
+					wantErr = context.Canceled
+				case "invalid":
+					wantCalls, wantErr = 0, ErrAttachedWorkerAttemptConflict
+				}
+				if !errors.Is(err, wantErr) || f.execCalls != wantCalls {
+					t.Fatalf("insert=%v err=%v calls=%d wantErr=%v wantCalls=%d", insert, err, f.execCalls, wantErr, wantCalls)
+				}
+				for i, b := range observed {
+					if b != 0 {
+						t.Fatalf("owned SQL parameter not cleared after return: byte=%d", i)
+					}
+				}
+				after, err := json.Marshal(r)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatal("serialization mutated original receipt", err)
+				}
+				clear(after)
 			}
 		})
 	}

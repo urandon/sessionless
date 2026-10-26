@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
-	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/strictjson"
 )
 
@@ -22,43 +21,12 @@ type storedInlineReceiptV2 struct {
 }
 
 func encodeInlineReceiptProjectionV2(r AttachedWorkerOutputReceiptV2) (storedInlineReceiptV2, error) {
-	if validateInlineReceiptSelfV2(r) != nil {
+	plan, err := planInlineReceiptEncodingV2(r)
+	if err != nil {
 		return storedInlineReceiptV2{}, ErrAttachedWorkerAttemptConflict
 	}
-	// Preserve the old full-domain Marshal byte ceiling exactly. Encoder adds
-	// one newline; the count includes it only for checking/removing framing.
-	// Encoder buffers before Write and uses a shared pool: this avoids a
-	// returned full copy, NOT an aggregate allocation/capacity/zeroization proof.
-	count := inlineReceiptDomainCountV2{}
-	if json.NewEncoder(&count).Encode(r) != nil || count.bytes == 0 || count.last != '\n' || count.bytes-1 > maxInlineReceiptRecordBytesV2 {
-		return storedInlineReceiptV2{}, ErrAttachedWorkerAttemptConflict
-	}
-	if original := r.Materialization.Completion; original != nil {
-		completion := *original
-		completion.Events = make([]domain.SessionEventDraft, len(original.Events))
-		copy(completion.Events, original.Events)
-		for i := range completion.Events {
-			completion.Events[i].DisplayText = ""
-		}
-		r.Materialization.Completion = &completion
-	}
-	return storedInlineReceiptV2{PersistenceEncoding: inlineReceiptPersistenceEncodingV2, AttachedWorkerOutputReceiptV2: r}, nil
-}
-
-type inlineReceiptDomainCountV2 struct {
-	bytes int
-	last  byte
-}
-
-func (w *inlineReceiptDomainCountV2) Write(p []byte) (int, error) {
-	if len(p) > maxInlineReceiptRecordBytesV2+1-w.bytes {
-		return 0, ErrAttachedWorkerAttemptConflict
-	}
-	w.bytes += len(p)
-	if len(p) != 0 {
-		w.last = p[len(p)-1]
-	}
-	return len(p), nil
+	defer clear(plan.metadata)
+	return plan.projected, nil
 }
 
 func decodeInlineStoredReceiptV2(payload []byte) (AttachedWorkerOutputReceiptV2, error) {

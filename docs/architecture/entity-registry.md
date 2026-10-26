@@ -196,6 +196,30 @@ evidence. That replacement is not implemented: the active source inventory
 remains 101 tables, including `lease_heads`. Other Run/Attempt/history and
 owner/retention decisions stay open in #205.
 
+## Attached output custody
+
+Inline V2 reuses `attached_worker_output_receipts` and its existing primary key.
+The versioned row moves through `prepared`, `body_claimed`,
+`canonical_copying`, `ready`, or `retired_without_writes`. Preparation stores
+the exact authenticated plan; the body claim consumes the only submission
+before reading content. Canonical copy custody records every planned immutable
+reference and its sole writer before the first object write. Deletion inventory
+must include those references even when publication or a physical write failed.
+Only a transaction that proves no canonical writer was issued and fences late
+promotion may retire a pre-copy row without writes. Expiry, object absence or
+client disconnect do not dispose of an ambiguous writer.
+
+The local `output-receipt-checkpoint.json` remains the sole client journal under
+its installation runtime lease. Its explicit V2 payload separates an immutable
+plan from monotonic Prepare/body/reconciliation burns and READY/ACK progress;
+the full encoded local record is capped at 32 KiB. Exact compare-and-swap and
+no-token idempotent observation preserve the client fence across restart.
+This file is not server custody, a producer witness or another execution
+lifecycle. Private artifact bytes stay in the original completed owner until
+the original adapter verifies ACK and retires its exact journal identity.
+No table, index, TTL or worker source-object namespace is added. See the
+[inline output contract](../design/attached-harness-media-and-artifacts.md#inline-worker-output-transport-v2).
+
 ## Configured local resource records
 
 The disabled #216 local-inference contracts reuse

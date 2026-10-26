@@ -42,11 +42,7 @@ func main() {
 	}
 	defer closeDependencies()
 
-	server := &http.Server{
-		Addr:              address,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newHTTPServer(address, handler)
 
 	go func() {
 		<-ctx.Done()
@@ -62,6 +58,11 @@ func main() {
 		logger.Error("HTTP server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes: controlapi.MaxRequestHeaderBytes}
 }
 
 type systemClock struct{}

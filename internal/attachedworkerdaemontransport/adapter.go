@@ -140,9 +140,11 @@ func (profile LocalProfileV1) GoString() string { return profile.String() }
 type Config struct {
 	// Installed only by the normal pinned-runtime composition.
 	preparedReceipt        *preflightRunner
+	preparedInlineV2       bool
 	Profile                LocalProfileV1
 	CapabilityManifest     *attachedworkerprotocol.CapabilityManifestV1
 	ReceiptPublisher       ReceiptPublisher
+	InlineReceiptPublisher InlineReceiptPublisherV2
 	ReceiptCandidate       ReceiptCandidateBuilder
 	MaterializationRoot    string
 	MaxInputBytes          int
@@ -200,6 +202,7 @@ type activeAttempt struct {
 	cancelRevision              uint64
 	cancelAcknowledged          bool
 	drainRevision               uint64
+	inline                      *inlineReceiptAttemptV2
 }
 
 type completedAttempt struct {
@@ -219,6 +222,25 @@ type Adapter struct {
 }
 
 func New(session SessionPort, materializer Materializer, config Config) (*Adapter, error) {
+	if config.preparedReceipt != nil {
+		original, ok := session.(*attachedworkersession.Session)
+		if !ok || original == nil {
+			return nil, ErrInvalidConfiguration
+		}
+		stack, err := config.preparedReceipt.preparedStack()
+		if err != nil {
+			return nil, err
+		}
+		// The lease-held preflight owns this private configuration. Rebuild
+		// the post-connect adapter from the same concrete Stack, deriving its
+		// frozen mode again rather than copying a caller assertion.
+		config.ReceiptCandidate, config.preparedReceipt, config.preparedInlineV2 = nil, nil, false
+		return NewPreparedAdapter(original, materializer, config, stack)
+	}
+	return newAdapter(session, materializer, config)
+}
+
+func newAdapter(session SessionPort, materializer Materializer, config Config) (*Adapter, error) {
 	if session == nil || materializer == nil {
 		return nil, ErrInvalidConfiguration
 	}
@@ -235,6 +257,11 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 				}
 				break
 			}
+		}
+	}
+	if config.preparedInlineV2 {
+		if _, ok := session.(InlineReceiptJournalV2); !ok {
+			return nil, ErrInvalidConfiguration
 		}
 	}
 	adapter := &Adapter{session: session, materializer: materializer, config: config, gate: make(chan struct{}, 1)}
@@ -842,7 +869,13 @@ func (adapter *Adapter) completeOwned(
 	if active.cancelRevision != 0 && !active.cancelAcknowledged {
 		return ErrReconciliationRequired
 	}
-	if authorityErr := adapter.validateActiveAuthority(active); authorityErr != nil {
+	var authorityErr error
+	if adapter.config.preparedInlineV2 && active.inline != nil {
+		authorityErr = adapter.validateInlineRecoveryAuthorityV2(active, fingerprint)
+	} else {
+		authorityErr = adapter.validateActiveAuthority(active)
+	}
+	if authorityErr != nil {
 		return authorityErr
 	}
 	status, terminalResult := classifyTerminal(active.cancelRevision, result, runErr)
@@ -850,7 +883,11 @@ func (adapter *Adapter) completeOwned(
 	var sealedReceipt []byte
 	defer func() { clearBytes(sealedReceipt) }()
 	if adapter.receiptEnabled() {
-		evidence, sealedReceipt, err = adapter.publishReceipt(ctx, active, result, runErr, status)
+		if adapter.config.preparedInlineV2 && status == attachedworkerprotocol.TerminalSucceeded {
+			evidence, err = adapter.publishInlineReceiptV2(ctx, active, result, runErr)
+		} else {
+			evidence, sealedReceipt, err = adapter.publishReceipt(ctx, active, result, runErr, status)
+		}
 		if err != nil {
 			return err
 		}
@@ -874,6 +911,11 @@ func (adapter *Adapter) completeOwned(
 	}
 	if len(sealedReceipt) != 0 {
 		if err := adapter.session.(ReceiptJournal).RetireReceiptSubmission(ctx, sealedReceipt); err != nil {
+			return errors.Join(ErrReconciliationRequired, err)
+		}
+	}
+	if active.inline != nil {
+		if err := adapter.ackInlineReceiptV2(ctx, active); err != nil {
 			return errors.Join(ErrReconciliationRequired, err)
 		}
 	}
@@ -1070,7 +1112,7 @@ func validateConfig(config Config) error {
 		}
 		seen[variable.Name] = struct{}{}
 	}
-	receiptFeature := false
+	receiptFeature, inlineFeature := false, false
 	if config.CapabilityManifest != nil {
 		if config.CapabilityManifest.Validate() != nil {
 			return ErrInvalidConfiguration
@@ -1081,10 +1123,15 @@ func validateConfig(config Config) error {
 		}
 		for _, feature := range config.CapabilityManifest.Features {
 			receiptFeature = receiptFeature || feature == attachedworkerprotocol.FeatureOutputReceipt
+			inlineFeature = inlineFeature || feature == attachedworkerprotocol.FeatureInlineOutputV2
 		}
 	}
 	if receiptFeature != (config.ReceiptPublisher != nil && config.ReceiptCandidate != nil) ||
 		!receiptFeature && (config.ReceiptPublisher != nil || config.ReceiptCandidate != nil) {
+		return ErrInvalidConfiguration
+	}
+	if inlineFeature != (config.preparedInlineV2 && config.preparedReceipt != nil && config.InlineReceiptPublisher != nil) ||
+		!inlineFeature && (config.preparedInlineV2 || config.InlineReceiptPublisher != nil) {
 		return ErrInvalidConfiguration
 	}
 	return nil

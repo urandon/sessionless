@@ -127,7 +127,8 @@ func newNativeStackV3(ctx context.Context, manifest attachedworkerlocal.Manifest
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &Stack{runner: &pinnedRunner{delegate: prepared, executable: manifest.Harness.Executable, digest: harnessDigest, arguments: slices.Clone(arguments)},
-		prepared: prepared, nativePrepared: true, now: clock,
+		prepared: prepared, nativePrepared: true, inlineOutputV2: native.InlineOutputV2, allowedEnvironmentNames: slices.Clone(config.AllowedEnvironmentNames), now: clock,
+		nativeOperatingSystem: profile.OperatingSystem, nativeArchitecture: profile.Architecture, nativeHarnessVersion: profile.Backend.ExecutableVersion,
 		scope: preparedStackScope{tenant: manifest.TenantID, owner: manifest.OwnerUserID, worker: manifest.WorkerID, enrollment: manifest.EnrollmentGeneration, connection: manifest.ConnectionGeneration},
 		evidence: EvidenceV1{Version: evidenceVersionV1, ManifestRevision: manifest.Revision, Boundary: manifest.OCI.Boundary,
 			IsolationProfile: launcher.ProfileV3().Name, ReconciledResidue: residue}}, nil

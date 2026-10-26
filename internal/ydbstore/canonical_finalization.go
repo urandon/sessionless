@@ -51,13 +51,23 @@ type finalizationEventIdentity struct {
 	DisplayText    string                  `json:"display_text,omitempty"`
 }
 
-func runFinalizationDigest(
+// One canonical DATA shape feeds both the historical Marshal digest and the
+// bounded inline receipt hash. Field order/tags/omitempty are digest bytes.
+type runFinalizationIdentityV1 struct {
+	Status                       domain.RunStatus                                    `json:"status"`
+	Manifest                     *domain.ArtifactManifest                            `json:"manifest,omitempty"`
+	Events                       []finalizationEventIdentity                         `json:"events"`
+	SubstrateEvidenceDigest      *domain.SubstrateExecutionEvidenceDigestV1          `json:"substrate_evidence_digest,omitempty"`
+	ReconciliationEvidenceDigest *domain.AttemptEffectReconciliationEvidenceDigestV1 `json:"reconciliation_evidence_digest,omitempty"`
+}
+
+func buildRunFinalizationIdentityV1(
 	status domain.RunStatus,
 	manifest *domain.ArtifactManifest,
 	events []domain.SessionEventDraft,
 	substrateEvidence *domain.SubstrateExecutionEvidenceV1,
 	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
-) (string, error) {
+) runFinalizationIdentityV1 {
 	identities := make([]finalizationEventIdentity, 0, len(events))
 	for _, event := range events {
 		identities = append(identities, finalizationEventIdentity{
@@ -65,17 +75,21 @@ func runFinalizationDigest(
 			Payload: event.Payload, DisplayText: event.DisplayText,
 		})
 	}
-	payload, err := json.Marshal(struct {
-		Status                       domain.RunStatus                                    `json:"status"`
-		Manifest                     *domain.ArtifactManifest                            `json:"manifest,omitempty"`
-		Events                       []finalizationEventIdentity                         `json:"events"`
-		SubstrateEvidenceDigest      *domain.SubstrateExecutionEvidenceDigestV1          `json:"substrate_evidence_digest,omitempty"`
-		ReconciliationEvidenceDigest *domain.AttemptEffectReconciliationEvidenceDigestV1 `json:"reconciliation_evidence_digest,omitempty"`
-	}{
+	return runFinalizationIdentityV1{
 		Status: status, Manifest: manifest, Events: identities,
 		SubstrateEvidenceDigest:      substrateEvidenceDigest(substrateEvidence),
 		ReconciliationEvidenceDigest: reconciliationEvidenceDigest(reconciliationEvidence),
-	})
+	}
+}
+
+func runFinalizationDigest(
+	status domain.RunStatus,
+	manifest *domain.ArtifactManifest,
+	events []domain.SessionEventDraft,
+	substrateEvidence *domain.SubstrateExecutionEvidenceV1,
+	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
+) (string, error) {
+	payload, err := json.Marshal(buildRunFinalizationIdentityV1(status, manifest, events, substrateEvidence, reconciliationEvidence))
 	if err != nil {
 		return "", err
 	}

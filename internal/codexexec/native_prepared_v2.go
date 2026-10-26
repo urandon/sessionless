@@ -112,6 +112,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) nativeDriverV2(ctx context.Context,
 		return nil, err
 	}
 	driver.nativeProfileV2 = boundary.native.profileV2
+	driver.nativeInlineOutputV2 = owner.nativeConfigV2.InlineOutputV2
 	driver.descriptor = driver.nativeProfileV2.descriptor
 	return driver, nil
 }

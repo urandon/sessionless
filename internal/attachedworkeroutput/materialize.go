@@ -65,7 +65,34 @@ func Materialize(
 	candidate Candidate,
 	at time.Time,
 ) (ports.AttachedWorkerTerminalMaterialization, error) {
-	if ctx == nil || blobs == nil || ctx.Err() != nil || at.IsZero() ||
+	if !validMaterializationScope(ctx, blobs, loaded, leaseID, leaseGeneration, at) {
+		return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
+	}
+	if candidate.Status == domain.AttachedWorkerTerminalSucceeded {
+		if uint64(len(candidate.Artifacts)) > uint64(loaded.Job.Limits.MaxArtifacts) {
+			return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
+		}
+		artifacts := make([]materializationArtifact, len(candidate.Artifacts))
+		for i, artifact := range candidate.Artifacts {
+			artifacts[i] = materializationArtifact{name: artifact.Name, mediaType: artifact.MediaType,
+				read: func(ctx context.Context, maxBytes uint64) ([]byte, error) {
+					if artifact.Source.Validate() != nil || artifact.Source.TenantID != loaded.Run.TenantID ||
+						!strings.HasPrefix(artifact.Source.Key, candidatePrefix(loaded)) ||
+						artifact.Source.Size < 0 || uint64(artifact.Source.Size) > maxBytes {
+						return nil, ErrCandidateInvalid
+					}
+					return readVerified(ctx, blobs, loaded.Run.TenantID, artifact.Source, int64(maxBytes))
+				}}
+		}
+		return materializeSuccess(ctx, blobs, loaded, leaseID, leaseGeneration, candidate.Summary, candidate.FailureCode, artifacts, at)
+	}
+	return materializeFailure(ctx, blobs, loaded, leaseID, leaseGeneration, candidate, at)
+}
+
+func validMaterializationScope(ctx context.Context, blobs ports.BlobStore, loaded ports.WorkerJobState,
+	leaseID domain.LeaseID, leaseGeneration uint64, at time.Time,
+) bool {
+	return !(ctx == nil || blobs == nil || ctx.Err() != nil || at.IsZero() ||
 		loaded.Job.ValidateForRun(loaded.Run) != nil ||
 		loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker ||
 		loaded.Attempt.ValidateForRun(loaded.Run) != nil ||
@@ -73,12 +100,12 @@ func Materialize(
 		loaded.Job.AttemptID != loaded.Attempt.ID ||
 		loaded.Job.ReservationID != loaded.Reservation.ID ||
 		leaseID.Validate() != nil || leaseGeneration == 0 ||
-		at.Before(loaded.Run.CreatedAt) {
-		return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
-	}
-	if candidate.Status == domain.AttachedWorkerTerminalSucceeded {
-		return materializeSuccess(ctx, blobs, loaded, leaseID, leaseGeneration, candidate, at)
-	}
+		at.Before(loaded.Run.CreatedAt))
+}
+
+func materializeFailure(ctx context.Context, blobs ports.BlobStore, loaded ports.WorkerJobState,
+	leaseID domain.LeaseID, leaseGeneration uint64, candidate Candidate, at time.Time,
+) (ports.AttachedWorkerTerminalMaterialization, error) {
 	if candidate.Status != domain.AttachedWorkerTerminalFailed &&
 		candidate.Status != domain.AttachedWorkerTerminalCancelled {
 		return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
@@ -109,18 +136,26 @@ func Materialize(
 	}}, nil
 }
 
+// A source is either a verified real storage object (V1) or bounded original
+// inline bytes (V2). Neither representation chooses canonical keys or IDs.
+type materializationArtifact struct {
+	name, mediaType string
+	read            func(context.Context, uint64) ([]byte, error)
+}
+
 func materializeSuccess(
 	ctx context.Context,
 	blobs ports.BlobStore,
 	loaded ports.WorkerJobState,
 	leaseID domain.LeaseID,
 	leaseGeneration uint64,
-	candidate Candidate,
+	answer, failureCode string,
+	artifacts []materializationArtifact,
 	at time.Time,
 ) (ports.AttachedWorkerTerminalMaterialization, error) {
-	summary := strings.TrimSpace(candidate.Summary)
+	summary := strings.TrimSpace(answer)
 	if summary == "" || !utf8.ValidString(summary) || utf8.RuneCountInString(summary) > 32_000 ||
-		candidate.FailureCode != "" || uint32(len(candidate.Artifacts)) > loaded.Job.Limits.MaxArtifacts {
+		failureCode != "" || uint32(len(artifacts)) > loaded.Job.Limits.MaxArtifacts {
 		return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
 	}
 	manifest := domain.ArtifactManifest{
@@ -132,16 +167,16 @@ func materializeSuccess(
 		maxBytes = maxCandidateArtifactBytes
 	}
 	var usedBytes uint64
-	for _, artifact := range candidate.Artifacts {
-		if !validArtifactName(artifact.Name) || strings.TrimSpace(artifact.MediaType) == "" ||
-			artifact.Source.Validate() != nil || artifact.Source.TenantID != loaded.Run.TenantID ||
-			!strings.HasPrefix(artifact.Source.Key, candidatePrefix(loaded)) ||
-			artifact.Source.Size < 0 || uint64(artifact.Source.Size) > maxBytes-usedBytes {
+	for _, artifact := range artifacts {
+		if !validArtifactName(artifact.name) || strings.TrimSpace(artifact.mediaType) == "" || artifact.read == nil {
 			return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
 		}
-		body, err := readVerified(ctx, blobs, loaded.Run.TenantID, artifact.Source, int64(maxBytes-usedBytes))
+		body, err := artifact.read(ctx, maxBytes-usedBytes)
 		if err != nil {
 			return ports.AttachedWorkerTerminalMaterialization{}, err
+		}
+		if uint64(len(body)) > maxBytes-usedBytes {
+			return ports.AttachedWorkerTerminalMaterialization{}, ErrCandidateInvalid
 		}
 		usedBytes += uint64(len(body))
 		digest := sha256.Sum256(body)
@@ -151,7 +186,7 @@ func materializeSuccess(
 		if err != nil {
 			return ports.AttachedWorkerTerminalMaterialization{}, err
 		}
-		manifest.Artifacts = append(manifest.Artifacts, domain.Artifact{Name: artifact.Name, MediaType: artifact.MediaType, Blob: ref})
+		manifest.Artifacts = append(manifest.Artifacts, domain.Artifact{Name: artifact.name, MediaType: artifact.mediaType, Blob: ref})
 	}
 	if err := manifest.ValidateForRun(loaded.Run); err != nil {
 		return ports.AttachedWorkerTerminalMaterialization{}, err

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,8 +100,9 @@ func nativeJoinedFixtureV2(t *testing.T, final string) (*PreparedAttachedWorkerR
 }
 
 type nativeJoinedOptionsV2 struct {
-	setup func(*attachedworkerdaemon.VerifiedAttachedInputV1)
-	park  bool
+	setup        func(*attachedworkerdaemon.VerifiedAttachedInputV1)
+	park         bool
+	inlineOutput bool
 }
 
 func nativeJoinedFixtureMediaV2(t *testing.T, final string, media bool, options ...nativeJoinedOptionsV2) (*PreparedAttachedWorkerRunnerV1, attachedworkerdaemon.Invocation, *nativeJoinedLifecycleV2, *nativeJoinedLauncherV3, *nativeCredentialMetadataReaderV2) {
@@ -109,7 +111,9 @@ func nativeJoinedFixtureMediaV2(t *testing.T, final string, media bool, options 
 	protocol := "{\"type\":\"thread.started\",\"thread_id\":\"synthetic\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":" + string(text) + "}}\n{\"type\":\"turn.completed\"}\n"
 	var configure []func(*attachedworkerdaemon.VerifiedAttachedInputV1)
 	park := ""
+	inlineOutput := false
 	for _, option := range options {
+		inlineOutput = inlineOutput || option.inlineOutput
 		if option.setup != nil {
 			configure = append(configure, option.setup)
 		}
@@ -131,7 +135,7 @@ func nativeJoinedFixtureMediaV2(t *testing.T, final string, media bool, options 
 	p.Launch.Companion = nativeHostArtifact(t)
 	_, evidence, _, _ := nativePolicyFixtureV2(t)
 	metadata := &nativeCredentialMetadataReaderV2{found: true}
-	native := NativePreparedConfigV2{Profile: p, Evidence: evidence, CredentialBindings: metadata}
+	native := NativePreparedConfigV2{Profile: p, Evidence: evidence, CredentialBindings: metadata, InlineOutputV2: inlineOutput}
 	f := newNativeConstructorFixtureAtProfileMedia(t, executable, nil, now, &native, media, configure...)
 	request, _ := validDriverRequestAt(t, now)
 	root := canonicalTempDir(t)
@@ -178,7 +182,16 @@ func nativeJoinedFixtureMediaV2(t *testing.T, final string, media bool, options 
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := runner.Close(ctx); err != nil {
+		if err := runner.Close(ctx); errors.Is(err, ErrInlineReceiptPendingV2) {
+			// A completed inline test without ACK intentionally leaves semantic
+			// custody. This is not successful retirement or synthetic ACK cleanup.
+			runner.mu.Lock()
+			retained := runner.closed && runner.pendingInlineReceiptLockedV2()
+			runner.mu.Unlock()
+			if !retained {
+				t.Error("pending Close did not retain the original closed inline owner")
+			}
+		} else if err != nil {
 			t.Errorf("close owned joined runner: %v", err)
 		}
 	})

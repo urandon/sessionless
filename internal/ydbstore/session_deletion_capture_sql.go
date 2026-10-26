@@ -94,7 +94,13 @@ func deletionCaptureSchema(table, keys, columns string) *deletionCaptureSpec {
 		if len(parts) != 2 || len(parts[1]) != 1 {
 			panic("invalid repository deletion capture schema")
 		}
-		spec.columns = append(spec.columns, deletionCaptureColumn{name: parts[0], kind: parts[1][0], limit: ownedAuthorityHeadBytes})
+		limit := uint64(ownedAuthorityHeadBytes)
+		if table == "attached_worker_output_receipts" && parts[0] == "payload" && parts[1] == "j" {
+			// Match the private receipt codec's raw frame, not a new capture
+			// allowance: aggregate row/byte/time and EOF guards are unchanged.
+			limit = maxInlineReceiptStoredBytesV2
+		}
+		spec.columns = append(spec.columns, deletionCaptureColumn{name: parts[0], kind: parts[1][0], limit: limit})
 	}
 	return spec
 }

@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -216,6 +217,10 @@ func pinnedRuntimePreflight(
 		if err != nil {
 			return nil, nil, ErrInvalidConfiguration
 		}
+		if native.InlineOutputV2 && (!slices.Contains(capability.Features, attachedworkerprotocol.FeatureInlineOutputV2) ||
+			!slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt)) {
+			return nil, nil, ErrInvalidConfiguration
+		}
 		arguments, err := native.Profile.ArgumentsV2()
 		if err != nil || !native.Profile.Backend.Enabled || profile.Executable != native.Profile.Backend.Executable ||
 			profile.ExecutableDigest != native.Profile.Backend.ExecutableDigest || !slices.Equal(profile.Arguments, arguments) || len(profile.Environment) != 0 ||
@@ -238,6 +243,7 @@ func pinnedRuntimePreflight(
 	}
 	capabilityExecutableDigest := slices.Clone(capability.HarnessExecutableDigest)
 	profile = cloneProfile(profile)
+	inlineOutputV2 := stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2
 	var runner attachedworkerdaemon.Runner
 	preflight := func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
 		if !profileMatchesManifest(profile, manifest) ||
@@ -254,20 +260,27 @@ func pinnedRuntimePreflight(
 		runner = pinned
 		return nil
 	}
-	return preflight, &preflightRunner{current: &runner}, nil
+	return preflight, &preflightRunner{current: &runner, inlineOutputV2: inlineOutputV2}, nil
 }
 
 // preflightRunner only exists so local configuration can be validated before
 // Connect. It never dispatches unless the lease-held preflight installed a
 // fully verified runner. A failed preflight cannot leave process authority.
-type preflightRunner struct{ current *attachedworkerdaemon.Runner }
+type preflightRunner struct {
+	current        *attachedworkerdaemon.Runner
+	inlineOutputV2 bool // Frozen with the exact stack configuration, not caller state.
+}
 
 func installPreparedReceipt(config *Config, capability attachedworkerprotocol.CapabilityManifestV1, runner *preflightRunner) error {
-	if config.ReceiptCandidate != nil || config.ReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt) {
+	if runner == nil || config.ReceiptCandidate != nil || config.ReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt) {
+		return ErrInvalidConfiguration
+	}
+	if runner.inlineOutputV2 && (config.InlineReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureInlineOutputV2)) {
 		return ErrInvalidConfiguration
 	}
 	config.ReceiptCandidate = runner.receiptCandidate
 	config.preparedReceipt = runner
+	config.preparedInlineV2 = runner.inlineOutputV2
 	return nil
 }
 func (runner *preflightRunner) preparedStack() (*attachedworkerstack.Stack, error) {
@@ -294,6 +307,14 @@ func (runner *preflightRunner) retireReceipt(identity attachedworkerdaemon.Invoc
 	}
 	return stack.RetireReceipt(identity)
 }
+
+func (runner *preflightRunner) inlineReceiptCandidate(ctx context.Context, identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error) (*codexexec.NativeInlineOutputV2, error) {
+	stack, err := runner.preparedStack()
+	if err != nil {
+		return nil, err
+	}
+	return stack.InlineReceiptCandidate(ctx, identity, result, runErr)
+}
 func (runner *preflightRunner) closePrepared(ctx context.Context) error {
 	if !runner.ready() {
 		return nil
@@ -303,14 +324,6 @@ func (runner *preflightRunner) closePrepared(ctx context.Context) error {
 		return err
 	}
 	return stack.Close(ctx)
-}
-
-func (runner *preflightRunner) bindPrepared(session *attachedworkersession.Session) error {
-	stack, err := runner.preparedStack()
-	if err != nil {
-		return err
-	}
-	return stack.BindPreparedConnection(session)
 }
 
 func (runner *preflightRunner) ready() bool {
@@ -395,15 +408,6 @@ func connectForegroundRuntime(
 	}
 	if _, err := adapter.readySnapshot(); err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
-	}
-	if adapterConfig.preparedReceipt != nil {
-		original, ok := session.(*attachedworkersession.Session)
-		if !ok {
-			return cleanup(ErrReconciliationRequired)
-		}
-		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
-			return cleanup(errors.Join(ErrReconciliationRequired, err))
-		}
 	}
 	source, err := NewPreparedCadencedSource(adapter, preparedPoll)
 	if err != nil {
@@ -537,15 +541,6 @@ func reconnectPinnedForegroundRuntime(
 	}
 	if !runner.ready() || ctx.Err() != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, ctx.Err()))
-	}
-	if adapterConfig.preparedReceipt != nil {
-		original, ok := cadence.session.(*attachedworkersession.Session)
-		if !ok {
-			return cleanup(ErrReconciliationRequired)
-		}
-		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
-			return cleanup(errors.Join(ErrReconciliationRequired, err))
-		}
 	}
 	runtime, err := NewForegroundRuntime(cadence, runner, config)
 	if err != nil {

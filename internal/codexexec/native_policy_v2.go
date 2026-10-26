@@ -32,6 +32,11 @@ type NativePreparedConfigV2 struct {
 	Profile            NativeProfileV2
 	Evidence           domain.ProviderEvidenceBundleV1
 	CredentialBindings NativeCredentialBindingReaderV2
+	// Explicit selection of the bounded inline output composition. This does
+	// not authorize an export or enable a profile; negotiated transport and the
+	// original private completed owner are still required. False keeps V1's
+	// denial of artifact-bearing success unchanged.
+	InlineOutputV2 bool
 }
 
 func (c NativePreparedConfigV2) Clone() (NativePreparedConfigV2, error) {

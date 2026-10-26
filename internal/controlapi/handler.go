@@ -7,15 +7,22 @@ import (
 	"net/http"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 )
 
+// MaxRequestHeaderBytes bounds the control server's header parser as well as
+// application checks. net/http retains its fixed HTTP/1 read-buffer slop; this
+// is not a claim that the parser allocates exactly eight KiB.
+const MaxRequestHeaderBytes = 8 << 10
+
 type Options struct {
-	TelegramWebhook             http.Handler
-	AttachedWorkerBootstrap     http.Handler
-	AttachedWorkerExchange      http.Handler
-	AttachedWorkerSealedInput   http.Handler
-	AttachedWorkerOutputReceipt http.Handler
+	TelegramWebhook              http.Handler
+	AttachedWorkerBootstrap      http.Handler
+	AttachedWorkerExchange       http.Handler
+	AttachedWorkerSealedInput    http.Handler
+	AttachedWorkerOutputReceipt  http.Handler
+	AttachedWorkerInlineOutputV2 http.Handler
 }
 
 // NewHandler builds the control API routing tree without optional frontend
@@ -46,6 +53,11 @@ func NewHandlerWithOptions(logger *slog.Logger, info buildinfo.Info, options Opt
 	}
 	if options.AttachedWorkerOutputReceipt != nil {
 		mux.Handle("POST /attached-worker/v1/output-receipt", options.AttachedWorkerOutputReceipt)
+	}
+	if options.AttachedWorkerInlineOutputV2 != nil {
+		for _, path := range []string{attachedworkerreceipt.PathInlinePrepareV2, attachedworkerreceipt.PathInlineBodyV2, attachedworkerreceipt.PathInlineReconcileV2} {
+			mux.Handle("POST "+path, options.AttachedWorkerInlineOutputV2)
+		}
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logger.Info("route not found", "method", r.Method, "path", r.URL.Path)

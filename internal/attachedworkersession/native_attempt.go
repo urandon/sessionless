@@ -153,6 +153,23 @@ func (v *NativeAttemptV2) Current() error {
 	return nil
 }
 
+// CheckReceiptScopeV2 reads the original Session's current claimed scope after
+// execution has closed its child. It is metadata-only: it cannot revive Current,
+// Lifetime, BindPreparedEntryV2 or the consumed prepared entry. A completed
+// private producer must separately prove its original result and cleanup.
+func (v *NativeAttemptV2) CheckReceiptScopeV2(ctx context.Context) error {
+	if v == nil || v.self != v || v.owner == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalidAuthority
+	}
+	s := v.owner
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeAttempt != v || v.entry == nil || !s.nativeCurrentLocked(v.attempt) || ctx.Err() != nil {
+		return ErrInvalidAuthority
+	}
+	return nil
+}
+
 func (v *NativeAttemptV2) Lifetime() (context.Context, error) {
 	if v.Current() != nil {
 		return nil, ErrInvalidAuthority

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -19,7 +20,8 @@ import (
 // PreparedAttachedWorkerRunnerV1 is an explicitly selected fixed composition,
 // not a spawn port or an issuer. The old constructor remains text-only. Its
 // sole InvocationRunner owns the credential lifecycle.
-// One pending/finalized slot is kept until exact receipt retirement or Close.
+// One pending/finalized slot is kept. For successful inline output only exact
+// receipt retirement relinquishes it; Close fences work, not semantic custody.
 type PreparedAttachedWorkerRunnerV1 struct {
 	config           Config
 	mediaConfig      *MediaConfigV1
@@ -42,11 +44,15 @@ type preparedResultSlot struct {
 	identity                              attachedworkerdaemon.InvocationIdentity
 	driver                                *Driver
 	request                               ports.ExecutionRequest
+	accepted                              domain.AttachedWorkerAttemptV1
+	callerDeadline                        time.Time
+	credentialDeadline                    time.Time
 	stage                                 *preparedHistory
 	media                                 *mediaInput
 	mediaAssociation                      [32]byte
 	semantic                              ports.ExecutionResult
 	candidate                             attachedworkeroutput.Candidate
+	inline                                *NativeInlineOutputV2
 	original                              *preparedObservation
 	result                                attachedworkerdaemon.InvocationResult
 	runErr                                error
@@ -216,7 +222,8 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		return attachedworkerdaemon.InvocationResult{}, errors.Join(err, stage.remove())
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, stage: stage, media: media, cancel: cancel, done: make(chan struct{})}
+	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, accepted: input.AcceptedAttempt, stage: stage, media: media, cancel: cancel, done: make(chan struct{})}
+	slot.callerDeadline, _ = runCtx.Deadline()
 	if media != nil {
 		slot.mediaAssociation = media.associationDigest
 	}
@@ -239,7 +246,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	slot.result, slot.runErr, slot.stageClean, slot.finalized = result, runErr, stageErr == nil, true
 	close(slot.done)
 	if owner.closed {
-		owner.clearSlotLocked()
+		owner.closeSlotLocked()
 	}
 	owner.mu.Unlock()
 	return result, runErr
@@ -296,6 +303,7 @@ func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared atta
 		return attachedworkerdaemon.AttemptResult{}, ErrContract
 	}
 	request, driver := slot.request, slot.driver
+	slot.credentialDeadline = prepared.Credential.ExpiresAt
 	owner.mu.Unlock()
 	if prepared.VerifiedInput.ValidateFor(prepared.Identity) != nil {
 		return attachedworkerdaemon.AttemptResult{}, ErrContract
@@ -415,11 +423,26 @@ func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() error {
 		owner.slot.candidate = attachedworkeroutput.Candidate{}
 		owner.slot.original = nil
 		owner.slot.request = ports.ExecutionRequest{}
+		owner.slot.accepted = domain.AttachedWorkerAttemptV1{}
+		if owner.slot.inline != nil {
+			owner.slot.inline.candidate = attachedworkeroutput.InlineCandidateV2{}
+			owner.slot.inline.producer = attachedworkeroutput.InlineProducerBindingV2{}
+		}
 		owner.slot.driver = nil
 		owner.slot.cancel = nil
 		owner.slot = nil
 	}
 	return nil
+}
+
+// Close is not an ACK or definitive disposition. Keep the actual completed
+// inline owner even if Close won the race before its carrier was requested.
+// Failure/non-inline slots retain their existing cleanup and custody checks.
+func (owner *PreparedAttachedWorkerRunnerV1) closeSlotLocked() error {
+	if owner.pendingInlineReceiptLockedV2() {
+		return ErrInlineReceiptPendingV2
+	}
+	return owner.clearSlotLocked()
 }
 
 func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
@@ -443,7 +466,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 		return nil
 	}
 	if slot.finalized {
-		clearErr := owner.clearSlotLocked()
+		clearErr := owner.closeSlotLocked()
 		owner.mu.Unlock()
 		if clearErr != nil {
 			return clearErr
@@ -468,7 +491,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 	case <-done:
 		owner.mu.Lock()
 		defer owner.mu.Unlock()
-		return owner.clearSlotLocked()
+		return owner.closeSlotLocked()
 	case <-ctx.Done():
 		return ctx.Err()
 	}

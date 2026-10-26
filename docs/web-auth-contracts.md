@@ -59,6 +59,13 @@ See [configuration and proof](web-bff.md#yandex-provider-configuration) and
 [development](development.md#yandex-id-login). Explicit dual-proof identity
 linking is post-MVP [#172](https://gitcode.com/urandon/sessionless/issues/172).
 
+The [dual-provider account-linking design](design/dual-provider-account-linking.md)
+under [#237](https://gitcode.com/urandon/sessionless/issues/237) proposes explicit
+simultaneous-provider configuration, dual-proof linking and revision-fenced
+unlinking. It is not implemented authentication authority; the single-provider
+contracts above remain the current behavior until their versioned replacement
+is delivered and enabled.
+
 ## Telegram OIDC flow
 
 When Telegram is selected, the flow is Authorization Code with PKCE `S256`. Telegram documents

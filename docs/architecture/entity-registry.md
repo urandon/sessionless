@@ -74,6 +74,18 @@ durable authority. Authenticated metadata-only publication into
 the existing resource/admission owner remains separate #133 composition work;
 the local state alone does not make a sealed resource eligible.
 
+The generation-publication source adds only the nullable bounded
+`attached_resource_generation_v1` JsonDocument column to the existing
+`subscription_connections` resource (migration `00130_add_attached_resource_generation.sql`).
+Its seven fields retain the exact owner/worker/enrollment/baseline generation
+and revocation fence, not credentials, provider observations or entitlement.
+Authenticated mutation and exact readback reuse current membership, canonical
+actor-to-user ownership and the existing worker connection. Unknown commit is
+not permission to retry a mutation or a provider effect. There is no separate
+ACK journal, table, scheduler, lifecycle or changed retention owner. Fresh
+binding/admission composition remains owned by #233; schema source and local
+fault-connector tests do not apply migrations or qualify native YDB/rollout.
+
 The [derived-compaction design](../design/owned-harness-compaction.md#durable-head-and-terminal-correspondence)
 selects one bounded typed head and terminal correspondence in existing Run JSON,
 with immutable summary/manifest bodies in scoped object storage. The typed

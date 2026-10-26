@@ -14,6 +14,7 @@ import (
 
 	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
 
+	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
@@ -34,6 +35,7 @@ const harnessBindingCutoverID = "harness-binding-v2-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
+	AttachedResourceGenerations *attachedresourcegeneration.Registry
 	// SessionDeletionBlobReader is installed by the trusted application, never
 	// supplied by a deletion request. Nil preserves retained-deletion denial.
 	SessionDeletionBlobReader          SessionDeletionBlobReader
@@ -55,6 +57,7 @@ type Options struct {
 }
 
 type Store struct {
+	attachedResourceGenerations        *attachedresourcegeneration.Registry
 	sessionDeletionBlobReader          SessionDeletionBlobReader
 	localBootstrap                     *LocalOwnedStoreBootstrapV1
 	db                                 *sql.DB
@@ -95,6 +98,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		options.AttemptOperationBodies = options.OwnedOperationResidualCustody
 	}
 	return &Store{
+		attachedResourceGenerations:        options.AttachedResourceGenerations,
 		sessionDeletionBlobReader:          options.SessionDeletionBlobReader,
 		db:                                 db,
 		idempotencyRetention:               options.IdempotencyRetention,

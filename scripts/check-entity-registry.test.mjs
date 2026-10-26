@@ -165,6 +165,25 @@ function retirementFixture() {
   return { manifest, sources };
 }
 
+function nextFixtureMigration(sources, suffix) {
+  assert.match(suffix, /^[a-z][a-z0-9_]*\.sql$/);
+  let next = 1n;
+  for (const name of Object.keys(sources)) {
+    const match = name.match(/^(\d+)_/);
+    assert.ok(match, `fixture source must have a numeric version: ${name}`);
+    const candidate = BigInt(match[1]) + 1n;
+    if (candidate > next) next = candidate;
+  }
+  return `${String(next).padStart(5, "0")}_${suffix}`;
+}
+
+test("future fixture versions follow occupied migrations without modifying source", () => {
+  const sources = { "00130_existing.sql": "original130", "00131_existing.sql": "original131" };
+  const before = structuredClone(sources);
+  assert.equal(nextFixtureMigration(sources, "test_entity.sql"), "00132_test_entity.sql");
+  assert.deepEqual(sources, before);
+});
+
 test("derives four owned retirements without losing historical lineage", () => {
   const {manifest,sources}=retirementFixture();
   assert.deepEqual(manifest.retirements.map(r=>r.table).sort(), ["dispatch_ready","lease_expiry","quota_expiry","telegram_delivery_ready"]);
@@ -179,13 +198,13 @@ test("derives four owned retirements without losing historical lineage", () => {
     assert.equal(schema.activeTables.get(r.successor).migration,r.successorMigration);
     assert.deepEqual(schema.retirements.get(r.table),{migration:r.migration,successor:r.successor});
   }
-  const unrelated="00130_new_entity.sql";
+  const unrelated=nextFixtureMigration(sources,"new_entity.sql");
   const added=deriveSchema({...sources,[unrelated]:created.replaceAll("tenant_records","unrelated_entity")},manifest);
   assert.deepEqual(added.errors,[]);
   assert.equal(added.tables.size,106);
   assert.equal(added.activeTables.size,102);
   for(const target of ["runs","`runs`"]){
-    const legitimate=deriveSchema({...sources,"00130_alter_unrelated.sql":`-- +goose Up\nALTER TABLE ${target} ADD COLUMN later_note Utf8;\n-- +goose Down\n`},manifest);
+    const legitimate=deriveSchema({...sources,[nextFixtureMigration(sources,"alter_unrelated.sql")]:`-- +goose Up\nALTER TABLE ${target} ADD COLUMN later_note Utf8;\n-- +goose Down\n`},manifest);
     assert.deepEqual(legitimate.errors,[],`legitimate unrelated ALTER ${target}`);
     assert.equal(legitimate.activeTables.size,101);
   }
@@ -199,7 +218,7 @@ test("rejects unsafe retirement partitions, including later ALTER/reactivation",
     ["no IF",f=>f.sources["00126_retire_lease_expiry.sql"]=f.sources["00126_retire_lease_expiry.sql"].replace(" IF EXISTS",""),/unsupported DROP/],
     ["extra SQL",f=>f.sources["00126_retire_lease_expiry.sql"]=f.sources["00126_retire_lease_expiry.sql"].replace("-- +goose Down","DELETE FROM runs;\n-- +goose Down"),/exactly one executable/],
     ["duplicate version",f=>f.sources["126_collision.sql"]=f.sources["00126_retire_lease_expiry.sql"],/duplicate migration version/],
-    ["duplicate drop",f=>f.sources["00130_again.sql"]=f.sources["00126_retire_lease_expiry.sql"],/unsupported DROP/],
+    ["duplicate drop",f=>f.sources[nextFixtureMigration(f.sources,"again.sql")]=f.sources["00126_retire_lease_expiry.sql"],/unsupported DROP/],
     ["early DROP",f=>{const r=f.manifest.retirements[0];f.sources["00018_early.sql"]=f.sources[r.migration];delete f.sources[r.migration];r.migration="00018_early.sql"},/early.*retirement/],
     ["missing successor",f=>delete f.sources["00023_create_lease_expiry_v2.sql"],/lineage mismatch/],
     ["missing original",f=>delete f.sources["00019_create_lease_expiry.sql"],/lineage mismatch/],
@@ -207,10 +226,10 @@ test("rejects unsafe retirement partitions, including later ALTER/reactivation",
     ["missing baseline",f=>delete f.sources["00125_add_owned_operation_residual.sql"],/early.*retirement/],
     ["down SQL",f=>f.sources["00126_retire_lease_expiry.sql"]+="DROP TABLE IF EXISTS `runs`;",/comment-only Down/],
     ["duplicate ownership",f=>f.manifest.retirements.push({...f.manifest.retirements[0]}),/duplicate retirement manifest/],
-    ["reactivation",f=>f.sources["00130_recreate.sql"]=f.sources["00019_create_lease_expiry.sql"],/duplicate CREATE/],
-    ["later ALTER",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
-    ["bare later ALTER",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
-    ["unparsed ALTER target",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/unsupported ALTER target/],
+    ["reactivation",f=>f.sources[nextFixtureMigration(f.sources,"recreate.sql")]=f.sources["00019_create_lease_expiry.sql"],/duplicate CREATE/],
+    ["later ALTER",f=>f.sources[nextFixtureMigration(f.sources,"alter.sql")]="-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
+    ["bare later ALTER",f=>f.sources[nextFixtureMigration(f.sources,"alter.sql")]="-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
+    ["unparsed ALTER target",f=>f.sources[nextFixtureMigration(f.sources,"alter.sql")]="-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/unsupported ALTER target/],
   ]){
     const fixture=retirementFixture();mutate(fixture);
     const schema=deriveSchema(fixture.sources,fixture.manifest);

@@ -14,6 +14,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 // Drives the actual allocating callbacks through database/sql. This is an
@@ -395,5 +396,104 @@ func TestAttachedGenerationActualSchedulerAndDirectOfferPositiveThenHistoricalRe
 				t.Fatalf("historical replay mutated authority: commits=%d writes=%d/%d committed=%d/%d", f.db.commits, f.db.writes, writes, f.db.committed, committed)
 			}
 		})
+	}
+}
+
+func TestAttachedGenerationActualLegacyCredentiallessResourceKeepsSubscriptionFence(t *testing.T) {
+	for _, scheduler := range []bool{false, true} {
+		for _, mode := range []string{"legacy NULL head", "published without registry", "configured resource"} {
+			t.Run(fmt.Sprintf("scheduler=%t/%s", scheduler, mode), func(t *testing.T) {
+				f := newGenerationAllocationFixture(t, scheduler)
+				// The same canonical credentialless binding used by AW07 Offer
+				// has its own provider resource, distinct from the Run's capacity
+				// subscription. Neither identifier may be rewritten to hide that.
+				authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(f.auth.TenantID,
+					f.auth.OwnerUserID, f.offer.RunID, f.offer.AttemptID, f.auth.SubscriptionConnectionID, f.at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				binding := authority.HarnessBinding
+				if binding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 || binding.Resource.ResourceID == string(f.auth.SubscriptionConnectionID) {
+					t.Fatal("fixture no longer represents independent legacy resource identity")
+				}
+				var outbox domain.DispatchOutbox
+				if err := json.Unmarshal([]byte(f.db.rows[f.db.aliases["dispatch_outbox"][0]][0].(string)), &outbox); err != nil {
+					t.Fatal(err)
+				}
+				placement := outbox.ExecutionPlacementV2
+				placement.PolicyDigest = domain.AttachedWorkerPolicyDigest(binding.EffectivePolicyDigest)
+				digest, err := domain.ExecutionPlacementDigest(placement)
+				if err != nil {
+					t.Fatal(err)
+				}
+				binding.ExecutionPlacementDigest = string(digest)
+				if err := binding.ValidateForScope(f.auth.TenantID, f.auth.OwnerUserID, f.offer.RunID, f.offer.AttemptID, placement); err != nil {
+					t.Fatal("canonical legacy binding rejected", err)
+				}
+				outbox.HarnessBinding, outbox.ExecutionPlacementV2 = binding, placement
+				f.db.setTable("dispatch_outbox", []driver.Value{generationJSON(t, outbox)})
+				if !scheduler {
+					var job domain.WorkerJob
+					if err := json.Unmarshal([]byte(f.db.rows[f.db.aliases["worker_jobs"][0]][0].(string)), &job); err != nil {
+						t.Fatal(err)
+					}
+					job.HarnessBinding, job.ExecutionPlacementV2 = binding, placement
+					f.db.setTable("worker_jobs", []driver.Value{generationJSON(t, job)})
+				}
+				var persisted driver.Value
+				if mode == "published without registry" {
+					persisted = generationJSON(t, f.head(4, false))
+				}
+				f.db.add("generation_presence", attachedGenerationPresenceSQL, []driver.Value{persisted}, string(f.auth.TenantID), string(f.auth.SubscriptionConnectionID))
+				if mode != "configured resource" {
+					f.store.attachedResourceGenerations = nil
+				}
+				if scheduler {
+					result, callErr := f.admit(t)
+					err = callErr
+					if mode == "legacy NULL head" && (err != nil || !result.Admitted || result.Code != "admitted") {
+						t.Fatalf("legacy scheduler changed: result=%+v err=%v", result, err)
+					}
+				} else {
+					result, callErr := f.offerAttempt(t)
+					err = callErr
+					if mode == "legacy NULL head" && (err != nil || result.Status != ports.AttachedWorkerExecutionApplied) {
+						t.Fatalf("legacy Offer changed: result=%+v err=%v", result, err)
+					}
+				}
+				if mode == "legacy NULL head" {
+					if f.db.commits != 1 || f.db.committed == 0 || f.db.leaseReads != 1 {
+						t.Fatal("legacy positive did not exercise actual allocation")
+					}
+					var original domain.WorkerJob
+					if err := json.Unmarshal([]byte(f.db.rows[f.db.aliases["worker_jobs"][0]][0].(string)), &original); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(original.HarnessBinding, binding) || original.ExecutionPlacementV2 != placement {
+						t.Fatal("legacy allocation rewrote canonical binding/placement")
+					}
+				} else if !errors.Is(err, domain.ErrMembershipDenied) || f.db.commits != 0 || f.db.committed != 0 || f.db.writes != 0 || f.db.rollbacks != 1 {
+					t.Fatalf("resource-kind substitution bypassed generation authority: err=%v commits=%d committed=%d writes=%d rollbacks=%d", err, f.db.commits, f.db.committed, f.db.writes, f.db.rollbacks)
+				}
+				reads := 0
+				for _, query := range f.db.queries {
+					if query == generationSQLKey(attachedGenerationPresenceSQL) {
+						reads++
+					}
+				}
+				wantReads := 1
+				if scheduler && mode == "legacy NULL head" {
+					// Successful scheduler admission reaches the nested direct
+					// Offer too; BOTH fresh gates use this same transaction.
+					wantReads = 2
+				}
+				if mode == "configured resource" {
+					wantReads = 0 // The full current-authority/projector path applies.
+				}
+				if reads != wantReads {
+					t.Fatalf("legacy resource escaped original subscription head fence: reads=%d want=%d", reads, wantReads)
+				}
+			})
+		}
 	}
 }

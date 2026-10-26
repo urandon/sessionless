@@ -18,9 +18,12 @@ func (store *Store) validateAttachedResourceGenerationAdmissionTx(ctx context.Co
 	resource domain.SubscriptionConnectionID, placement domain.ExecutionPlacementV2, binding domain.HarnessBindingV2,
 ) error {
 	if placement.Kind != domain.ExecutionPlacementAttachedWorker || binding.TenantID != tx.tenantID || binding.OwnerUserID != owner ||
-		binding.Resource.ResourceID != string(resource) {
+		binding.Resource.Kind == domain.ProviderResourceSubscriptionV1 && binding.Resource.ResourceID != string(resource) {
 		return domain.ErrMembershipDenied
 	}
+	// Non-subscription providers have independent resource identities (including
+	// the existing credentialless route). They still pass the same subscription
+	// head/worker fence below: changing kind cannot bypass published authority.
 	baseline, configured := store.attachedResourceGenerations.Lookup(tx.tenantID, owner, resource)
 	if !configured {
 		// Removing the installed registry must not turn previously published

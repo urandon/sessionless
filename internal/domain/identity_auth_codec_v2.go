@@ -76,6 +76,72 @@ func (session *WebSessionV2) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+func EncodeIdentityOperationV2(operation IdentityOperationV2) ([]byte, error) {
+	if err := operation.Validate(); err != nil {
+		return nil, err
+	}
+	return encodeIdentityAuthV2(operation)
+}
+
+func DecodeIdentityOperationV2(raw []byte) (IdentityOperationV2, error) {
+	var operation IdentityOperationV2
+	if err := operation.UnmarshalJSON(raw); err != nil {
+		return IdentityOperationV2{}, err
+	}
+	return operation, nil
+}
+
+func (operation *IdentityOperationV2) UnmarshalJSON(raw []byte) error {
+	if operation == nil {
+		return invalidIdentityAuthJSONV2()
+	}
+	*operation = IdentityOperationV2{}
+	type wire IdentityOperationV2
+	var decoded wire
+	if err := decodeIdentityAuthV2(raw, "operation_v2", &decoded); err != nil {
+		return err
+	}
+	value := IdentityOperationV2(decoded)
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	*operation = value
+	return nil
+}
+
+func EncodeIdentityChallengeV2(challenge IdentityChallengeV2) ([]byte, error) {
+	if err := challenge.Validate(); err != nil {
+		return nil, err
+	}
+	return encodeIdentityAuthV2(challenge)
+}
+
+func DecodeIdentityChallengeV2(raw []byte) (IdentityChallengeV2, error) {
+	var challenge IdentityChallengeV2
+	if err := challenge.UnmarshalJSON(raw); err != nil {
+		return IdentityChallengeV2{}, err
+	}
+	return challenge, nil
+}
+
+func (challenge *IdentityChallengeV2) UnmarshalJSON(raw []byte) error {
+	if challenge == nil {
+		return invalidIdentityAuthJSONV2()
+	}
+	*challenge = IdentityChallengeV2{}
+	type wire IdentityChallengeV2
+	var decoded wire
+	if err := decodeIdentityAuthV2(raw, "challenge_v2", &decoded); err != nil {
+		return err
+	}
+	value := IdentityChallengeV2(decoded)
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	*challenge = value
+	return nil
+}
+
 func encodeIdentityAuthV2(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -129,6 +195,26 @@ func identityAuthFieldsV2(shape string) map[string]identityAuthJSONFieldV2 {
 		return map[string]identityAuthJSONFieldV2{"version": scalar, "session": {shape: "session"}, "identity_revision": scalar}
 	case "session":
 		return map[string]identityAuthJSONFieldV2{"session_digest": scalar, "csrf_token_digest": scalar, "user_id": scalar, "active_tenant_id": scalar, "authenticated_subject": {shape: "subject"}, "membership_security_version": scalar, "issued_at": scalar, "last_seen_at": scalar, "idle_expires_at": scalar, "absolute_expires_at": scalar, "revoked_at": {shape: "scalar", optional: true}}
+	case "operation_v2":
+		return map[string]identityAuthJSONFieldV2{"version": scalar, "purpose": scalar, "operation_digest": scalar, "kind": scalar, "phase": scalar, "created_at": scalar, "expires_at": scalar, "delete_after": scalar, "pending": {shape: "operation_pending_v2", optional: true}, "receipt": {shape: "operation_receipt_v2", optional: true}}
+	case "operation_scope_v2":
+		return map[string]identityAuthJSONFieldV2{"user_id": scalar, "session_digest": scalar, "authenticated_subject": {shape: "subject"}, "tenant_id": scalar, "membership_security_version": scalar, "browser_binding_digest": scalar, "configuration_digest": scalar, "expected_revision": scalar}
+	case "operation_pending_v2":
+		return map[string]identityAuthJSONFieldV2{"scope": {shape: "operation_scope_v2"}, "source_subject": {shape: "subject"}, "target_provider": scalar, "target_subject": {shape: "subject", optional: true}, "source_challenge_digest": scalar, "target_challenge_digest": {shape: "scalar", optional: true}, "source_proof": {shape: "provider_proof_v2", optional: true}, "target_proof": {shape: "provider_proof_v2", optional: true}}
+	case "operation_receipt_v2":
+		return map[string]identityAuthJSONFieldV2{"user_id": scalar, "tenant_id": scalar, "provider": scalar, "outcome": scalar, "before_revision": scalar, "after_revision": {shape: "scalar", optional: true}, "completed_at": scalar}
+	case "provider_binding_v2":
+		return map[string]identityAuthJSONFieldV2{"provider": scalar, "issuer": scalar, "client_id": scalar, "callback_uri": scalar}
+	case "provider_proof_v2":
+		return map[string]identityAuthJSONFieldV2{"challenge_digest": scalar, "parent_operation_digest": scalar, "parent_phase": scalar, "binding": {shape: "provider_binding_v2"}, "subject": {shape: "subject"}, "kind": scalar, "challenge_created_at": scalar, "challenge_expires_at": scalar, "completed_at": scalar, "signed_auth_time": {shape: "scalar", optional: true}}
+	case "challenge_v2":
+		return map[string]identityAuthJSONFieldV2{"version": scalar, "purpose": scalar, "state_digest": scalar, "browser_binding_digest": scalar, "binding": {shape: "provider_binding_v2"}, "created_at": scalar, "expires_at": scalar, "delete_after": scalar, "login": {shape: "login_challenge_v2", optional: true}, "proof": {shape: "proof_challenge_v2", optional: true}, "secrets": {shape: "challenge_secrets_v2", optional: true}, "consumed_at": {shape: "scalar", optional: true}}
+	case "login_challenge_v2":
+		return map[string]identityAuthJSONFieldV2{"return_path": scalar}
+	case "proof_challenge_v2":
+		return map[string]identityAuthJSONFieldV2{"parent_operation_digest": scalar, "parent_phase": scalar, "scope": {shape: "operation_scope_v2"}, "expected_subject": {shape: "subject", optional: true}}
+	case "challenge_secrets_v2":
+		return map[string]identityAuthJSONFieldV2{"pkce_verifier": scalar, "nonce": {shape: "scalar", optional: true}}
 	default:
 		return nil
 	}

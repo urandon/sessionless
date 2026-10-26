@@ -1164,9 +1164,10 @@
           "paths": [
             "internal/ydbstore/scheduler.go",
             "internal/ydbstore/session_lifecycle.go",
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go"
           ],
-          "total": 3
+          "total": 4
         }
       },
       "entityGroup": "audit-evidence",
@@ -1540,15 +1541,21 @@
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 1
+          "total": 4
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 1
+          "total": 4
         }
       },
       "entityGroup": "canonical-operational",
@@ -1581,15 +1588,21 @@
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 1
+          "total": 4
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 1
+          "total": 4
         }
       },
       "entityGroup": "access-projection",
@@ -2189,20 +2202,23 @@
       "retention": {
         "kind": "schema_ttl",
         "interval": "PT0S",
-        "column": "expires_at"
+        "column": "delete_after",
+        "statement": "Original CREATE 00053 uses expires_at. Forward 00130 adds nullable delete_after; 00131 switches physical TTL to delete_after without backfill. V1 writes the original expiry. V2 pending/proof rows retain their original deadline; only privacy-pruned terminal operations retain creation plus 24 hours. Logical expiry is independent of asynchronous TTL; NULL legacy cells require separately authorized bounded maintenance before cutover."
       },
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go"
           ],
-          "total": 1
+          "total": 2
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "identity-web",
@@ -3945,9 +3961,11 @@
             "internal/ydbstore/owned_admission_principal.go",
             "internal/ydbstore/owned_authority_canonical.go",
             "internal/ydbstore/run_explanation.go",
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 7
+          "total": 9
         },
         "writers": {
           "paths": [
@@ -4135,16 +4153,21 @@
             "internal/ydbstore/compute_choice_auth.go",
             "internal/ydbstore/run_explanation.go",
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
-            "internal/ydbstore/web_search_consent_reconcile.go"
+            "internal/ydbstore/web_search_consent_reconcile.go",
+            "internal/ydbstore/web_search_consent_store.go"
           ],
-          "total": 5
+          "total": 8
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 1
+          "total": 3
         }
       },
       "entityGroup": "identity-web",

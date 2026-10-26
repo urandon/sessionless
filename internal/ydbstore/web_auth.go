@@ -742,11 +742,11 @@ func writeChallenge(ctx context.Context, tx *sql.Tx, bucket uint32, challenge do
 	_, err = tx.ExecContext(ctx,
 		`UPSERT INTO oidc_login_challenges
 		 (shard_bucket, state_digest, browser_binding_digest, pkce_verifier,
-		  nonce, redirect_path, created_at, expires_at, consumed_at, record)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))`,
+		  nonce, redirect_path, created_at, expires_at, consumed_at, record, delete_after)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument), $11)`,
 		bucket, challenge.StateDigest, challenge.BrowserBindingDigest,
 		challenge.PKCEVerifier, challenge.Nonce, challenge.RedirectPath,
-		challenge.CreatedAt, challenge.ExpiresAt, consumedAt, payload,
+		challenge.CreatedAt, challenge.ExpiresAt, consumedAt, payload, challenge.ExpiresAt,
 	)
 	return err
 }

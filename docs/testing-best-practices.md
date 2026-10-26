@@ -208,13 +208,27 @@ selections; both connected executions explicitly disable result caching. The CI 
 30-minute budget is unchanged and still needs actual verification. See the Go
 command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
 
-GitHub CI has nine required jobs. Its Go verification job runs `make ci-core`,
-including `test-ordinary`; a parallel 30-minute `go-connected` job runs the two
+GitHub CI has ten required jobs. Its 30-minute Go verification job runs
+`make ci-core-base`: the same canonical ordered prerequisite list as `ci-core`,
+with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
+position before build and integration. The base runs the
+first three original ordinary commands sequentially. A parallel 30-minute
+`go-local` job runs `make test-ordinary-ci-tail` over the same complete package
+patterns in two sequential executions: `^TestLocalTerminal`, then `^TestLocal`
+excluding `^TestLocal(Session|Compaction|Terminal)`. These disjoint selections
+together cover exactly the original fourth ordinary command, including future
+families through the remainder. CI therefore has five ordinary executions;
+local/release retains four. No test is omitted or duplicated. Race detection,
+`-count=1`, 15-minute per-binary bounds and the 30-minute job ceiling are unchanged.
+This addresses an observed cumulative binary timeout, not an inference that
+the test named in its final stack was hung. Actual timings still qualify the split.
+Local/release `make test-ordinary` and `ci-core` retain the complete four-command
+ordinary contract. A parallel 30-minute `go-connected` job runs the two
 sequential normal executions over the same full package patterns, followed by
 the bounded additive MCP offline gate in `make test-connected`. It needs no Web build:
-the committed embed placeholder suffices for compilation. Neither job requires
+the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
-join both Go jobs, preserving their original complete-unit-test predecessor.
+join all three Go jobs, preserving their original complete-unit-test predecessor.
 The unchanged offline
 `attached-worker-security-gate`, including both crash/restart prerequisites,
 and the complete unchanged `serverless-egress-conformance` target run in the
@@ -222,11 +236,38 @@ existing isolated YDB security job before that job starts YDB.
 That offline step removes the job's YDB connection and credential environment
 variables. Local and release `make ci` still require core, connected tests and
 both offline gates. Images retain all seven original predecessors and also
-require `go-connected`. `make ci-partition-test` checks the partition's static coverage.
+require `go-connected` and `go-local`. `make ci-partition-test` checks exact local
+and CI complements, original core prerequisite order and its sole substitution,
+and the complete dependency graph.
 The 25-minute isolated-job bound is unchanged: actual exact-head CI must prove
-both parallel 30-minute jobs and the relocated checks/native gates fit on a cold
+all three parallel 30-minute Go jobs and the checks/native gates fit on a cold
 cache miss; the partition alone is not proof. No previous-head CI qualifies a
 changed graph.
+
+A reviewed push whose HEAD commit message starts with `ci(cold-go): ` requests
+explicit cold Go build/module-cache qualification. GitHub's `startsWith` is
+case-insensitive; a quoted prefix later in a PR/merge-message body does not
+trigger it. All six host-Go jobs (`verify`, `go-local`, `go-connected`, `ydb`,
+`ydb-security-isolated`, `local-stand`) disable setup-go cache restore and
+post-save for that intent. Immediately after checkout, before setup-go or any
+other Go/repository command, each job proves its configured repository
+`GOCACHE` and `GOMODCACHE` paths are
+absent or empty; nonempty, redirected or invalid paths fail without creating,
+clearing or relocating caches. setup-go itself runs full `go env` even with
+`cache: false`, which legitimately initializes `GOCACHE/README` on a fresh cache;
+the freshness guard must therefore run before the action, not reject its later
+bootstrap metadata or permit/delete pre-existing entries. Normal pushes,
+generated merge subjects without that prefix and manual dispatch without a HEAD
+message retain default caching.
+This controls only these host Go caches, not toolchain, npm, Docker or runner
+coldness, test selection, permissions or provider-publication authority. A new
+intent-bearing source HEAD still requires independent review and a complete
+successful ten-job run with actual timings; static policy tests and prior warm
+runs are not cold-cache evidence.
+The complete `cache` and `if` expressions are quoted YAML scalars because the
+intent prefix contains colon-space. Exact source-policy tests reject unquoted
+forms; those tests alone do not prove YAML validity. Check the edited workflow
+with an available actual YAML parser before accepting it.
 
 The two standalone YDB jobs wait on the pinned container's SQL/storage-backed
 healthcheck before either migration invocation. HTTP monitoring alone is not

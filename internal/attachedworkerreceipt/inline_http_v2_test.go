@@ -18,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/strictjson"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
@@ -697,6 +698,70 @@ func TestInlineV2RejectsDecodedStringsBeforeTypedDecode(t *testing.T) {
 			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
 			if writer.Code != http.StatusBadRequest || store.calls != 0 || store.binder.calls != 0 {
 				t.Fatalf("invalid decoded plan reached downstream authority: status=%d store=%d binder=%d", writer.Code, store.calls, store.binder.calls)
+			}
+		})
+	}
+}
+
+func TestInlineV2RejectsNoncanonicalExpansionBeforeTypedDecode(t *testing.T) {
+	for _, tc := range []struct{ name, literal, escaped string }{
+		{"ampersand", "&", `\u0026`},
+		{"less-than", "<", `\u003c`},
+		{"greater-than", ">", `\u003e`},
+		{"line-separator", "\u2028", `\u2028`},
+		{"paragraph-separator", "\u2029", `\u2029`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+			// All three known fields fit both decoded-string ceilings. Literal
+			// spelling shrinks the wire, but Marshal would expand it again before
+			// rejecting canonical equality, with two live encoded representations.
+			value := strings.Repeat(tc.literal, 31_000/len(tc.literal))
+			input.Candidate.Summary = value
+			input.Nonce = domain.IdempotencyKey(value)
+			input.Producer.SessionID = domain.SessionID(value)
+			raw := bytes.ReplaceAll(inlineMarshalV2(t, input), []byte(tc.escaped), []byte(tc.literal))
+			if !json.Valid(raw) || strictjson.ValidateDocumentStringBounds(raw, maxInlinePrepareBytesV2, 16, 64, strictjson.StringBounds{
+				TokenBytes: attachedworkeroutput.MaxInlineAnswerBytesV2,
+				TotalBytes: maxInlinePlanStringsV2,
+			}) != nil {
+				t.Fatal("fixture must pass JSON and decoded-size admission")
+			}
+			untouched := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 99, Candidate: attachedworkeroutput.InlineCandidateV2{Summary: "not-decoded"}}
+			if inlineDecodeV2(raw, maxInlinePrepareBytesV2, &untouched) || untouched.Version != 99 || untouched.Candidate.Summary != "not-decoded" {
+				t.Fatal("noncanonical expansion reached typed decoding before rejection")
+			}
+			service, store := inlineFixtureV2(t)
+			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
+			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
+			if writer.Code != http.StatusBadRequest || store.calls != 0 || store.binder.calls != 0 {
+				t.Fatalf("noncanonical expansion reached authority: status=%d store=%d binder=%d", writer.Code, store.calls, store.binder.calls)
+			}
+		})
+	}
+}
+
+func TestInlineV2PreservesCanonicalEscapedContent(t *testing.T) {
+	for _, tc := range []struct{ name, answer string }{
+		{"maximum-html-answer", strings.Repeat("&", 31_744) + strings.Repeat("😀", 256)},
+		{"all-escaped-characters", strings.Repeat("<>&\u2028\u2029", 100)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+			input.Candidate.Summary = tc.answer
+			if err := input.Candidate.Validate(); err != nil {
+				t.Fatalf("canonical answer fixture: %v", err)
+			}
+			raw := inlineMarshalV2(t, input)
+			var decoded attachedworkeroutput.AttachedWorkerInlinePrepareV2
+			if !inlineDecodeV2(raw, maxInlinePrepareBytesV2, &decoded) || decoded.Version != 2 || decoded.Candidate.Summary != tc.answer {
+				t.Fatal("canonical escaped content changed or was rejected")
+			}
+			service, store := inlineFixtureV2(t)
+			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
+			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
+			if writer.Code != http.StatusOK || store.calls != 1 || store.binder.calls != 1 {
+				t.Fatalf("canonical escaped content denied: status=%d store=%d binder=%d", writer.Code, store.calls, store.binder.calls)
 			}
 		})
 	}

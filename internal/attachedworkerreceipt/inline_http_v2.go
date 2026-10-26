@@ -228,19 +228,23 @@ func inlineReadContextV2(w http.ResponseWriter, r *http.Request, deadline time.T
 // reordering. It also rejects case aliases accepted by encoding/json. Content
 // in the separate raw body is never decoded or reserialized here.
 func inlineDecodeV2(raw []byte, limit int, target any) bool {
-	// Bound the retained decoded plan BEFORE json.Decoder can allocate typed
+	// Bound the retained decoded plan BEFORE encoding/json can allocate typed
 	// strings, including invalid requests that a downstream store would deny.
 	// Counting keys too is conservative: all valid scope/name/answer strings
 	// fit these existing semantic maxima even at maximum wire escaping.
-	if limit <= 0 || strictjson.ValidateDocumentStringBounds(raw, uint64(limit), 16, 64, strictjson.StringBounds{
+	// Our canonical Marshal always escapes these characters. Reject their
+	// literal spellings before typed decode/re-encoding can amplify an invalid
+	// request; already escaped canonical content retains its semantic maxima.
+	if limit <= 0 || bytes.ContainsAny(raw, "<>&\u2028\u2029") || strictjson.ValidateDocumentStringBounds(raw, uint64(limit), 16, 64, strictjson.StringBounds{
 		TokenBytes: attachedworkeroutput.MaxInlineAnswerBytesV2,
 		TotalBytes: maxInlinePlanStringsV2,
 	}) != nil {
 		return false
 	}
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-	if d.Decode(target) != nil || d.Decode(new(any)) != io.EOF {
+	// Unmarshal reads the existing frame, without Decoder's growing duplicate
+	// buffer. The strict lexical pass and full typed Marshal equality below
+	// still reject trailing values, unknown fields and case aliases.
+	if json.Unmarshal(raw, target) != nil {
 		return false
 	}
 	canonical, err := json.Marshal(target)

@@ -311,6 +311,12 @@ func (service *Service) RevokeConnection(
 			cleanupFailed = true
 		}
 	}
+	// Revocation is already durable, but the original invocation still owns
+	// failed materialization cleanup. Retain its superseded secret and the
+	// backend's durable cleanup intent until that cleanup is definitive.
+	if cleanupFailed {
+		return ErrCredentialMaterialization
+	}
 	secretDeleteFailed := false
 	if !revocation.SupersededSecretRef.IsZero() {
 		scope := ports.CredentialCandidateScope{
@@ -320,9 +326,6 @@ func (service *Service) RevokeConnection(
 		if err := service.secrets.DeleteCredentialSecret(ctx, scope, revocation.SupersededSecretRef); err != nil {
 			secretDeleteFailed = true
 		}
-	}
-	if cleanupFailed {
-		return ErrCredentialMaterialization
 	}
 	if secretDeleteFailed {
 		return ErrCredentialBackend

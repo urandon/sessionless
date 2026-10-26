@@ -651,6 +651,23 @@ and bot setup. The existing Telegram OIDC configuration remains the default for
 backward compatibility; selecting Yandex is explicit and never falls back to
 Telegram when credentials are absent or verification fails.
 
+### Dual-provider identity V2 groundwork (not enabled)
+
+The [accepted dual-provider design](design/dual-provider-account-linking.md)
+is being implemented in #238–#240. New closed V2 identity/session domain and
+private row helpers are groundwork only: they do not install a serving V2
+reader, expose linking routes, migrate existing records or change the current
+single-provider configuration. Do not write V2 rows into a serving V1 deployment.
+
+`make web-identity-v2-ydb-gate` is restricted to the existing disposable GitHub
+CI database, with real data transactions and no `go_fake_tx`. It checks actual
+JsonDocument decimal-string revision roundtrips at 2^53−1, 2^53, 2^53+1 and
+MaxUint64, the bounded reverse/canonical join, and old-cookie denial after a
+committed identity-revision or membership change. It does not start YDB, create
+a schema or use a provider. Controlled-driver tests are separate offline
+evidence; passing these primitives is not proof of the pending complete
+operation/proof/audit/cookie protocol or live account linking.
+
 ### Yandex ID login
 
 Set `WEB_LOGIN_PROVIDER=yandex`, `YANDEX_LOGIN_CLIENT_ID` to the registered

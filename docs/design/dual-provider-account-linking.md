@@ -1,6 +1,6 @@
 # Dual-provider login and explicit account linking
 
-Version: 0.1.0. Status: proposed engineering design; not implemented or enabled.
+Version: 0.1.0. Status: accepted engineering design; implementation and enablement pending.
 Owners: [#172](https://gitcode.com/urandon/sessionless/issues/172),
 [research/design #237](https://gitcode.com/urandon/sessionless/issues/237),
 [WebUI epic #29](https://gitcode.com/urandon/sessionless/issues/29).
@@ -367,15 +367,18 @@ source behavior, not real registration, forced authentication or reachability.
 | Recovery | Lost exchange/commit/browser response, expired/missing receipt, relogin after lost rotated cookie, refresh without repeated effect; expired rows remain logically denied before TTL. |
 | UX/security | Settings link/unlink/cancel, last enabled method, changed configuration, safe conflict, no disclosure/log secrets, keyboard/mobile/a11y and two-owner resource isolation. |
 
-After independent research/design acceptance, register real bounded children
-and link their checklist under #172:
+The accepted design has these linked implementation children; the owning
+execution checklist lives under #172 and the #29 epic. Registration is not
+delivery:
 
-1. Versioned identity/session/challenge authority and storage cutover source:
+1. [#238 — versioned identity/session/challenge authority](https://gitcode.com/urandon/sessionless/issues/238)
+   and storage cutover source:
    forward/reverse semantics, all transactional consumers, receipts/audit/TTL,
    bootstrap/ingress invariants and genuine YDB tests; update entity registry.
-2. Fixed dual-provider BFF/config and purpose-bound proof orchestration,
-   consuming child 1; fake-provider positive/negative tests and runbook.
-3. Login/account-settings UI and joined browser acceptance, consuming 1–2;
+2. [#239 — fixed dual-provider BFF/config and purpose-bound proofs](https://gitcode.com/urandon/sessionless/issues/239),
+   consuming #238; fake-provider positive/negative tests and runbook.
+3. [#240 — login/account-settings UI and joined browser acceptance](https://gitcode.com/urandon/sessionless/issues/240),
+   consuming #238–#239;
    both-direction/subsequent-login/continuity/error/a11y tests.
 
 Each child retains parent/design/dependencies/acceptance and scoped authority,

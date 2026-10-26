@@ -1,8 +1,9 @@
 # Single-answer inline receipt persistence
 
-Version: 0.1.0. Status: engineering design accepted under agreed-MVP delegation
-after independent original-requirements-first review. Implementation, aggregate
-memory proof and activation remain separate and incomplete.
+Version: 0.1.1. Status: engineering design and bounded capture-limit clarification
+accepted under agreed-MVP delegation after independent requirements-first
+review. Implementation, aggregate memory proof and activation remain separate
+and incomplete.
 Implementation owner: [#200](https://gitcode.com/urandon/sessionless/issues/200).
 Parent contract: [attached media and artifacts](attached-harness-media-and-artifacts.md),
 inline V2 under #198/#72. Activation remains under #133/#220; this document
@@ -106,6 +107,16 @@ Deletion capture also validates scalar cells against the original payload;
 its V2 branch must consume the closed codec result instead of applying the
 old full-domain JSON guard to compact raw bytes. Preserve all original
 cells/body, run/identity and custody-inventory comparisons; V1 is unchanged.
+
+The receipt payload's schema-owned capture projection must admit the same
+private stored-frame ceiling, with its existing one-byte overflow sentinel.
+The generic 32 KiB authority-head default is too small for an admitted maximum
+answer and is not this payload's contract. Only this table's payload column
+uses `512 KiB + 42`; other capture column limits, the existing cumulative
+4 MiB/shared materialization budget, row/deadline limits, prospective charging,
+EOF/Close checks and scalar/ownership comparisons remain unchanged. A wider
+per-row projection does not grant a fresh aggregate budget or prove allocation
+capacity of the capture's generic JSON canonicalizer.
 
 Public Prepare/body/control formats, capabilities, deadlines, physical sends,
 V1 rows, canonical product payloads, private native bytes, journal and exact

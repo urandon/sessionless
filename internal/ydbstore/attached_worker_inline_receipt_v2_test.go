@@ -48,6 +48,107 @@ func TestInlineWireV2PersistedFingerprintGolden(t *testing.T) {
 	}
 }
 
+func TestInlineReceiptStreamedFingerprintsPreserveOriginalBytes(t *testing.T) {
+	for _, name := range []string{"prepared", "canonical", "maximum", "maximum_artifacts", "whitespace", "escaping", "invalid_utf8", "invalid_time"} {
+		t.Run(name, func(t *testing.T) {
+			r := inlineCanonicalFixtureV2(t)
+			switch name {
+			case "prepared":
+				r, _, _ = inlineReceiptFixtureV2(t)
+			case "maximum":
+				r = maximumInlineIdentityFixtureV2(t)
+			case "maximum_artifacts":
+				r = maximumInlineArtifactSQLFixtureV2(t)
+			case "whitespace":
+				r.Candidate.Summary = " \tOriginal answer\n"
+			case "escaping":
+				r.Candidate.Summary = "<>&\\\"\b\f\n\r\t\x00\x1f\u2028\u2029🙂"
+			case "invalid_utf8":
+				r.Candidate.Summary = "x\xff\xc0\xaf\xed\xa0\x80y"
+			case "invalid_time":
+				r.ExpiresAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+			}
+			// Independent original Marshal shape, not the new projected helper.
+			raw, wantErr := json.Marshal(struct {
+				Binding            ports.AttachedWorkerSealedInputAuthorization
+				Nonce              domain.IdempotencyKey
+				Candidate          attachedworkeroutput.InlineCandidateV2
+				Producer           attachedworkeroutput.InlineProducerBindingV2
+				ObservationDigest  string
+				CredentialRequired bool
+				ExpiresAt          time.Time
+			}{r.Binding, r.Nonce, r.Candidate, r.Producer, r.ObservationDigest, r.CredentialRequired, r.ExpiresAt})
+			defer clear(raw)
+			digest := sha256.New()
+			_, _ = digest.Write([]byte("sessionless:attached-worker-inline-plan:v2\x00"))
+			_, _ = digest.Write(raw)
+			got, err := inlineReceiptPlanFingerprintV2(r)
+			if (err == nil) != (wantErr == nil) || err == nil && got != hex.EncodeToString(digest.Sum(nil)) {
+				t.Fatalf("original plan hash bytes changed: got=%s err=%v wantErr=%v", got, err, wantErr)
+			}
+			if r.Materialization.Completion != nil {
+				original := r.Materialization.Completion.Events[0].DisplayText
+				r.Materialization.Completion.Events[0].DisplayText = r.Candidate.Summary
+				want, wantErr := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, r.Materialization)
+				got, err := inlineReceiptCanonicalDigestV2(r.Materialization)
+				if (err == nil) != (wantErr == nil) || err == nil && got != want {
+					t.Fatalf("original canonical hash bytes changed: got=%s want=%s err=%v wantErr=%v", got, want, err, wantErr)
+				}
+				r.Materialization.Completion.Events[0].DisplayText = original
+			}
+		})
+	}
+}
+
+func TestInlineReceiptCanonicalBuilderPreservesV1JSON(t *testing.T) {
+	r := inlineCanonicalFixtureV2(t)
+	for _, status := range []domain.RunStatus{domain.RunSucceeded, domain.RunFailed, domain.RunCancelled} {
+		for _, eventCase := range []string{"nil", "empty", "original", "empty_display"} {
+			t.Run(string(status)+"/"+eventCase, func(t *testing.T) {
+				events := r.Materialization.Completion.Events
+				switch eventCase {
+				case "nil":
+					events = nil
+				case "empty":
+					events = []domain.SessionEventDraft{}
+				case "empty_display":
+					events = append([]domain.SessionEventDraft(nil), events...)
+					events[0].DisplayText = ""
+				}
+				identities := make([]finalizationEventIdentity, 0, len(events))
+				for _, e := range events {
+					identities = append(identities, finalizationEventIdentity{ID: e.ID, Kind: e.Kind, IdempotencyKey: e.IdempotencyKey, Payload: e.Payload, DisplayText: e.DisplayText})
+				}
+				for _, include := range []bool{false, true} {
+					var manifest *domain.ArtifactManifest
+					var substrate *domain.SubstrateExecutionEvidenceV1
+					var reconciliation *domain.AttemptEffectReconciliationEvidenceV1
+					if include {
+						manifest = &r.Materialization.Completion.Manifest
+						substrate, reconciliation = new(domain.SubstrateExecutionEvidenceV1), new(domain.AttemptEffectReconciliationEvidenceV1)
+					}
+					// Frozen original field order/tags, independent of the builder.
+					raw, err := json.Marshal(struct {
+						Status                       domain.RunStatus                                    `json:"status"`
+						Manifest                     *domain.ArtifactManifest                            `json:"manifest,omitempty"`
+						Events                       []finalizationEventIdentity                         `json:"events"`
+						SubstrateEvidenceDigest      *domain.SubstrateExecutionEvidenceDigestV1          `json:"substrate_evidence_digest,omitempty"`
+						ReconciliationEvidenceDigest *domain.AttemptEffectReconciliationEvidenceDigestV1 `json:"reconciliation_evidence_digest,omitempty"`
+					}{status, manifest, identities, substrateEvidenceDigest(substrate), reconciliationEvidenceDigest(reconciliation)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := sha256.Sum256(raw)
+					got, err := runFinalizationDigest(status, manifest, events, substrate, reconciliation)
+					if err != nil || got != hex.EncodeToString(want[:]) {
+						t.Fatalf("canonical V1 JSON changed: include=%t err=%v", include, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func inlineReceiptFixtureV2(t *testing.T) (AttachedWorkerOutputReceiptV2, ports.WorkerJobState, []byte) {
 	t.Helper()
 	loaded := currentWorkerAuthorityFixture(t)
@@ -132,6 +233,19 @@ func inlineCanonicalFixtureV2(t *testing.T) AttachedWorkerOutputReceiptV2 {
 	return r
 }
 
+func marshalInlineStoredReceiptTestV2(t *testing.T, r AttachedWorkerOutputReceiptV2) []byte {
+	t.Helper()
+	stored, err := encodeInlineReceiptProjectionV2(r)
+	if err != nil {
+		t.Fatal("invalid original receipt for private storage fixture", err)
+	}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestInlineReceiptStagesKeepCanonicalOwnershipDistinct(t *testing.T) {
 	prepared, _, _ := inlineReceiptFixtureV2(t)
 	claimed := prepared
@@ -146,10 +260,7 @@ func TestInlineReceiptStagesKeepCanonicalOwnershipDistinct(t *testing.T) {
 			if err := validateInlineFixtureV2(r); err != nil {
 				t.Fatalf("valid %s stage rejected: %v", r.Stage, err)
 			}
-			raw, err := json.Marshal(r)
-			if err != nil {
-				t.Fatal(err)
-			}
+			raw := marshalInlineStoredReceiptTestV2(t, r)
 			envelope, err := decodeAttachedWorkerReceiptEnvelope(raw)
 			if err != nil || envelope.v2 == nil || envelope.v1 != nil {
 				t.Fatalf("V2 confused with V1: err=%v", err)
@@ -245,10 +356,7 @@ func TestInlineReceiptCanonicalPlanBindsNamesBytesAndScope(t *testing.T) {
 
 func TestInlineReceiptVersionAndCapabilityDoNotAliasV1(t *testing.T) {
 	r, _, _ := inlineReceiptFixtureV2(t)
-	raw, err := json.Marshal(r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := marshalInlineStoredReceiptTestV2(t, r)
 	for _, bad := range []string{`{"version":0}`, `{"version":99}`, strings.Replace(string(raw), `"version":2`, `"version":2,"Version":1`, 1), string(raw[:len(raw)-1]) + `,"ready":true}`} {
 		if _, err := decodeAttachedWorkerReceiptEnvelope([]byte(bad)); !errors.Is(err, ErrAttachedWorkerAttemptConflict) {
 			t.Errorf("unknown/aliased wire accepted: %v", err)
@@ -272,6 +380,22 @@ func TestInlineReceiptVersionAndCapabilityDoNotAliasV1(t *testing.T) {
 	}
 }
 
+func TestInlineReceiptPrivateFramingDoesNotWidenV1(t *testing.T) {
+	// Dispatch alone accepts V1's historical noncanonical document; callers
+	// still validate identity. The V2-only allowance must not widen that reader.
+	const original = `{"version":1}`
+	raw := []byte(original + strings.Repeat(" ", maxInlineReceiptRecordBytesV2-len(original)))
+	value, err := decodeAttachedWorkerReceiptEnvelope(raw)
+	if err != nil || value.v1 == nil || value.v2 != nil {
+		t.Fatal("V1 original lexical boundary changed", err)
+	}
+	for _, extra := range []int{1, 42, 43} {
+		if got, err := decodeAttachedWorkerReceiptEnvelope(append(raw, []byte(strings.Repeat(" ", extra))...)); !errors.Is(err, ErrAttachedWorkerAttemptConflict) || got.v1 != nil || got.v2 != nil {
+			t.Fatalf("V2 private frame widened V1: extra=%d err=%v", extra, err)
+		}
+	}
+}
+
 func TestInlineReceiptDeletionScalarProjectionV2(t *testing.T) {
 	r, _, _ := inlineReceiptFixtureV2(t)
 	for _, stage := range []attachedworkeroutput.AttachedWorkerInlineStageV2{attachedworkeroutput.InlinePreparedV2, attachedworkeroutput.InlineBodyClaimedV2, attachedworkeroutput.InlineRetiredWithoutWritesV2, attachedworkeroutput.InlineCanonicalCopyingV2, attachedworkeroutput.InlineReadyV2} {
@@ -283,10 +407,7 @@ func TestInlineReceiptDeletionScalarProjectionV2(t *testing.T) {
 				candidate.BodyClaimID = strings.Repeat("c", 64)
 			}
 			candidate.Stage = stage
-			raw, err := json.Marshal(candidate)
-			if err != nil {
-				t.Fatal(err)
-			}
+			raw := marshalInlineStoredReceiptTestV2(t, candidate)
 			a := candidate.Binding
 			cells := map[string]deletionCaptureCell{
 				"tenant_id": deletionCaptureTestCell(t, "s", a.TenantID), "run_id": deletionCaptureTestCell(t, "s", a.RunID),
@@ -299,9 +420,24 @@ func TestInlineReceiptDeletionScalarProjectionV2(t *testing.T) {
 			if err := validateDeletionCaptureScalars("attached_worker_output_receipts", cells, raw); err != nil {
 				t.Fatalf("V2 scalar projection stage=%s: %v", stage, err)
 			}
-			cells["owner_user_id"] = deletionCaptureTestCell(t, "s", domain.UserID("another-owner"))
-			if err := validateDeletionCaptureScalars("attached_worker_output_receipts", cells, raw); err == nil {
-				t.Fatalf("stage=%s accepted substituted scalar owner", stage)
+			for key, cell := range cells {
+				original := cell
+				if key == "created_at" {
+					cell = deletionCaptureTestCell(t, "t", candidate.CreatedAt.Add(time.Second))
+				} else if key == "lease_generation" {
+					cell = deletionCaptureTestCell(t, "u", a.LeaseGeneration+1)
+				} else {
+					cell = deletionCaptureTestCell(t, "s", "substituted")
+				}
+				cells[key] = cell
+				if err := validateDeletionCaptureScalars("attached_worker_output_receipts", cells, raw); err == nil {
+					t.Errorf("stage=%s accepted substituted scalar %s", stage, key)
+				}
+				delete(cells, key)
+				if err := validateDeletionCaptureScalars("attached_worker_output_receipts", cells, raw); err == nil {
+					t.Errorf("stage=%s accepted missing scalar %s", stage, key)
+				}
+				cells[key] = original
 			}
 		})
 	}

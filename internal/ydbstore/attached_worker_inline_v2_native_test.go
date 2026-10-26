@@ -92,9 +92,28 @@ func readInlineNativeReceiptV2(ctx context.Context, db *sql.DB, auth ports.Attac
 	if err != nil {
 		return record, err
 	}
+	// Test-only observation of the actual JsonDocument frame. Serving reads
+	// independently use the closed production codec and actual query-key joins.
+	var stored struct {
+		Encoding string `json:"persistence_encoding"`
+		ydbstore.AttachedWorkerOutputReceiptV2
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if len(raw) > (512<<10)+42 || decoder.Decode(&stored) != nil || stored.Encoding != "single-answer-v1" ||
+		strings.Contains(raw, `"display_text"`) {
+		return record, errors.New("native inline receipt lost its single-answer private frame")
+	}
+	record = stored.AttachedWorkerOutputReceiptV2
+	if record.Stage == attachedworkeroutput.InlineCanonicalCopyingV2 || record.Stage == attachedworkeroutput.InlineReadyV2 {
+		if record.Materialization.Completion == nil || len(record.Materialization.Completion.Events) != 1 {
+			return record, errors.New("native compact receipt lost its original canonical event")
+		}
+		record.Materialization.Completion.Events[0].DisplayText = strings.TrimSpace(record.Candidate.Summary)
+	}
 	expected := auth
 	expected.PresentedSecretDigest, expected.ExpectedAttemptRevision = "", 0
-	if len(raw) > 512<<10 || json.Unmarshal([]byte(raw), &record) != nil || record.Version != 2 ||
+	if record.Version != 2 ||
 		string(record.CanonicalDigest) != columnDigest || record.CandidateFingerprint != fingerprint ||
 		record.Binding != expected {
 		return record, errors.New("native inline receipt payload/columns/original scope disagree")
@@ -359,7 +378,7 @@ func TestAttachedInlineOutputYDBClaimAndWriteCustody(t *testing.T) {
 		Manifest domain.ArtifactManifestID `json:"artifact_manifest_id"`
 	}
 	event := record.Materialization.Completion.Events[0]
-	if event.Kind != domain.SessionEventAssistantMessage || json.Unmarshal(f.blobs.objects[event.Payload.Key], &answer) != nil ||
+	if event.Kind != domain.SessionEventAssistantMessage || event.DisplayText != strings.TrimSpace(f.prepare.Candidate.Summary) || json.Unmarshal(f.blobs.objects[event.Payload.Key], &answer) != nil ||
 		answer.Schema != "sessionless.assistant-message.v1" || answer.Summary != f.prepare.Candidate.Summary || answer.Manifest != record.Materialization.Completion.Manifest.ID {
 		t.Fatal("native canonical answer payload lost original summary or output manifest")
 	}

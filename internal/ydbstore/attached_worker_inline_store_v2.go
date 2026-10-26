@@ -321,8 +321,12 @@ func inlineReceiptComparisonMetadataV2(record AttachedWorkerOutputReceiptV2) Att
 }
 
 func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOutputReceiptV2, insert bool) error {
+	stored, err := encodeInlineReceiptProjectionV2(r)
+	if err != nil {
+		return err
+	}
 	w := inlineReceiptSQLWriterV2{ctx: ctx, tx: tx, record: r, insert: insert}
-	err := json.NewEncoder(&w).Encode(r)
+	err = json.NewEncoder(&w).Encode(stored)
 	if w.err != nil {
 		return w.err
 	}
@@ -352,7 +356,7 @@ func (w *inlineReceiptSQLWriterV2) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 	w.called = true
-	if len(p) == 0 || p[len(p)-1] != '\n' || len(p)-1 > maxInlineReceiptRecordBytesV2 {
+	if len(p) == 0 || p[len(p)-1] != '\n' || len(p)-1 > maxInlineReceiptStoredBytesV2 {
 		w.err = ErrAttachedWorkerAttemptConflict
 		return 0, w.err
 	}

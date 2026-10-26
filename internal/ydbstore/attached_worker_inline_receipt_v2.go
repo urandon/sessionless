@@ -46,7 +46,12 @@ type attachedWorkerReceiptEnvelope struct {
 }
 
 func inlineReceiptPlanFingerprintV2(r AttachedWorkerOutputReceiptV2) (string, error) {
-	encoded, err := json.Marshal(struct {
+	// Only a small typed projection is encoded. Stream the original answer's
+	// exact Marshal string spelling into the unchanged prefixed hash, avoiding
+	// an escaped full-answer buffer and a second prefix+payload allocation.
+	summary := r.Candidate.Summary
+	r.Candidate.Summary = inlineReceiptHashMarkerV2
+	return inlineReceiptProjectedHashV2("sessionless:attached-worker-inline-plan:v2\x00", struct {
 		Binding            ports.AttachedWorkerSealedInputAuthorization
 		Nonce              domain.IdempotencyKey
 		Candidate          attachedworkeroutput.InlineCandidateV2
@@ -54,17 +59,31 @@ func inlineReceiptPlanFingerprintV2(r AttachedWorkerOutputReceiptV2) (string, er
 		ObservationDigest  string
 		CredentialRequired bool
 		ExpiresAt          time.Time
-	}{r.Binding, r.Nonce, r.Candidate, r.Producer, r.ObservationDigest, r.CredentialRequired, r.ExpiresAt})
-	if err != nil {
-		return "", err
+	}{r.Binding, r.Nonce, r.Candidate, r.Producer, r.ObservationDigest, r.CredentialRequired, r.ExpiresAt}, "summary", summary)
+}
+
+func inlineReceiptCanonicalDigestV2(materialization ports.AttachedWorkerTerminalMaterialization) (domain.AttachedWorkerTerminalEvidenceDigest, error) {
+	if validateAttachedWorkerTerminalMaterializationStatus(domain.AttachedWorkerTerminalSucceeded, materialization) != nil ||
+		len(materialization.Completion.Events) != 1 {
+		return "", ErrAttachedWorkerAttemptConflict
 	}
-	digest := sha256.Sum256(append([]byte("sessionless:attached-worker-inline-plan:v2\x00"), encoded...))
-	return hex.EncodeToString(digest[:]), nil
+	c := materialization.Completion
+	identity := buildRunFinalizationIdentityV1(domain.RunSucceeded, &c.Manifest, c.Events, nil, nil)
+	display := identity.Events[0].DisplayText
+	// An empty display uses historical omitempty; validation later still denies
+	// any discrepancy from the original nonempty Summary. No caller is mutated.
+	if display == "" {
+		digest, err := runFinalizationDigest(domain.RunSucceeded, &c.Manifest, c.Events, nil, nil)
+		return domain.AttachedWorkerTerminalEvidenceDigest(digest), err
+	}
+	identity.Events[0].DisplayText = inlineReceiptHashMarkerV2
+	digest, err := inlineReceiptProjectedHashV2("", identity, "display_text", display)
+	return domain.AttachedWorkerTerminalEvidenceDigest(digest), err
 }
 
 func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptEnvelope, error) {
 	var zero attachedWorkerReceiptEnvelope
-	if strictjson.ValidateDocument(payload, maxInlineReceiptRecordBytesV2, 64, maxInlineReceiptRecordBytesV2) != nil {
+	if strictjson.ValidateDocument(payload, maxInlineReceiptStoredBytesV2, 64, maxInlineReceiptStoredBytesV2) != nil {
 		return zero, ErrAttachedWorkerAttemptConflict
 	}
 	version, err := attachedWorkerReceiptVersion(payload)
@@ -73,6 +92,10 @@ func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptE
 	}
 	switch version {
 	case 1:
+		// The private V2 framing allowance never widens the V1 reader.
+		if len(payload) > maxInlineReceiptRecordBytesV2 {
+			return zero, ErrAttachedWorkerAttemptConflict
+		}
 		var record AttachedWorkerOutputReceiptV1
 		if json.Unmarshal(payload, &record) != nil {
 			return zero, ErrAttachedWorkerAttemptConflict
@@ -89,38 +112,10 @@ func decodeAttachedWorkerReceiptEnvelope(payload []byte) (attachedWorkerReceiptE
 	}
 }
 
-// Keep the existing canonical-shape guard, but never feed it two escaped
-// copies of the large answer. Only exact original string tokens are projected;
-// field presence/null/array/case/numeric semantics remain the same. Decoding
-// content is allowed only after projection has bounded both original strings
-// and the complete document. This is not an authority/storage format. Do not
-// impose a smaller metadata ceiling: stored Usage/Substrate fields and harmless
-// JsonDocument whitespace/escaping retain their existing decoder semantics.
+// All V2 readers use the one private persistence codec. The returned domain
+// receipt still requires the actual query-key/owner/fence joins at its caller.
 func decodeInlineReceiptMetadataV2(payload []byte) (AttachedWorkerOutputReceiptV2, error) {
-	var record AttachedWorkerOutputReceiptV2
-	metadata, original, err := strictjson.ProjectStrings(payload, maxInlineReceiptRecordBytesV2, []strictjson.StringProjection{
-		{Path: []string{"candidate", "summary"}, MaxBytes: attachedworkeroutput.MaxInlineAnswerBytesV2},
-		{Path: []string{"materialization", "Completion", "Events", "0", "display_text"}, MaxBytes: attachedworkeroutput.MaxInlineAnswerBytesV2},
-	})
-	if err != nil {
-		return record, ErrAttachedWorkerAttemptConflict
-	}
-	defer func() { clear(metadata) }()
-	if decodeOwnedEffectCanonicalJSON(string(metadata), &record) != nil {
-		return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
-	}
-	clear(metadata)
-	metadata = nil
-	if original[0] != nil && json.Unmarshal(original[0], &record.Candidate.Summary) != nil {
-		return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
-	}
-	if original[1] != nil {
-		completion := record.Materialization.Completion
-		if completion == nil || len(completion.Events) == 0 || json.Unmarshal(original[1], &completion.Events[0].DisplayText) != nil {
-			return AttachedWorkerOutputReceiptV2{}, ErrAttachedWorkerAttemptConflict
-		}
-	}
-	return record, nil
+	return decodeInlineStoredReceiptV2(payload)
 }
 
 // The caller first validates the complete document's lexical limits and
@@ -229,7 +224,7 @@ func (record attachedWorkerReceiptEnvelope) validateIdentity(tenant domain.Tenan
 		if domain.HarnessBindingDigestV2(r.BodyClaimID).Validate() != nil || domain.HarnessBindingDigestV2(r.CopyOwnerID).Validate() != nil {
 			return ErrAttachedWorkerAttemptConflict
 		}
-		digest, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, r.Materialization)
+		digest, err := inlineReceiptCanonicalDigestV2(r.Materialization)
 		if err != nil || digest != r.CanonicalDigest || r.Materialization.EvidenceDigest != digest {
 			return ErrAttachedWorkerAttemptConflict
 		}

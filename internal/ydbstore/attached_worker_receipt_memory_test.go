@@ -214,10 +214,7 @@ func (f *receiptMemorySQL) ExecContext(_ context.Context, statement string, args
 
 func TestInlineReceiptSQLUsesOwnedBytePayload(t *testing.T) {
 	r := inlineCanonicalFixtureV2(t)
-	raw, err := json.Marshal(r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := marshalInlineStoredReceiptTestV2(t, r)
 	fixture := &receiptMemorySQL{ratedSQLFixture: new(ratedSQLFixture), payload: raw}
 	db := sql.OpenDB(fixture)
 	t.Cleanup(func() {
@@ -235,6 +232,33 @@ func TestInlineReceiptSQLUsesOwnedBytePayload(t *testing.T) {
 	got, found, err := readAttachedWorkerReceiptEnvelopeTx(t.Context(), state, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration)
 	if err != nil || !found || got.v2 == nil || !sameInlineReceiptV2(r, *got.v2) || !bytes.Equal(raw, fixture.payload) {
 		t.Fatal("SQL byte scan changed valid receipt or borrowed driver buffer", err)
+	}
+	// The fake driver deliberately returns the same valid private row even
+	// for a foreign query. Codec self-identity DATA cannot replace these actual
+	// caller-key joins in the shared normal/finalizer/inventory reader.
+	for _, name := range []string{"tenant", "run", "owner", "worker", "attempt", "generation"} {
+		t.Run("foreign_"+name, func(t *testing.T) {
+			query := *state
+			run, owner, worker, attempt, generation := a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration
+			switch name {
+			case "tenant":
+				query.tenantID = "foreign-tenant"
+			case "run":
+				run = "foreign-run"
+			case "owner":
+				owner = "foreign-owner"
+			case "worker":
+				worker = "foreign-worker"
+			case "attempt":
+				attempt = "foreign-attempt"
+			case "generation":
+				generation++
+			}
+			value, found, err := readAttachedWorkerReceiptEnvelopeTx(t.Context(), &query, run, owner, worker, attempt, generation)
+			if !errors.Is(err, ErrAttachedWorkerAttemptConflict) || found || value.v1 != nil || value.v2 != nil || !bytes.Equal(raw, fixture.payload) {
+				t.Fatal("valid stored DATA authorized a foreign SQL scope or changed driver bytes", err, found)
+			}
+		})
 	}
 	for i, insert := range []bool{true, false} {
 		if err := writeInlineReceiptTxV2(t.Context(), state, r, insert); err != nil {
@@ -351,17 +375,21 @@ func TestInlineReceiptSQLEncoderMatchesMarshal(t *testing.T) {
 			case "oversized":
 				r.Candidate.Summary = strings.Repeat("<", maxInlineReceiptRecordBytesV2/6)
 			}
-			raw, marshalErr := json.Marshal(r)
+			full, marshalErr := json.Marshal(r)
+			var raw []byte
+			if marshalErr == nil && len(full) <= maxInlineReceiptRecordBytesV2 {
+				raw = marshalInlineStoredReceiptTestV2(t, r)
+			}
 			f, state := openReceiptMemoryWriterTx(t)
 			for _, insert := range []bool{true, false} {
 				before := f.execCalls
 				err := writeInlineReceiptTxV2(t.Context(), state, r, insert)
-				if marshalErr != nil || len(raw) > maxInlineReceiptRecordBytesV2 {
+				if marshalErr != nil || len(full) > maxInlineReceiptRecordBytesV2 {
 					if !errors.Is(err, ErrAttachedWorkerAttemptConflict) || f.execCalls != before {
 						t.Fatal("encoding/size denial reached SQL", err, f.execCalls-before)
 					}
 				} else if err != nil || f.execCalls != before+1 || !bytes.Equal(f.written, raw) {
-					t.Fatal("Encoder changed Marshal bytes or single Exec", err, f.execCalls-before)
+					t.Fatal("Encoder changed private stored bytes or single Exec", err, f.execCalls-before)
 				}
 			}
 		})
@@ -375,7 +403,7 @@ func TestInlineReceiptSQLWriterBorrowAndOneShot(t *testing.T) {
 			p := []byte("{\"answer\":\"<>&\\n\\u2028\"}\n")
 			switch name {
 			case "exact_cap", "oversized":
-				size := maxInlineReceiptRecordBytesV2
+				size := maxInlineReceiptStoredBytesV2
 				if name == "oversized" {
 					size++
 				}

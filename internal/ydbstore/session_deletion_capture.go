@@ -1042,6 +1042,7 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	// zero-valued fields. Optional SQL NULL/empty representations below are
 	// explicit producer contracts, never a generic missing-field exception.
 	var target any
+	receiptCodecValidated := false
 	switch table {
 	case "sessions":
 		target = new(domain.Session)
@@ -1077,7 +1078,10 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 		if envelope.v1 != nil {
 			target = new(AttachedWorkerOutputReceiptV1)
 		} else {
-			target = new(AttachedWorkerOutputReceiptV2)
+			// The V2 codec already checked its closed compact shape and
+			// restored the exact domain record. The raw stored bytes are not
+			// a full-domain encoding; do not decode them a second way.
+			receiptCodecValidated = true
 		}
 	case "substrate_execution_evidence":
 		target = new(domain.ExecutionEvidenceV2)
@@ -1093,7 +1097,7 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	default:
 		return domain.ErrMembershipDenied
 	}
-	if decodeOwnedEffectCanonicalJSON(string(body), target) != nil {
+	if !receiptCodecValidated && decodeOwnedEffectCanonicalJSON(string(body), target) != nil {
 		return domain.ErrMembershipDenied
 	}
 	mapping := deletionCaptureScalarPaths[table]

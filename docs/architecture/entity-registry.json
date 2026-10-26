@@ -3542,13 +3542,14 @@
         "readers": {
           "paths": [
             "internal/ydbstore/attached_resource_generation.go",
+            "internal/ydbstore/attached_resource_generation_admission.go",
             "internal/ydbstore/attached_worker_onboarding.go",
             "internal/ydbstore/compute_choice_attached.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/scheduler.go",
             "internal/ydbstore/session_api.go"
           ],
-          "total": 8
+          "total": 9
         },
         "writers": {
           "paths": [

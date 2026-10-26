@@ -329,6 +329,12 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	if owned && final != nil {
 		return q.budget.deny()
 	} // never replace orphan/conflicting history
+	if outbox.ExecutionPlacementV2.Kind == domain.ExecutionPlacementAttachedWorker {
+		if err := store.validateAttachedResourceGenerationAdmissionTx(ctx, tx, outbox.CredentialOwnerUserID,
+			run.SubscriptionConnectionID, outbox.ExecutionPlacementV2, outbox.HarnessBinding); err != nil {
+			return err
+		}
+	}
 
 	queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, request.Now)
 	if err != nil {

@@ -244,6 +244,26 @@ all three parallel 30-minute Go jobs and the checks/native gates fit on a cold
 cache miss; the partition alone is not proof. No previous-head CI qualifies a
 changed graph.
 
+A reviewed push whose HEAD commit message starts with `ci(cold-go): ` requests
+explicit cold Go build/module-cache qualification. GitHub's `startsWith` is
+case-insensitive; a quoted prefix later in a PR/merge-message body does not
+trigger it. All six host-Go jobs (`verify`, `go-local`, `go-connected`, `ydb`,
+`ydb-security-isolated`, `local-stand`) disable setup-go cache restore and
+post-save for that intent. Immediately after setup, before repository commands,
+each job proves its configured repository `GOCACHE` and `GOMODCACHE` paths are
+absent or empty; nonempty, redirected or invalid paths fail without creating,
+clearing or relocating caches. Normal pushes, generated merge subjects without
+that prefix and manual dispatch without a HEAD message retain default caching.
+This controls only these host Go caches, not toolchain, npm, Docker or runner
+coldness, test selection, permissions or provider-publication authority. A new
+intent-bearing source HEAD still requires independent review and a complete
+successful ten-job run with actual timings; static policy tests and prior warm
+runs are not cold-cache evidence.
+The complete `cache` and `if` expressions are quoted YAML scalars because the
+intent prefix contains colon-space. Exact source-policy tests reject unquoted
+forms; those tests alone do not prove YAML validity. Check the edited workflow
+with an available actual YAML parser before accepting it.
+
 The two standalone YDB jobs wait on the pinned container's SQL/storage-backed
 healthcheck before either migration invocation. HTTP monitoring alone is not
 database readiness. The read-only `scripts/wait-ci-ydb.sh` observer accepts only

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 // Deliberately checks this repository's fixed, indentation-sensitive format,
@@ -17,6 +20,28 @@ const required = `docs-check cloud-web-smoke-test observability-config-check web
 const orderedWords = (value) => value.trim() ? value.trim().split(/\s+/) : [];
 const words = (value) => orderedWords(value).sort();
 const ciCoreBasePrerequisites = '$(subst test-ordinary,test-ordinary-ci-base,$(CI_CORE_CHECKS))';
+const coldGoPrefix = 'ci(cold-go): ';
+const coldGoPredicate = "startsWith(github.event.head_commit.message, 'ci(cold-go): ')";
+const goJobs = ['verify', 'go-local', 'go-connected', 'ydb', 'ydb-security-isolated', 'local-stand'];
+const pinnedGo = `uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+          cache: "\${{ !${coldGoPredicate} }}"`;
+const coldGoStepName = 'Prove cold Go caches are absent or empty';
+const coldGoShell = `set -eu
+test "$GOCACHE" = "$GITHUB_WORKSPACE/.git/sessionless-go-cache/go-build"
+test "$GOMODCACHE" = "$GITHUB_WORKSPACE/.git/sessionless-go-cache/go-mod"
+test ! -L "$GITHUB_WORKSPACE/.git/sessionless-go-cache"
+for cache_dir in "$GOCACHE" "$GOMODCACHE"; do
+  test ! -L "$cache_dir"
+  if test -e "$cache_dir"; then
+    test -d "$cache_dir"
+    entries=$(find "$cache_dir" -mindepth 1 -maxdepth 1 -print -quit)
+    test -z "$entries"
+  fi
+done`;
+const coldGoStep = `if: "${coldGoPredicate}"\n        shell: bash\n        run: |\n${coldGoShell.split('\n').map(line => `          ${line}`).join('\n')}`;
 const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
 const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
 const ordinary = [
@@ -102,16 +127,25 @@ function verify({ make, ci, release }) {
   assert.doesNotMatch(connected, /^    (?:needs|permissions|env):/m, 'connected is parallel, inherits read-only policy');
   assert.match(ci, /^permissions:\n  contents: read\n/m, 'read-only workflow');
   assert.equal(step(connected, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact connected checkout');
-  assert.equal(step(connected, 'Set up pinned Go'), 'uses: actions/setup-go@v6\n        with:\n          go-version-file: go.mod\n          cache-dependency-path: go.sum', 'pinned connected Go');
+  const actualGoJobs = [...ci.split('\njobs:\n')[1].matchAll(/^  ([\w-]+):\n/gm)]
+    .map(match => match[1]).filter(name => /uses: actions\/setup-go@/.test(job(ci, name)));
+  assert.deepEqual(actualGoJobs, goJobs, 'all six host Go jobs have the cold-cache contract');
+  for (const name of goJobs) {
+    const value = job(ci, name);
+    assert.equal(step(value, 'Set up pinned Go'), pinnedGo, `${name} exact cold Go cache control`);
+    assert.equal(step(value, coldGoStepName), coldGoStep, `${name} exact cold Go freshness guard`);
+    assert.ok(value.includes(`      - name: Set up pinned Go\n        ${pinnedGo}\n\n      - name: ${coldGoStepName}\n`), `${name} cold Go guard immediately after setup`);
+    assert.equal(value.slice(0, value.indexOf(`      - name: ${coldGoStepName}\n`)).match(/\b(?:run:|make |go (?:test|build|run|env) )/), null, `${name} cold Go guard before repository commands`);
+  }
   assert.equal(step(connected, 'Run connected-session tests over all packages'), 'run: make test-connected', 'complete connected invocation');
-  assert.equal([...connected.matchAll(/^      - name:/gm)].length, 3, 'bounded connected steps');
+  assert.equal([...connected.matchAll(/^      - name:/gm)].length, 4, 'bounded connected steps');
   assert.match(local, /^    timeout-minutes: 30$/m, 'local tail 30-minute bound');
   assert.match(local, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(local, /^    (?:needs|permissions|env):/m, 'local tail is parallel, inherits read-only policy');
   assert.equal(step(local, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact local tail checkout');
   assert.equal(step(local, 'Set up pinned Go'), step(connected, 'Set up pinned Go'), 'same pinned local tail Go/cache setup');
   assert.equal(step(local, 'Run ordinary local-tail tests over all packages'), 'run: make test-ordinary-ci-tail', 'complete local tail invocation');
-  assert.equal([...local.matchAll(/^      - name:/gm)].length, 3, 'bounded local tail steps');
+  assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -234,6 +268,62 @@ test('ordinary selectors and connected selectors partition the complete test-nam
     assert.equal(selected.filter(Boolean).length, 1, `${name} selected exactly once`);
   }
 });
+test('cold intent is only the case-insensitive HEAD subject prefix', () => {
+  // GitHub expression startsWith is case-insensitive; this is not byte matching
+  // or substring matching in a PR description copied into a merge commit body.
+  const cold = message => (message ?? '').toLowerCase().startsWith(coldGoPrefix.toLowerCase());
+  for (const message of ['ci(cold-go): qualify complete graph', 'CI(COLD-GO): qualify complete graph']) {
+    assert.equal(cold(message), true);
+  }
+  for (const message of [undefined, null, '', 'ci: normal push', 'ci(cold-go):missing space',
+    'docs: explain cold intent\n\nci(cold-go): quoted later',
+    '!282 Merge CI partition\n\nUse ci(cold-go): only for reviewed cold qualification']) {
+    assert.equal(cold(message), false);
+  }
+});
+
+for (const mode of ['absent', 'empty', 'build-nonempty', 'modules-nonempty', 'wrong-path', 'file', 'symlink', 'parent-symlink', 'find-error']) {
+  test(`cold freshness shell ${mode} without clearing caches`, t => {
+    const root = mkdtempSync(join(tmpdir(), 'sessionless-ci-cold-'));
+    t.after(() => rmSync(root, { recursive: true, force: true })); // Exact owned fixture, never repository/shared caches.
+    const cacheRoot = join(root, '.git/sessionless-go-cache');
+    const build = join(cacheRoot, 'go-build');
+    const modules = join(cacheRoot, 'go-mod');
+    let sentinel;
+    if (mode !== 'absent') {
+      mkdirSync(mode === 'parent-symlink' ? join(root, '.git') : cacheRoot, { recursive: true });
+      if (mode === 'file') writeFileSync(build, 'test-owned cache-path file');
+      else if (mode === 'symlink') symlinkSync(root, build, 'dir');
+      else if (mode !== 'parent-symlink') {
+        mkdirSync(build);
+        mkdirSync(modules);
+        if (mode.endsWith('-nonempty')) {
+          sentinel = join(mode === 'build-nonempty' ? build : modules, '.retained');
+          writeFileSync(sentinel, 'do not clear this synthetic cache');
+        }
+      }
+      if (mode === 'parent-symlink') {
+        symlinkSync(root, cacheRoot, 'dir');
+      }
+    }
+    const script = mode === 'find-error' ? `find() { return 17; }\n${coldGoShell}` : coldGoShell;
+    const result = spawnSync('bash', ['-c', script], {
+      env: { ...process.env, GITHUB_WORKSPACE: root, GOCACHE: mode === 'wrong-path' ? root : build, GOMODCACHE: modules },
+      encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, mode === 'absent' || mode === 'empty');
+    if (mode === 'absent') assert.equal(existsSync(cacheRoot), false, 'guard must not create caches');
+    if (sentinel) assert.equal(readFileSync(sentinel, 'utf8'), 'do not clear this synthetic cache');
+    if (mode === 'file') assert.equal(readFileSync(build, 'utf8'), 'test-owned cache-path file');
+    if (mode === 'find-error') {
+      assert.equal(result.status, 17, 'find read failure cannot masquerade as an empty directory');
+      assert.ok(existsSync(build) && existsSync(modules), 'failed guard must leave the synthetic caches intact');
+    }
+  });
+}
+
 const mutations = [
   ['missing tail remainder', 'make', `${ordinaryTail[1]}\n`, '', /exact CI tail partition/],
   ['duplicate tail remainder', 'make', ordinaryTail.join('\n\t'), `${ordinaryTail.join('\n\t')}\n\t${ordinaryTail[1]}`, /exact CI tail partition/],
@@ -392,6 +482,30 @@ for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform'])
       `  ${name}:\n${job(original.ci, name)}`,
       `  ${name}:\n${job(original.ci, name).replace('needs: [verify, go-connected, go-local]', `needs: [${['verify', 'go-connected', 'go-local'].filter(value => value !== missing).join(', ')}]`)}`,
       new RegExp(`${name} joins all three Go jobs`)]);
+  }
+}
+for (const name of goJobs) {
+  const before = `  ${name}:\n${job(original.ci, name)}`;
+  for (const [fault, mutate, expected] of [
+    ['missing cache flag', value => value.replace(`          cache: "\${{ !${coldGoPredicate} }}"\n`, ''), /exact cold Go cache control/],
+    ['unquoted cache expression', value => value.replace(`cache: "\${{ !${coldGoPredicate} }}"`, `cache: \${{ !${coldGoPredicate} }}`), /exact cold Go cache control/],
+    ['unquoted guard expression', value => value.replace(`if: "${coldGoPredicate}"`, `if: ${coldGoPredicate}`), /exact cold Go freshness guard/],
+    ['always warm', value => value.replace(`\${{ !${coldGoPredicate} }}`, 'true'), /exact cold Go cache control/],
+    ['permanently cold', value => value.replace(`\${{ !${coldGoPredicate} }}`, 'false'), /exact cold Go cache control/],
+    ['substring intent', value => value.replaceAll('startsWith(', 'contains('), /exact cold Go cache control/],
+    ['different intent', value => value.replaceAll('ci(cold-go): ', 'ci(cold): '), /exact cold Go cache control/],
+    ['missing freshness guard', value => value.replace(`      - name: ${coldGoStepName}\n        ${coldGoStep}\n\n`, ''), /unique Prove cold Go caches/],
+    ['disabled freshness guard', value => value.replace(`if: "${coldGoPredicate}"`, 'if: false'), /exact cold Go freshness guard/],
+    ['wrong freshness path', value => value.replace('test "$GOCACHE" = "$GITHUB_WORKSPACE/.git/sessionless-go-cache/go-build"', 'test -n "$GOCACHE"'), /exact cold Go freshness guard/],
+    ['ignored nonempty cache', value => value.replace('test -z "$entries"', 'test -z "$entries" || true'), /exact cold Go freshness guard/],
+    ['clears cache', value => value.replace('test -z "$entries"', 'rm -rf "$cache_dir"'), /exact cold Go freshness guard/],
+    ['creates cache', value => value.replace('set -eu', 'set -eu\n          mkdir -p "$GOCACHE"'), /exact cold Go freshness guard/],
+    ['ignored guard failure', value => value.replace(`shell: bash\n        run: |\n          set -eu`, `continue-on-error: true\n        shell: bash\n        run: |\n          set -eu`), /exact cold Go freshness guard/],
+    ['late guard', value => value.replace(`      - name: ${coldGoStepName}\n`, '      - name: Premature repository command\n        run: make build\n\n      - name: '+coldGoStepName+'\n'), /cold Go guard immediately after setup/],
+  ]) {
+    const after = mutate(before);
+    assert.notEqual(after, before, `${name} ${fault} mutation must be effective`);
+    mutations.push([`${name} ${fault}`, 'ci', before, after, expected]);
   }
 }
 for (const [name, file, before, after, expected] of mutations) {

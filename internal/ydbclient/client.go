@@ -11,8 +11,12 @@ import (
 
 	environ "github.com/ydb-platform/ydb-go-sdk-auth-environ"
 	ydb "github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/config"
 	"github.com/ydb-platform/ydb-go-sdk/v3/scheme"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/experimental"
+	"google.golang.org/grpc/mem"
 )
 
 // Client keeps both layers alive. Call Close once during process shutdown.
@@ -62,7 +66,14 @@ func OpenScripting(ctx context.Context, connectionString string) (*Client, error
 }
 
 func open(ctx context.Context, connectionString string, options ...ydb.ConnectorOption) (*Client, error) {
-	driver, err := ydb.Open(ctx, connectionString, environ.WithEnvironCredentials())
+	// Keep this allocation policy local to the shared operational/scripting
+	// driver. The stock proto codec otherwise selects the global pool itself.
+	driver, err := ydb.Open(ctx, connectionString, environ.WithEnvironCredentials(),
+		ydb.With(config.WithGrpcOptions(
+			experimental.WithBufferPool(mem.NopBufferPool{}),
+			grpc.WithDefaultCallOptions(grpc.ForceCodecV2(exactCapacityProtobufCodec{})),
+		)),
+	)
 	if err != nil {
 		return nil, err
 	}

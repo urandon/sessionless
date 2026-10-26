@@ -106,6 +106,12 @@ challenge expires no later than that original deadline. Each proof must finish
 after its own challenge creation and remain at most five minutes old at commit.
 Never extend operation/proof lifetime by a refresh or database retry.
 
+Configuration revision means the immutable trusted deployment-manifest digest
+covering enabled providers, clients, callbacks and proof policy, not an invented
+database-global counter. A request rechecks against its running manifest before
+commit; this alone does NOT fence a different old deployment revision. The
+configuration-change procedure below is mandatory for that separate boundary.
+
 1. Authorize existing session and membership. Derive exact own identities from
    canonical rows; persist the operation. Cookie possession alone is not proof.
 2. Perform a NEW source-provider authorization roundtrip. For link, prove the
@@ -213,10 +219,17 @@ Add `delete_after` to the SAME challenge table and move its physical TTL from
 `expires_at` to that column in a reviewed migration. Logical validity remains
 `expires_at` and never depends on timely TTL deletion. Proof-only records expire
 at their challenge deadline; clear temporary secrets earlier on consumption.
-Operation records retain a minimal terminal result for 24 hours from original
-creation; expiry/failure similarly removes proof/subject material. After that,
-absence is `outcome_unavailable`, never proof of non-commit. No status read can
-re-authorize a mutation or turn a receipt into a fresh link.
+Pending operation records also have `delete_after` equal to their ORIGINAL
+ten-minute deadline, not a 24-hour retention window. Only a terminal transaction
+that strips target/proof/subject material may extend `delete_after` to 24 hours
+from original creation for a minimal outcome receipt. Explicit failure/cancel
+uses the same terminal-prune rule before any extension. Abandoned operations
+are not magically rewritten at logical expiry: they become unusable immediately
+and asynchronous TTL removes the pending record; an authorized access may prune
+it earlier but is not a background cleanup guarantee. TTL timing is not proof
+of immediate physical erasure. After receipt retention, absence is
+`outcome_unavailable`, never proof of non-commit. No status read can re-authorize
+a mutation or turn a receipt into a fresh link.
 
 Write a content-free success audit in existing `audit_events` in the SAME
 mutation transaction: action/provider/UserID/tenant, before/after revision and
@@ -304,6 +317,39 @@ feature stops NEW operations but preserves V2 authorization, linked login and
 receipt reads. Never roll back to V1 readers that ignore revisions/tombstones.
 Emergency action is deny new auth/mutations with an operator recovery runbook,
 not deleting identity rows or silently selecting another provider.
+
+### Configuration-change safety boundary
+
+Before changing enabled methods, clients, callback/proof policy or manifest
+revision, the operator freezes NEW identity operations and their continuation,
+confirmation and provider-proof callbacks across ALL ingress/revisions. Drain
+and retire every old sensitive invocation, including directly addressable
+serverless revision URLs and private invokers; switching public traffic alone
+is insufficient. Sensitive handlers have a total 15-second deadline, including
+the provider's ten-second exchange bound; mutation transactions have at most
+five seconds within that SAME deadline. Verify no old invocation can resume or
+start before the new manifest is declared effective. Do not merely sleep and
+assume retirement. Pending old-manifest operations then fail under the new
+manifest; users explicitly start again. Route all sensitive ingress to the
+new pinned manifest, verify the provider set and only then unfreeze.
+
+This is a separately authorized deployment/cutover obligation, not a currently
+implemented global database fence or a promise of future provider availability.
+If an environment cannot establish that freeze/drain/exclusive-writer boundary,
+do not change enabled-provider/proof configuration while sensitive operations
+are enabled. Keep them disabled rather than accepting an old configuration's
+last-method decision. No additional configuration table is introduced.
+
+### Alternatives considered
+
+A separate account-state table would centralize the revision but add another
+canonical owner and migration; the bounded two-method shared write set avoids
+it. Bumping every membership or scanning all cookies confuses tenant grants with
+login authority and is not bounded. Updating only the removed identity leaves
+other stale sessions/proofs usable; all surviving identity revisions advance.
+Email matching/account merge changes product ownership and is rejected. A shared
+configuration fence is an alternative if future zero-downtime configuration
+changes require it; this bounded design instead requires verified writer cutover.
 
 ## Verification and implementation handoff
 

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	transport "gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
@@ -401,8 +403,8 @@ func newNativeInlineFaultAdmission(t *testing.T, fault attachedworkerstack.Nativ
 // These are genuine original-owner finalization controls, not native isolation,
 // real credential or persistence proofs. The fixed shell completes its original
 // protocol; only the closed lower-boundary/lifecycle fault is synthetic. Failed
-// terminal publication is separate: no failed result is relabelled as success
-// merely to call the inline adapter or to fabricate a private producer.
+// results are never relabelled as success or turned into an inline producer.
+// Only complete cleanup may reach the existing V1 failed-receipt/ACK path.
 func TestNativeInlineTransportV2FinalizationFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -441,6 +443,11 @@ func TestNativeInlineTransportV2FinalizationFailures(t *testing.T) {
 			if _, err := f.Stack.Run(ctx, s.invocation); err == nil {
 				t.Fatal("failed original invocation permitted another run")
 			}
+			if tc.fault != attachedworkerstack.NativeInlineWriteBackFailureV2ForTest {
+				if err := s.adapter.Complete(ctx, s.invocation.Identity, result, runErr); !errors.Is(err, transport.ErrTerminalEvidenceInvalid) {
+					t.Fatalf("incomplete cleanup did not deny normal failed publication: %v", err)
+				}
+			}
 			events, launches, terminals := f.Events()
 			if !reflect.DeepEqual(events, tc.events) || launches != 1 || terminals != 0 {
 				t.Fatalf("original lifecycle effects events=%v launches=%d terminals=%d", events, launches, terminals)
@@ -455,7 +462,129 @@ func TestNativeInlineTransportV2FinalizationFailures(t *testing.T) {
 			if _, err := os.Stat(f.JournalPath); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("failed finalization created an output journal: %v", err)
 			}
+			if tc.fault == attachedworkerstack.NativeInlineWriteBackFailureV2ForTest {
+				completeNativeInlineWriteBackFailure(t, s, ctx, result, runErr)
+			}
 		})
+	}
+}
+
+func readNativeInlineFailureCheckpoint(t *testing.T, path string) []byte {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal("open actual failure checkpoint", err)
+	}
+	const limit = 256 << 10
+	raw, readErr := io.ReadAll(io.LimitReader(file, limit+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(raw) > limit {
+		clear(raw)
+		t.Fatalf("actual failure checkpoint read: size=%d read=%v close=%v", len(raw), readErr, closeErr)
+	}
+	t.Cleanup(func() { clear(raw) })
+	return raw
+}
+
+// This joins the genuine original failure/owner/adapter/Session/file-journal
+// path. The existing V1 publisher and ACK peer remain synthetic commitments,
+// not canonical YDB materialization or real provider/credential evidence.
+func completeNativeInlineWriteBackFailure(t *testing.T, s *nativeInlineFaultScenario, parent context.Context,
+	result attachedworkerdaemon.InvocationResult, runErr error,
+) {
+	t.Helper()
+	if !result.CleanupComplete() {
+		t.Fatal("writeback failure lacks required original cleanup")
+	}
+	f := s.fixture
+	head := s.invocation.VerifiedInput.AcceptedAttempt
+	ctx, cancel := context.WithCancel(parent)
+	done, joined := make(chan error, 1), make(chan struct{})
+	go func() {
+		done <- s.adapter.Complete(ctx, s.invocation.Identity, result, runErr)
+		close(joined)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		f.ContinueACK()
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		select {
+		case <-joined:
+		case <-cleanup.Done():
+			t.Error("normal failed Complete did not join owned cleanup")
+		}
+	})
+	select {
+	case <-f.AckEntered:
+	case err := <-done:
+		t.Fatal("normal writeback failure Complete ended before original ACK barrier", err)
+	case <-ctx.Done():
+		t.Fatal("normal writeback failure Complete did not reach ACK barrier", ctx.Err())
+	}
+	var journal attachedworkerlocal.ReceiptCheckpointV1
+	if err := json.Unmarshal(readNativeInlineFailureCheckpoint(t, f.JournalPath), &journal); err != nil {
+		t.Fatal("decode actual V1 failure journal", err)
+	}
+	t.Cleanup(func() { clear(journal.Payload) })
+	digest := sha256.Sum256(journal.Payload)
+	connection := f.Session.Snapshot()
+	var submission transport.ReceiptSubmissionV1
+	if s.v1.calls != 1 || journal.Version != attachedworkerlocal.ReceiptCheckpointVersionV1 || journal.ConnectionID != connection.ConnectionID ||
+		journal.TenantID != connection.TenantID || journal.OwnerUserID != connection.OwnerUserID || journal.WorkerID != connection.WorkerID ||
+		journal.EnrollmentGeneration != connection.EnrollmentGeneration || journal.ConnectionGeneration != connection.ConnectionGeneration ||
+		journal.PayloadSHA256 != hex.EncodeToString(digest[:]) || !bytes.Equal(journal.Payload, s.v1.first) ||
+		json.Unmarshal(journal.Payload, &submission) != nil || submission.Candidate.Status != domain.AttachedWorkerTerminalFailed ||
+		submission.Candidate.FailureCode != "codex_exec_finalization_failed" || submission.Candidate.Summary != "" || len(submission.Candidate.Artifacts) != 0 ||
+		submission.Observation.ValidateFor(domain.AttachedWorkerTerminalFailed, true) != nil || !submission.Observation.RunnerFailed ||
+		submission.Observation.InvocationFailureCode != "credential_writeback_failed" || submission.Observation.ExitCode != 0 {
+		t.Fatalf("original failure was not sealed/published as one V1 finalization failure: calls=%d status=%s code=%s", s.v1.calls, submission.Candidate.Status, submission.Candidate.FailureCode)
+	}
+	if candidate, err := f.Stack.ReceiptCandidate(s.invocation.Identity, result, runErr, domain.AttachedWorkerTerminalFailed); err != nil || !reflect.DeepEqual(candidate, submission.Candidate) {
+		t.Fatal("ACK barrier lost original private failed candidate", err)
+	}
+	f.ContinueACK()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("normal failed receipt/exact original Session ACK/retirement", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("normal failed receipt ACK did not finish", ctx.Err())
+	}
+	var reconnect attachedworkerlocal.ReconnectCheckpointV1
+	checkpointPath := filepath.Join(filepath.Dir(f.JournalPath), attachedworkerlocal.ReconnectCheckpointFileName)
+	if err := json.Unmarshal(readNativeInlineFailureCheckpoint(t, checkpointPath), &reconnect); err != nil {
+		t.Fatal("decode original Session's durable terminal state", err)
+	}
+	summary := reconnect.MachineSnapshot.Attempt.Summary
+	if f.Session.Snapshot().State != attachedworkersession.StateReady || summary.State != attachedworkerprotocol.AttemptTerminalCommitted ||
+		!reflect.DeepEqual(summary.Binding, submission.Request.Attempt) || summary.WorkerSequence != head.WorkerAttemptSequence+1 || summary.PlatformSequence != head.PlatformAttemptSequence+1 ||
+		summary.TerminalSequence != 1 || summary.TerminalStatus != attachedworkerprotocol.TerminalFailed || summary.TerminalResult != attachedworkerprotocol.TerminalResultFailed ||
+		!bytes.Equal(summary.TerminalEvidenceDigest, digest[:]) {
+		t.Fatalf("exact failed Terminal/ACK was not durably committed: state=%s worker=%d platform=%d status=%s result=%s", summary.State, summary.WorkerSequence, summary.PlatformSequence, summary.TerminalStatus, summary.TerminalResult)
+	}
+	if _, err := os.Stat(f.JournalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("exact failed ACK did not retire the original receipt journal", err)
+	}
+	if _, err := f.Stack.ReceiptCandidate(s.invocation.Identity, result, runErr, domain.AttachedWorkerTerminalFailed); !errors.Is(err, codexexec.ErrContract) {
+		t.Fatal("exact failed ACK/journal retirement retained the original candidate owner", err)
+	}
+	if err := s.adapter.Complete(ctx, s.invocation.Identity, result, runErr); err != nil {
+		t.Fatal("acknowledged failed completion not locally idempotent", err)
+	}
+	if _, err := f.Stack.Run(ctx, s.invocation); err == nil {
+		t.Fatal("failed ACK completion permitted another original invocation")
+	}
+	prepares, bodies, reconciles, failures := s.peer.snapshot()
+	events, launches, terminals := f.Events()
+	exchanges, replay := f.TerminalExchanges()
+	s.peer.mu.Lock()
+	paths, observed, nonce := len(s.peer.paths), len(s.peer.observed), s.peer.prepare.Nonce
+	s.peer.mu.Unlock()
+	if prepares != 0 || bodies != 0 || reconciles != 0 || paths != 0 || observed != 0 || nonce != "" || len(failures) != 0 || s.v1.calls != 1 || launches != 1 || terminals != 1 || exchanges != 1 || replay ||
+		!reflect.DeepEqual(events, []string{"issue", "materialize", "boundary-release", "writeback-entered", "writeback-failed", "release"}) {
+		t.Fatalf("failed ACK path duplicated work or reached V2: V2=%d/%d/%d paths=%d v1=%d launches=%d terminal=%d/%d replay=%t events=%v failures=%v", prepares, bodies, reconciles, paths, s.v1.calls, launches, terminals, exchanges, replay, events, failures)
 	}
 }
 

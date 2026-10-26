@@ -7,6 +7,12 @@ credential backend, Docker or Terraform changes, or a real subscription login.
 Runtime and provider activation remain blocked on the isolated worker boundary
 in #18 and the credential lifecycle epic in #13.
 
+The [owner-local subscription state design](design/owner-local-subscription-state.md)
+specifies the missing durable local backend for #133 without changing these
+ports or enabling credentials. Its independent acceptance is engineering-only;
+source backend delivery, resource-generation publication and live activation are
+separate acceptance steps.
+
 ## Manager orchestration
 
 Canonical ingress writes the independently membership-authorized user as

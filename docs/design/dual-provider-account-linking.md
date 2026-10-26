@@ -32,6 +32,7 @@ The owning issue retains the research evidence and later acceptance receipts.
 | [Auth0 account linking](https://auth0.com/docs/manage-users/user-accounts/user-account-linking) | Adopt explicit user initiation and proof of both accounts. Reject its primary/secondary profile-merge model: here another canonical user's subject is a conflict, not a merge candidate. |
 | [Keycloak client-initiated linking](https://www.keycloak.org/docs/26.8.1/server_development/#client-initiated-account-linking) | Adopt configured-provider/account-settings initiation and bound browser authorization. Do not add an identity broker, external token retrieval or its legacy custom linking protocol. |
 | [Supabase identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking) | Adopt the manual link/settings pattern and protection of the final method. Reject email-driven automatic linking: Sessionless neither requires unique email nor trusts it as account ownership. |
+| [YDB primitive/JSON types](https://ydb.tech/docs/en/yql/reference/types/primitive?version=v25.1) | JsonDocument numbers use Double; do not persist the new uint64 auth revisions as JSON numbers. Use one closed decimal-string representation and verify actual storage/API boundary values. |
 
 These adoption/rejection choices are Sessionless engineering decisions. They do
 not assert that the compared products share our storage or authorization model.
@@ -160,15 +161,20 @@ than two, duplicate providers or mismatched/missing forward rows. Validate the
 current authenticating forward row is included. All active rows share one
 positive link-set revision; no separate account revision row is necessary.
 
-The internal arithmetic is checked uint64, but the canonical V2 encoding of
-EVERY identity/session/operation security or expected revision is a decimal
-STRING in both JsonDocument records and Web DTOs: 1–20 ASCII digits, no leading
-zero, sign, whitespace, fraction or exponent, parsed in range 1..MaxUint64.
+The internal arithmetic is checked uint64, but the canonical encoding of NEW
+V2 identity-derived revisions (active-set revision, session authenticating-
+identity snapshot, operation expected/before/after revision, receipt and audit
+copies) is a decimal STRING in JsonDocument records and Web DTOs: 1–20 ASCII
+digits, no leading zero, sign, whitespace, fraction or exponent, parsed in range
+1..MaxUint64. This does not convert legacy membership security versions or the
+configuration revision, which remains the manifest digest rather than a counter.
 Reject JSON-number revisions and alternate spellings; do not accept both forms
 as compatibility aliases. The browser keeps revisions opaque and never converts
 them through JavaScript `Number`. This avoids assuming lossless large JSON
 integers in either the database codec or browser. Actual YDB readback and Web
-DTO tests must include MaxUint64 and overflow denial, not only small counters.
+DTO/browser tests must preserve 2^53−1, 2^53, 2^53+1 and MaxUint64, reject
+malformed/out-of-range encodings and deny increment overflow, not only exercise
+small counters.
 
 Every link/unlink transaction reads that bounded range and all active forward
 rows, then writes every surviving/added active forward row with the SAME next

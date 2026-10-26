@@ -96,15 +96,31 @@ func validateNativeEnvelopeEvidenceV2(profile *nativeFrozenProfileV2, bundle dom
 }
 
 func nativeCredentialCurrentV2(ctx context.Context, reader NativeCredentialBindingReaderV2, identity AuthorityV1, now time.Time) error {
+	binding, err := readNativeCredentialMetadataV2(ctx, reader, identity, now)
+	if err != nil {
+		return err
+	}
+	// Issue/launch/CONNECT always require the original sealed generation.
+	// Receipt-only finalization must not turn this into a lower bound.
+	if binding.Generation != identity.ProviderResource.CredentialGeneration {
+		return ErrAuthorityUnavailable
+	}
+	return nil
+}
+
+// readNativeCredentialMetadataV2 reads exact active scope, not permission to
+// execute or export. Each caller must separately compare its own generation:
+// sealed N for execution, the original successful writeback for receipt only.
+func readNativeCredentialMetadataV2(ctx context.Context, reader NativeCredentialBindingReaderV2, identity AuthorityV1, now time.Time) (domain.CredentialBinding, error) {
 	if ctx == nil || ctx.Err() != nil || reader == nil || identity.Validate() != nil || now.IsZero() {
-		return ErrContract
+		return domain.CredentialBinding{}, ErrContract
 	}
 	resource := identity.ProviderResource
 	binding, found, err := reader.LoadCredentialBinding(ctx, identity.TenantID, domain.SubscriptionConnectionID(resource.ResourceID))
 	if ctx.Err() != nil || err != nil || !found || binding.Validate() != nil || binding.Revoked || binding.Entitlement != domain.EntitlementActive ||
 		binding.TenantID != identity.TenantID || binding.OwnerUserID != identity.OwnerUserID || string(binding.SubscriptionConnectionID) != resource.ResourceID ||
-		binding.Generation != resource.CredentialGeneration || binding.Provider != "openai" || binding.AuthMode != "chatgpt" || binding.UpdatedAt.After(now) {
-		return ErrAuthorityUnavailable
+		binding.Provider != "openai" || binding.AuthMode != "chatgpt" || binding.UpdatedAt.After(now) {
+		return domain.CredentialBinding{}, ErrAuthorityUnavailable
 	}
-	return nil
+	return binding, nil
 }

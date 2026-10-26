@@ -27,6 +27,17 @@ type jsonScanner struct {
 	b                 []byte
 	i, depth, members int
 	documentNumbers   bool
+	boundedStrings    bool
+	stringBounds      StringBounds
+	stringBytes       uint64
+}
+
+// StringBounds charges decoded UTF-8 bytes of every key and string value.
+// Both limits apply before a key is unescaped or a typed value is decoded.
+// Zero is an actual zero-byte allowance, not an unlimited/default setting.
+type StringBounds struct {
+	TokenBytes uint64
+	TotalBytes uint64
 }
 
 // ErrInvalid reports malformed JSON or an exceeded admission limit. It never
@@ -39,6 +50,17 @@ var ErrInvalid = errors.New("invalid bounded JSON")
 // Unicode, duplicate decoded keys, depth and per-container member limits remain
 // strict. Use Parse instead for control records and finite numeric counters.
 func ValidateDocument(b []byte, byteLimit, depth, members uint64) error {
+	return validateDocument(b, byteLimit, depth, members, StringBounds{}, false)
+}
+
+// ValidateDocumentStringBounds adds prospective string-content admission to
+// the same strict lexical pass. It does not allocate a decoded value tree;
+// callers still own their exact typed schema and semantic validation.
+func ValidateDocumentStringBounds(b []byte, byteLimit, depth, members uint64, bounds StringBounds) error {
+	return validateDocument(b, byteLimit, depth, members, bounds, true)
+}
+
+func validateDocument(b []byte, byteLimit, depth, members uint64, bounds StringBounds, bounded bool) error {
 	if len(b) == 0 || uint64(len(b)) > byteLimit || !utf8.Valid(b) {
 		return ErrInvalid
 	}
@@ -51,7 +73,8 @@ func ValidateDocument(b []byte, byteLimit, depth, members uint64) error {
 	if members > uint64(len(b)) {
 		members = uint64(len(b))
 	}
-	s := jsonScanner{b: b, depth: int(depth), members: int(members), documentNumbers: true}
+	s := jsonScanner{b: b, depth: int(depth), members: int(members), documentNumbers: true,
+		boundedStrings: bounded, stringBounds: bounds}
 	if !s.value(1) {
 		return ErrInvalid
 	}
@@ -230,6 +253,7 @@ func (s *jsonScanner) hex4() (uint16, bool) {
 	return n, true
 }
 func (s *jsonScanner) string() bool {
+	start := s.i
 	if !s.take('"') {
 		return false
 	}
@@ -238,6 +262,13 @@ func (s *jsonScanner) string() bool {
 		s.i++
 		switch {
 		case c == '"':
+			if s.boundedStrings {
+				n := decodedStringBytes(s.b[start:s.i])
+				if n > s.stringBounds.TokenBytes || n > s.stringBounds.TotalBytes-s.stringBytes {
+					return false
+				}
+				s.stringBytes += n
+			}
 			return true
 		case c < 0x20:
 			return false

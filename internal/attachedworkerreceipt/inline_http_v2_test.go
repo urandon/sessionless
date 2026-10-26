@@ -599,6 +599,25 @@ func TestInlineV2ClosedCanonicalControl(t *testing.T) {
 }
 
 func TestInlineV2PrepareBoundAndCompactResponse(t *testing.T) {
+	t.Run("maximum-valid-escaped-answer", func(t *testing.T) {
+		service, store := inlineFixtureV2(t)
+		input := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+		// Exactly 32 KiB and 32,000 runes. Control-byte escaping increases
+		// encoded size without reducing the admitted original semantic answer.
+		input.Candidate.Summary = strings.Repeat("\x01", 31_744) + strings.Repeat("😀", 256)
+		if len(input.Candidate.Summary) != attachedworkeroutput.MaxInlineAnswerBytesV2 || input.Candidate.Validate() != nil {
+			t.Fatal("invalid maximum answer fixture")
+		}
+		raw := inlineMarshalV2(t, input)
+		if len(raw) <= maxInlinePlanStringsV2 || len(raw) > maxInlinePrepareBytesV2 {
+			t.Fatalf("maximum escaped fixture encoded bytes=%d", len(raw))
+		}
+		writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
+		HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
+		if writer.Code != http.StatusOK || store.calls != 1 || writer.Body.Len() > maxInlineControlBytesV2 {
+			t.Fatalf("maximum valid answer denied or response expanded: status=%d calls=%d bytes=%d", writer.Code, store.calls, writer.Body.Len())
+		}
+	})
 	for _, size := range []int{maxInlinePrepareBytesV2, maxInlinePrepareBytesV2 + 1} {
 		t.Run(stringSizeV2(size), func(t *testing.T) {
 			service, store := inlineFixtureV2(t)
@@ -612,14 +631,12 @@ func TestInlineV2PrepareBoundAndCompactResponse(t *testing.T) {
 			request := inlineControlRequestV2(t, PathInlinePrepareV2, raw)
 			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
 			HandlerInlineV2(service).ServeHTTP(writer, request)
-			want := http.StatusOK
-			if size > maxInlinePrepareBytesV2 {
-				want = http.StatusBadRequest
+			// Both are semantically oversized, including the old exactly-at-
+			// wire-ceiling fixture. No store stub may bless its decoded plan.
+			if writer.Code != http.StatusBadRequest {
+				t.Fatalf("oversized prepare bytes=%d status=%d", size, writer.Code)
 			}
-			if writer.Code != want {
-				t.Fatalf("prepare bytes=%d status=%d want=%d", size, writer.Code, want)
-			}
-			if size > maxInlinePrepareBytesV2 && store.calls != 0 {
+			if store.calls != 0 || store.binder.calls != 0 {
 				t.Error("oversized prepare reached store")
 			}
 			if writer.Body.Len() > maxInlineControlBytesV2 || strings.Contains(writer.Body.String(), strings.Repeat("x", 64)) {
@@ -648,6 +665,38 @@ func TestInlineV2PrepareBoundAndCompactResponse(t *testing.T) {
 			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
 			if writer.Code != http.StatusServiceUnavailable || writer.Body.Len() > maxInlineControlBytesV2 || strings.Contains(writer.Body.String(), "private-payload") {
 				t.Fatalf("invalid result field=%s status=%d response bytes=%d", field, writer.Code, writer.Body.Len())
+			}
+		})
+	}
+}
+
+func TestInlineV2RejectsDecodedStringsBeforeTypedDecode(t *testing.T) {
+	for _, mode := range []string{"answer-token", "aggregate-plan"} {
+		t.Run(mode, func(t *testing.T) {
+			input := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+			input.Candidate.Summary = strings.Repeat("x", attachedworkeroutput.MaxInlineAnswerBytesV2)
+			if mode == "answer-token" {
+				input.Candidate.Summary += "x"
+			} else {
+				// Every individual string fits the token ceiling, but their
+				// aggregate exceeds the original decoded-plan allowance.
+				input.Nonce = domain.IdempotencyKey(strings.Repeat("n", 32<<10))
+				input.Producer.SessionID = domain.SessionID(strings.Repeat("s", 32<<10))
+				input.Authorization.TenantID = domain.TenantID(strings.Repeat("t", 32<<10))
+			}
+			raw := inlineMarshalV2(t, input)
+			if len(raw) > maxInlinePrepareBytesV2 {
+				t.Fatal("fixture missed decoded-only admission boundary")
+			}
+			untouched := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 99, Candidate: attachedworkeroutput.InlineCandidateV2{Summary: "not-decoded"}}
+			if inlineDecodeV2(raw, maxInlinePrepareBytesV2, &untouched) || untouched.Version != 99 || untouched.Candidate.Summary != "not-decoded" {
+				t.Fatal("invalid string content reached typed decoding before admission")
+			}
+			service, store := inlineFixtureV2(t)
+			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
+			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
+			if writer.Code != http.StatusBadRequest || store.calls != 0 || store.binder.calls != 0 {
+				t.Fatalf("invalid decoded plan reached downstream authority: status=%d store=%d binder=%d", writer.Code, store.calls, store.binder.calls)
 			}
 		})
 	}

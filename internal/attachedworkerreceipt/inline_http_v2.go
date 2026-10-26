@@ -23,6 +23,7 @@ const (
 	InlineBodyMediaTypeV2   = "application/vnd.sessionless.attached-output.v2"
 	InlineRequestHeaderV2   = "X-Sessionless-Output-Request"
 	maxInlinePrepareBytesV2 = 256 << 10
+	maxInlinePlanStringsV2  = 96 << 10
 	maxInlineControlBytesV2 = 32 << 10
 	maxInlineHeaderBytesV2  = 8 << 10
 	maxInlineBodyBytesV2    = 64 << 10
@@ -227,7 +228,14 @@ func inlineReadContextV2(w http.ResponseWriter, r *http.Request, deadline time.T
 // reordering. It also rejects case aliases accepted by encoding/json. Content
 // in the separate raw body is never decoded or reserialized here.
 func inlineDecodeV2(raw []byte, limit int, target any) bool {
-	if strictjson.ValidateDocument(raw, uint64(limit), 16, 64) != nil {
+	// Bound the retained decoded plan BEFORE json.Decoder can allocate typed
+	// strings, including invalid requests that a downstream store would deny.
+	// Counting keys too is conservative: all valid scope/name/answer strings
+	// fit these existing semantic maxima even at maximum wire escaping.
+	if limit <= 0 || strictjson.ValidateDocumentStringBounds(raw, uint64(limit), 16, 64, strictjson.StringBounds{
+		TokenBytes: attachedworkeroutput.MaxInlineAnswerBytesV2,
+		TotalBytes: maxInlinePlanStringsV2,
+	}) != nil {
 		return false
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))

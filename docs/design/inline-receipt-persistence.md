@@ -1,6 +1,7 @@
 # Single-answer inline receipt persistence
 
-Version: 0.1.1. Status: engineering design and bounded capture-limit clarification
+Version: 0.1.2. Status: engineering design, bounded capture-limit clarification
+and connection-local serialization allocation policy
 accepted under agreed-MVP delegation after independent requirements-first
 review. Implementation, aggregate memory proof and activation remain separate
 and incomplete.
@@ -152,3 +153,101 @@ payload-sized generic canonical trees when simplifying the decoder.
 
 Research/design/source/fake tests only. No actual provider/credential/service,
 native VM/YDB launch, downloads, deployment, migration or network changes.
+
+## Bounded YDB serialization capacities
+
+Status: bounded engineering correction accepted after independent
+original-requirements-led design review; **not implemented or qualified**.
+The encoding, semantic maxima, custody order and 1 MiB owned-payload obligation
+above are unchanged. This section identifies an implementation seam; it does
+not claim the remaining aggregate finding is closed.
+
+### Decision evidence and alternatives
+
+The pinned gRPC v1.82.1 default protobuf codec uses `mem.DefaultBufferPool`
+for both encoding and decoding (`encoding/proto/proto.go`, Marshal/Unmarshal).
+Its default tiers jump from 32 KiB to 1 MiB (`mem/buffer_pool.go`). Thus a normal
+escaped inline answer already borrows a 1 MiB backing array while the SQL JSON,
+canonical plan and original Summary remain alive. Length alone is not capacity.
+An offline default-codec observation with a 202,046-byte BytesValue input gave
+202,050 protobuf bytes with 1,048,576-byte capacity. It is not a YDB request or
+a heap-peak measurement; the source establishes the allocation policy.
+
+The original native producer cannot submit Completion/Usage/Substrate fields;
+`materializeSuccess` builds one event and leaves Usage/Substrate nil. The large
+typed Usage compatibility fixture remains admitted persistence DATA, not proof
+that an authenticated producer can create that cohort. Preserve its round-trip;
+do not introduce a smaller hidden Usage/metadata limit to make arithmetic pass.
+
+Rejected alternatives are changing global gRPC pools, patching SDK internals,
+raising the aggregate limit, calling backing capacity fixed overhead, or omitting
+the SQL answer before the canonical blob exists. The original copying receipt
+must commit before physical blob writes; missing blob data cannot reconstruct it.
+A client-local pool option alone is insufficient: the default protobuf codec
+independently selects the global pool.
+
+### Connection-local allocation policy
+
+Use the existing sole `internal/ydbclient` driver constructor and supported
+public APIs: `ydb.With(config.WithGrpcOptions(...))`,
+`experimental.WithBufferPool(mem.NopBufferPool{})`, and
+`grpc.WithDefaultCallOptions(grpc.ForceCodecV2(...))`. The pool API is experimental
+and pinned-version-sensitive. It must be exercised whenever gRPC is upgraded.
+No global registration, new transport, endpoint/proxy, retry, SDK fork, TLS/auth
+change or new limit follows. The policy affects this YDB driver's discovery,
+Table, Scheme and scripting RPCs, not other clients in the process.
+
+The private protobuf codec is only an allocation-policy adaptation of the stock
+codec, not a message transform or authority boundary:
+
+- Preserve `Name() == "proto"`, MessageV1/MessageV2 adaptation, ordinary default
+  protobuf wire/unknown-field semantics and error behavior. Do not turn on
+  deterministic encoding or add a compatibility encoder/fallback.
+- For an immutable generated message, compute `proto.Size`, allocate that
+  capacity explicitly, and retain the actual `MarshalAppend` result. Size may
+  overestimate lazy nonminimal messages: actual length need not equal capacity.
+  Unexpected growth is a failed proof, not permission to claim prospective
+  safety for concurrently mutated/custom protobuf implementations.
+- Decode via `MaterializeToBuffer(mem.NopBufferPool{})` and standard Unmarshal.
+  A single fragment may be borrowed; multiple fragments require one exact-sized
+  concatenation while the fragments remain held. Do not mutate or clear borrowed
+  input. Preserve default reset/unknown/error behavior.
+- Retain successful output until all gRPC queue/retry references are released.
+  Do not clear a borrowed send buffer or claim SliceBuffer.Free erases it.
+  This does not add successful-buffer zeroization guarantees to the SDK.
+
+The companion SQL work must separately eliminate the full-answer counting
+Encoder and uncontrolled shared-pool capacity in the active SQL serialization
+phase. Exact projected-metadata/string byte accounting and explicitly owned
+encoding must preserve the old full-domain 512 KiB decision, every fingerprint
+and the single-answer stored shape. Merely replacing gRPC's pool is insufficient.
+
+### Verification and bounded implementation handoff
+
+1. Codec tests compare stock versus candidate semantics for generated YDB
+   request/result messages, legacy protobuf adaptation, nil/invalid/malformed
+   values, empty payload, unknown fields, fragmented input and nonminimal wire.
+   Map serialization order is not deterministic by default; compare decoded
+   semantics rather than inventing a byte-order requirement.
+2. Observe capacity, not only allocation totals, on the actual codec path above
+   and below the old 32 KiB tier; bound errors and preserve borrowed inputs.
+   Check the constructor installs both local options for operational and
+   scripting drivers without changing authentication, transaction selection,
+   retry policy, DSN normalization or deadlines. No live database is needed for
+   the initial source/codec tests.
+3. Reproduce the genuine maximum producer, SQL parameter/protobuf construction,
+   canonical planning and read/decode overlap using original paths. Account for
+   actual capacities, fragments, copies and release points before asserting the
+   unchanged 1 MiB sum. Compatibility DATA must still round-trip; it is not
+   automatically the same active producer-phase budget assertion.
+4. No compression/binary-log/custom-trace materialization is present in the
+   current constructor; future additions must revalidate their extra copies.
+   Existing transport retry references are not a second whole payload, but
+   still extend its lifetime. Never count them as released prematurely.
+5. Independently review the stable implementation; run offline codec/consumer
+   regressions, then exact-head required CI including actual YDB/stand gates.
+   This delta neither closes #200 nor activates #133/#220.
+
+An implementation that only changes buffer tiers without proving the other
+original phases remains incomplete. No custom protobuf/YDB message rewriting,
+new table, custody lifecycle or semantic narrowing is part of this policy.

@@ -42,7 +42,8 @@ func nativeJoinedEvidenceV2(t *testing.T, profile *nativeFrozenProfileV2, bundle
 
 type nativeJoinedLifecycleV2 struct {
 	*preparedOwnerLifecycle
-	now time.Time
+	now       time.Time
+	writeBack func(ports.CredentialWriteBackResult) (ports.CredentialWriteBackResult, error)
 }
 
 func (l *nativeJoinedLifecycleV2) Issue(ctx context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
@@ -51,6 +52,16 @@ func (l *nativeJoinedLifecycleV2) Issue(ctx context.Context, request ports.Crede
 		return ports.CredentialHandle{}, ErrContract
 	}
 	return l.handle, nil
+}
+
+func (l *nativeJoinedLifecycleV2) WriteBack(ctx context.Context, handle ports.CredentialHandle, materialized ports.CredentialMaterialization) (ports.CredentialWriteBackResult, error) {
+	result, err := l.preparedOwnerLifecycle.WriteBack(ctx, handle, materialized)
+	if err != nil || l.writeBack == nil {
+		return result, err
+	}
+	// Only after the original fixture validates its exact issued handle and
+	// materialization may a scenario script that invocation's own writeback.
+	return l.writeBack(result)
 }
 
 type nativeJoinedLauncherV3 struct {

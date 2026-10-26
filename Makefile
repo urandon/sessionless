@@ -191,12 +191,22 @@ test:
 	$(MAKE) test-ordinary
 	$(MAKE) test-connected
 
-.PHONY: test-ordinary test-connected test-mcp-offline
+.PHONY: test-ordinary test-ordinary-ci-base test-ordinary-ci-tail test-connected test-mcp-offline
 test-ordinary: prepare fmt-check lint
 	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^TestLocalCompaction' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction)' $(GO_PACKAGE_PATTERNS)
+
+# CI-only complement; local/release test-ordinary above remains complete.
+test-ordinary-ci-base: prepare fmt-check lint
+	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocalCompaction' $(GO_PACKAGE_PATTERNS)
+
+test-ordinary-ci-tail: prepare
+	go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)
 
 test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
@@ -414,10 +424,12 @@ provider-conformance-fuzz: prepare
 
 # Keep local and release verification complete. GitHub CI runs the unchanged
 # offline worker and egress gates in its existing isolated security job instead.
-.PHONY: ci-core ci-partition-test
+.PHONY: ci-core ci-core-base ci-partition-test
 ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance
 
-ci-core: docs-check cloud-web-smoke-test observability-config-check web-ci generate test-ordinary build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+CI_CORE_CHECKS := docs-check cloud-web-smoke-test observability-config-check web-ci generate test-ordinary build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+ci-core: $(CI_CORE_CHECKS)
+ci-core-base: $(subst test-ordinary,test-ordinary-ci-base,$(CI_CORE_CHECKS))
 
 # Offline development tool, deliberately excluded from deployed COMPONENTS.
 # Real bindings/ownership receipts are operator-private inputs, never CI defaults.

@@ -19,6 +19,7 @@ var (
 	errNativeConduitPolicy    = errors.New("native conduit policy is invalid")
 	errNativeConduitLimit     = errors.New("native conduit aggregate limit exceeded")
 	errNativeConduitIO        = errors.New("native conduit connection failed")
+	errNativeConduitStopped   = errors.New("native conduit original execution ended")
 )
 
 const nativeConduitBuffer = 8 << 10
@@ -123,9 +124,81 @@ func (c *nativeCompanion) current() bool {
 		return false
 	}
 	c.mu.Lock()
-	active := c.active
+	ended := c.endedLocked()
 	c.mu.Unlock()
-	return (active == nil || active.Err() == nil) && c.owner.child.Matches(c.owner.attempt, c.owner.authority.ProviderResource)
+	return !ended && c.owner.child.Matches(c.owner.attempt, c.owner.authority.ProviderResource)
+}
+
+// Err notification and an IO deadline may become observable in either order.
+// This reads only the original authority; it never creates another lifetime.
+func (c *nativeCompanion) endedLocked() bool {
+	if c.stopping || c.ctx.Err() != nil {
+		return true
+	}
+	if c.active == nil {
+		return false // constructor preflight, before Start installs active
+	}
+	deadline, bounded := c.active.Deadline()
+	return c.active.Err() != nil || bounded && !time.Now().Before(deadline)
+}
+
+func (c *nativeCompanion) unavailable() error {
+	c.mu.Lock()
+	ended := c.endedLocked()
+	c.mu.Unlock()
+	if ended {
+		return errNativeConduitStopped
+	}
+	return errNativeConduitAuthority
+}
+
+type nativeCompanionIOOutcome struct {
+	err    error
+	closed bool // a sibling's intentional close is handled by the join owner
+}
+
+// Observe each operation BEFORE waiting for a sibling. A later deadline must
+// never erase an earlier real failure. Only known shutdown errors or a timeout
+// at the ORIGINAL active deadline are normal termination, not arbitrary IO,
+// malformed CONNECT, aggregate exhaustion or an independently shorter timeout.
+func (c *nativeCompanion) observeIO(err, failure error, ioDeadline time.Time) nativeCompanionIOOutcome {
+	if err == nil {
+		return nativeCompanionIOOutcome{}
+	}
+	c.mu.Lock()
+	ended := c.endedLocked()
+	var activeDeadline time.Time
+	if c.active != nil {
+		activeDeadline, _ = c.active.Deadline()
+	}
+	c.mu.Unlock()
+	closed := errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
+	var timeout net.Error
+	expired := errors.As(err, &timeout) && timeout.Timeout() && !activeDeadline.IsZero() &&
+		ioDeadline.Equal(activeDeadline) && !time.Now().Before(activeDeadline)
+	if errors.Is(err, errNativeConduitStopped) || expired || ended && (closed || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		c.cancel()
+		c.shutdown()
+		return nativeCompanionIOOutcome{err: errNativeConduitStopped}
+	}
+	if errors.Is(err, errNativeConduitLimit) {
+		failure = errNativeConduitLimit
+	}
+	if !closed {
+		c.fail(failure)
+	}
+	return nativeCompanionIOOutcome{err: failure, closed: closed}
+}
+
+func (c *nativeCompanion) observeAccept(err error, deadline time.Time) error {
+	// This original listener's pre/post-Accept identity check also returns
+	// ErrSupervisorConfig when our shutdown has stopped/closed it. Normalize
+	// only that wrapper shape after authority ended, never arbitrary IO or a
+	// live listener's identity/configuration failure.
+	if errors.Is(err, attachedworkerdaemon.ErrSupervisorConfig) && c.unavailable() == errNativeConduitStopped {
+		err = errNativeConduitStopped
+	}
+	return c.observeIO(err, errNativeConduitIO, deadline).err
 }
 
 func (c *nativeCompanion) Start(active context.Context, socket *attachedworkerdaemon.NativeSocketV2) error {
@@ -163,20 +236,22 @@ func (c *nativeCompanion) Start(active context.Context, socket *attachedworkerda
 		for c.current() {
 			client, err := socket.AcceptConnectionV2()
 			if err != nil {
-				if c.ctx.Err() == nil {
-					c.fail(errNativeConduitIO)
+				if err := c.observeAccept(err, deadline); err != errNativeConduitStopped {
+					c.fail(err)
 				}
 				break
 			}
-			if !c.admit(client) {
-				_ = client.Close()
-				c.fail(errNativeConduitLimit)
+			if err := c.admit(client); err != nil {
+				c.retire(client)
+				if err != errNativeConduitStopped {
+					c.fail(err)
+				}
 				break
 			}
 			c.workers.Add(1)
 			go func() {
 				defer c.workers.Done()
-				if err := c.tunnel(client); err != nil && c.ctx.Err() == nil {
+				if err := c.tunnel(client); err != nil {
 					c.fail(err)
 				}
 			}()
@@ -194,21 +269,27 @@ func (c *nativeCompanion) Start(active context.Context, socket *attachedworkerda
 	return errNativeConduitAuthority
 }
 
-func (c *nativeCompanion) admit(conn net.Conn) bool {
+func (c *nativeCompanion) admit(conn net.Conn) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopping || c.ctx.Err() != nil || c.active == nil || c.active.Err() != nil || c.used >= c.owner.conduitLimits().Connections {
-		return false
+	if c.endedLocked() {
+		return errNativeConduitStopped
+	}
+	if c.active == nil {
+		return errNativeConduitAuthority
+	}
+	if c.used >= c.owner.conduitLimits().Connections {
+		return errNativeConduitLimit
 	}
 	c.used++ // consumed before parsing or DNS; rejected connections never refund
 	c.connections[conn] = struct{}{}
-	return true
+	return nil
 }
 
 func (c *nativeCompanion) track(conn net.Conn) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopping || c.ctx.Err() != nil || c.active == nil || c.active.Err() != nil {
+	if c.endedLocked() || c.active == nil {
 		return false
 	}
 	c.connections[conn] = struct{}{}
@@ -224,16 +305,23 @@ func (c *nativeCompanion) retire(conn net.Conn) {
 	c.mu.Unlock()
 }
 
-func (c *nativeCompanion) tunnel(client net.Conn) error {
+func (c *nativeCompanion) tunnel(client net.Conn) (returnErr error) {
+	defer func() {
+		if returnErr == errNativeConduitStopped {
+			c.cancel()
+			c.shutdown()
+			returnErr = nil // expiry still fails the original supervisor invocation
+		}
+	}()
 	defer c.retire(client)
 	if !c.current() {
-		return errNativeConduitAuthority
+		return c.unavailable()
 	}
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
 	if active == nil || active.Err() != nil {
-		return errNativeConduitAuthority
+		return c.unavailable()
 	}
 	if c.owner.currentEnvelopeV2(active, c.owner.nativeNowV2()) != nil {
 		return errNativeConduitAuthority
@@ -244,18 +332,25 @@ func (c *nativeCompanion) tunnel(client net.Conn) error {
 	if deadline, ok := active.Deadline(); ok && deadline.Before(headerDeadline) {
 		headerDeadline = deadline
 	}
-	if client.SetDeadline(headerDeadline) != nil {
-		return errNativeConduitIO
+	if err := client.SetDeadline(headerDeadline); err != nil {
+		return c.observeIO(err, errNativeConduitIO, headerDeadline).err
 	}
 	meter := &nativeMeteredConn{Conn: client, owner: c}
 	reader := bufio.NewReaderSize(meter, nativeconnect.MaxHeaderBytes)
 	host, err := nativeconnect.ReadCONNECT(reader, c.owner.conduitHosts())
 	if err != nil {
+		if meter.readErr != nil {
+			return c.observeIO(meter.readErr, errNativeConduitIO, headerDeadline).err
+		}
 		return errNativeConduitPolicy
 	}
 	addresses, err := c.deps.lookup(active, host)
-	if err != nil || !c.current() {
-		return errNativeConduitAuthority
+	deadline, _ := active.Deadline()
+	if err != nil {
+		return c.observeIO(err, errNativeConduitAuthority, deadline).err
+	}
+	if !c.current() {
+		return c.unavailable()
 	}
 	ip, err := nativeconnect.PinPublicIPv4(addresses)
 	if err != nil {
@@ -264,47 +359,54 @@ func (c *nativeCompanion) tunnel(client net.Conn) error {
 	peer, err := c.deps.dial(active, "tcp4", net.JoinHostPort(ip.String(), "443"))
 	if err != nil || peer == nil {
 		if peer != nil {
-			_ = peer.Close()
+			c.retire(peer)
 		}
-		return errNativeConduitIO
+		if err == nil {
+			return errNativeConduitIO
+		}
+		return c.observeIO(err, errNativeConduitIO, deadline).err
 	}
 	defer c.retire(peer)
 	// Verify the actual original connection, not just the requested target.
 	remote, ok := peer.RemoteAddr().(*net.TCPAddr)
-	if !ok || remote.Port != 443 || remote.Zone != "" || !remote.IP.Equal(net.IP(ip.AsSlice())) ||
-		!c.current() || !c.track(peer) {
+	if !ok || remote.Port != 443 || remote.Zone != "" || !remote.IP.Equal(net.IP(ip.AsSlice())) {
 		return errNativeConduitAuthority
 	}
-	deadline, ok := active.Deadline()
-	if !ok || client.SetDeadline(deadline) != nil || peer.SetDeadline(deadline) != nil {
-		return errNativeConduitAuthority
+	if !c.current() || !c.track(peer) {
+		return c.unavailable()
 	}
-	if _, err := io.WriteString(meter, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil || !c.current() {
-		return errNativeConduitIO
+	for _, conn := range []net.Conn{client, peer} {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return c.observeIO(err, errNativeConduitAuthority, deadline).err
+		}
 	}
-	joined := make(chan error, 2)
+	if _, err := io.WriteString(meter, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return c.observeIO(err, errNativeConduitIO, deadline).err
+	}
+	if !c.current() {
+		return c.unavailable()
+	}
+	joined := make(chan nativeCompanionIOOutcome, 2)
 	go func() {
 		_, err := io.CopyBuffer(peer, reader, make([]byte, nativeConduitBuffer))
-		joined <- err
+		joined <- c.observeIO(err, errNativeConduitIO, deadline)
 	}()
 	go func() {
 		_, err := io.CopyBuffer(meter, peer, make([]byte, nativeConduitBuffer))
-		joined <- err
+		joined <- c.observeIO(err, errNativeConduitIO, deadline)
 	}()
 	first := <-joined
-	_ = peer.Close()
-	_ = client.Close()
-	second := <-joined
-	if c.ctx.Err() != nil {
-		return nil // the original owner decides cancellation/terminal semantics
+	if first.err != nil && first.err != errNativeConduitStopped {
+		c.fail(first.err)
 	}
-	if errors.Is(first, errNativeConduitLimit) || errors.Is(second, errNativeConduitLimit) {
-		return errNativeConduitLimit
+	c.retire(peer)
+	c.retire(client)
+	if second := <-joined; second.err != nil && second.err != errNativeConduitStopped && !second.closed {
+		c.fail(second.err)
 	}
-	if first != nil || second != nil && !errors.Is(second, net.ErrClosed) && !errors.Is(second, io.ErrClosedPipe) {
-		return errNativeConduitIO
-	}
-	return nil // transport EOF is not provider acceptance/nonacceptance evidence
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err // transport EOF/expiry is not provider outcome or invocation success
 }
 
 // Workload-facing traffic, including CONNECT framing/status, shares one
@@ -312,22 +414,29 @@ func (c *nativeCompanion) tunnel(client net.Conn) error {
 // concurrent relays cannot overspend by each observing the same remainder.
 type nativeMeteredConn struct {
 	net.Conn
-	owner *nativeCompanion
+	owner   *nativeCompanion
+	readErr error // original zero-byte read cause before CONNECT parser collapses it
 }
 
-func (c *nativeCompanion) reserve(outbound bool, requested int) int {
+func (c *nativeCompanion) reserve(outbound bool, requested int) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	remaining := &c.inbound
 	if outbound {
 		remaining = &c.outbound
 	}
-	if c.stopping || c.ctx.Err() != nil || c.active == nil || c.active.Err() != nil || *remaining == 0 {
-		return 0
+	if c.endedLocked() {
+		return 0, errNativeConduitStopped
+	}
+	if c.active == nil {
+		return 0, errNativeConduitAuthority
+	}
+	if *remaining == 0 {
+		return 0, errNativeConduitLimit
 	}
 	n := min(uint64(requested), *remaining)
 	*remaining -= n
-	return int(n)
+	return int(n), nil
 }
 
 func (c *nativeCompanion) refund(outbound bool, n int) {
@@ -344,21 +453,25 @@ func (m *nativeMeteredConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	reserved := m.owner.reserve(true, len(p))
-	if reserved == 0 {
-		return 0, errNativeConduitLimit
+	reserved, err := m.owner.reserve(true, len(p))
+	if err != nil {
+		m.readErr = err
+		return 0, err
 	}
 	n, err := m.Conn.Read(p[:reserved])
 	m.owner.refund(true, reserved-n)
+	if n == 0 {
+		m.readErr = err
+	}
 	return n, err
 }
 func (m *nativeMeteredConn) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	reserved := m.owner.reserve(false, len(p))
-	if reserved == 0 {
-		return 0, errNativeConduitLimit
+	reserved, err := m.owner.reserve(false, len(p))
+	if err != nil {
+		return 0, err
 	}
 	n, err := m.Conn.Write(p[:reserved])
 	m.owner.refund(false, reserved-n)

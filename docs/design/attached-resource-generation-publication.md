@@ -210,12 +210,15 @@ the smallest explicit extension without SDK interception or new account gates.
 
 Keep these unchecked implementation rows under #133, not a duplicate epic:
 
-1. Server metadata/auth/CAS/direct-read adapter and existing-row migration;
+1. [#233](https://gitcode.com/urandon/sessionless/issues/233): server
+   metadata/auth/CAS/direct-read adapter and existing-row migration;
    trusted baseline/projector plus transactional binder/admission integration.
-2. Original Session publication/ACK client and native per-attempt baseline
+2. [#234](https://gitcode.com/urandon/sessionless/issues/234): original Session
+   publication/ACK client and native per-attempt baseline
    consumption; versioned dynamic/install policy-role separation and explicit
    normal subscription sealed-input source composition.
-3. Synthetic tests for initial/refresh/revoke, foreign/stale/duplicate reports,
+3. [#235](https://gitcode.com/urandon/sessionless/issues/235): synthetic tests
+   for initial/refresh/revoke, foreign/stale/duplicate reports,
    lost ACK/reconnect, expiry/overflow, exact digest projection and unchanged
    observations, cross-role digest substitution denial, two-generation native
    consumption and completed-N terminal/ACK.

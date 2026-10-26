@@ -213,6 +213,11 @@ jobs:
       - name: Prove Yandex login and operator bootstrap against fresh YDB
         run: make web-auth-ydb-gate
 
+      - name: Prove lossless V2 identity rows and current-cookie joins
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make web-identity-v2-ydb-gate
+
       - name: Prove exact four legacy-index existing and missing retirement
         run: make ready-expiry-retirement-ydb-gate
 

@@ -134,8 +134,9 @@ function verify({ make, ci, release }) {
     const value = job(ci, name);
     assert.equal(step(value, 'Set up pinned Go'), pinnedGo, `${name} exact cold Go cache control`);
     assert.equal(step(value, coldGoStepName), coldGoStep, `${name} exact cold Go freshness guard`);
-    assert.ok(value.includes(`      - name: Set up pinned Go\n        ${pinnedGo}\n\n      - name: ${coldGoStepName}\n`), `${name} cold Go guard immediately after setup`);
-    assert.equal(value.slice(0, value.indexOf(`      - name: ${coldGoStepName}\n`)).match(/\b(?:run:|make |go (?:test|build|run|env) )/), null, `${name} cold Go guard before repository commands`);
+    assert.equal(value.slice(value.indexOf('    steps:\n'), value.indexOf(`      - name: ${coldGoStepName}\n`)),
+      '    steps:\n      - name: Checkout mirrored commit\n        uses: actions/checkout@v6\n\n', `${name} cold Go guard immediately after checkout`);
+    assert.ok(value.includes(`      - name: ${coldGoStepName}\n        ${coldGoStep}\n\n      - name: Set up pinned Go\n        ${pinnedGo}\n`), `${name} cold Go guard immediately before setup`);
   }
   assert.equal(step(connected, 'Run connected-session tests over all packages'), 'run: make test-connected', 'complete connected invocation');
   assert.equal([...connected.matchAll(/^      - name:/gm)].length, 4, 'bounded connected steps');
@@ -501,7 +502,8 @@ for (const name of goJobs) {
     ['clears cache', value => value.replace('test -z "$entries"', 'rm -rf "$cache_dir"'), /exact cold Go freshness guard/],
     ['creates cache', value => value.replace('set -eu', 'set -eu\n          mkdir -p "$GOCACHE"'), /exact cold Go freshness guard/],
     ['ignored guard failure', value => value.replace(`shell: bash\n        run: |\n          set -eu`, `continue-on-error: true\n        shell: bash\n        run: |\n          set -eu`), /exact cold Go freshness guard/],
-    ['late guard', value => value.replace(`      - name: ${coldGoStepName}\n`, '      - name: Premature repository command\n        run: make build\n\n      - name: '+coldGoStepName+'\n'), /cold Go guard immediately after setup/],
+    ['late guard', value => value.replace(`      - name: ${coldGoStepName}\n`, '      - name: Premature repository command\n        run: make build\n\n      - name: '+coldGoStepName+'\n'), /cold Go guard immediately after checkout/],
+    ['guard after setup', value => value.replace(`      - name: ${coldGoStepName}\n        ${coldGoStep}\n\n      - name: Set up pinned Go\n        ${pinnedGo}\n`, `      - name: Set up pinned Go\n        ${pinnedGo}\n\n      - name: ${coldGoStepName}\n        ${coldGoStep}\n`), /cold Go guard immediately after checkout/],
   ]) {
     const after = mutate(before);
     assert.notEqual(after, before, `${name} ${fault} mutation must be effective`);

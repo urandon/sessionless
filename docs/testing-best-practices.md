@@ -249,11 +249,16 @@ explicit cold Go build/module-cache qualification. GitHub's `startsWith` is
 case-insensitive; a quoted prefix later in a PR/merge-message body does not
 trigger it. All six host-Go jobs (`verify`, `go-local`, `go-connected`, `ydb`,
 `ydb-security-isolated`, `local-stand`) disable setup-go cache restore and
-post-save for that intent. Immediately after setup, before repository commands,
-each job proves its configured repository `GOCACHE` and `GOMODCACHE` paths are
+post-save for that intent. Immediately after checkout, before setup-go or any
+other Go/repository command, each job proves its configured repository
+`GOCACHE` and `GOMODCACHE` paths are
 absent or empty; nonempty, redirected or invalid paths fail without creating,
-clearing or relocating caches. Normal pushes, generated merge subjects without
-that prefix and manual dispatch without a HEAD message retain default caching.
+clearing or relocating caches. setup-go itself runs full `go env` even with
+`cache: false`, which legitimately initializes `GOCACHE/README` on a fresh cache;
+the freshness guard must therefore run before the action, not reject its later
+bootstrap metadata or permit/delete pre-existing entries. Normal pushes,
+generated merge subjects without that prefix and manual dispatch without a HEAD
+message retain default caching.
 This controls only these host Go caches, not toolchain, npm, Docker or runner
 coldness, test selection, permissions or provider-publication authority. A new
 intent-bearing source HEAD still requires independent review and a complete

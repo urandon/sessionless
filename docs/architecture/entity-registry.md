@@ -10,6 +10,22 @@ Logical state and durability decisions are specified in the
 The owning [issue #205](https://gitcode.com/urandon/sessionless/issues/205) holds
 the report, problem register, review findings and implementation decisions.
 
+### Proposed authentication extension (not applied schema)
+
+The [dual-provider account-linking design](../design/dual-provider-account-linking.md)
+for [#237](https://gitcode.com/urandon/sessionless/issues/237) proposes no new
+physical table: versioned active/unlinked ownership and shared active-set
+revision live in `external_identities`; `external_identities_by_user` projects
+at most two active methods. Immutable unlinked-subject ownership tombstones
+have no operational TTL and are not account erasure. `web_sessions` snapshot
+the authenticating identity revision; every authorization consumer rechecks it.
+Existing `oidc_login_challenges` hold bounded purpose-tagged challenges and
+24-hour operation receipts, with a proposed separate `delete_after` TTL instead
+of extending logical proof expiry. Existing audit tables retain redacted events.
+Implementation must update the machine registry, retention and consumers with
+its actual migrations/record contracts; these proposals change no active-table
+count, current TTL, stored records or runtime authority in this documentation PR.
+
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has
 no new row, table, TTL, cache, approval registry or custody owner. The original

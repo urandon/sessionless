@@ -678,15 +678,25 @@ func readExternalIdentityTx(
 	tx rowQuery,
 	subject domain.ExternalSubject,
 ) (domain.ExternalIdentity, bool, error) {
+	if subject.Validate() != nil {
+		return domain.ExternalIdentity{}, false, domain.ErrMembershipDenied
+	}
 	bucket, err := webBucket(subject.String())
 	if err != nil {
 		return domain.ExternalIdentity{}, false, err
 	}
-	return readJSON[domain.ExternalIdentity](ctx, tx,
-		`SELECT record FROM external_identities
-		 WHERE shard_bucket = $1 AND provider = $2 AND subject = $3`,
-		bucket, subject.Provider, subject.Subject,
-	)
+	// This shared helper performs bounded physical I/O only; it does not decode
+	// or convert a V2 record. All V1 identity writers then require the closed V1
+	// shape, rejecting V2 active rows/tombstones rather than dropping new fields.
+	raw, found, err := readWebIdentityJSONV2(ctx, tx, webIdentityRowSQLV2, bucket, subject.Provider, subject.Subject)
+	if err != nil || !found {
+		return domain.ExternalIdentity{}, false, err
+	}
+	identity, err := decodeExternalIdentityV1(raw)
+	if err != nil || identity.Subject != subject {
+		return domain.ExternalIdentity{}, false, domain.ErrMembershipDenied
+	}
+	return identity, true, nil
 }
 
 func putMembershipTx(ctx context.Context, tx stateSQLExecutor, membership domain.TenantMembership) error {

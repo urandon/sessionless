@@ -56,7 +56,7 @@ lookup projections; a current execution record may contain several bounded
 operational fields. Separate physical storage requires a concrete access,
 lifecycle or transaction reason, not one table for every state or proof.
 
-## Owner-local subscription state design
+## Owner-local subscription state
 
 The [owner-local subscription state design](../design/owner-local-subscription-state.md)
 under #133 keeps the existing logical canonical credential binding, encrypted
@@ -65,9 +65,12 @@ private owner-host root. One bounded atomic metadata image owns generation,
 revocation and cleanup relations; immutable encrypted bodies remain local.
 Invocation handles, refresh serialization and ephemeral auth materialization
 retain the existing lifecycle owner rather than becoming new durable entities.
-This specifies unimplemented local storage, not a new table, cloud secret store, permission
-ledger, scheduler, implementation or applied schema change. The physical registry
-and migration counts are unchanged. Authenticated metadata-only publication into
+The `internal/ownerlocalcredential` adapter implements these existing binding
+and secret ports using this bounded local format and the original credential
+lifecycle. It adds no table, cloud secret store, permission ledger, scheduler or
+applied schema change. The physical registry and migration counts are unchanged.
+Its metadata-only native reader uses the same owner-held backend, not another
+durable authority. Authenticated metadata-only publication into
 the existing resource/admission owner remains separate #133 composition work;
 the local state alone does not make a sealed resource eligible.
 

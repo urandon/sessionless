@@ -1,7 +1,9 @@
 # Owner-local subscription state
 
-Version: 0.1.0. Status: accepted engineering design after independent review;
-implementation, serving composition and rollout remain pending.
+Version: 0.1.0. Status: accepted engineering design after independent review.
+The `internal/ownerlocalcredential` backend implements the local storage and
+existing-lifecycle wrapper under [#232](https://gitcode.com/urandon/sessionless/issues/232).
+Serving composition, operator key/auth provisioning and rollout remain separate.
 Owner: [#133](https://gitcode.com/urandon/sessionless/issues/133); prerequisite
 contracts: [credential lifecycle](../credential-lifecycle.md) and
 [native boundary](external-harness-boundary.md). This is design only, not an
@@ -16,8 +18,10 @@ subscription scope. Its metadata `LoadCredentialBinding` also implements
 Keep `Issue -> Materialize -> Execute -> WriteBack -> Release`, the original
 generation/revocation fence and exact native currentness checks unchanged.
 
-`internal/credentiallifecycle/service.go` implements that lifecycle, but its
-subscription binding/secret backends exist only in tests. The provider-resource
+`internal/credentiallifecycle/service.go` implements that lifecycle. Its
+subscription binding/secret ports are implemented by `internal/ownerlocalcredential`;
+the same store supplies metadata-only native reads, while `NewLifecycle` wraps
+the original service with the exact-handle admission guard. The provider-resource
 YDB adapter is not interchangeable: #85 explicitly separates subscription
 bindings. `attachedworkeractivation.ProfileV1` remains synthetic-denied.
 

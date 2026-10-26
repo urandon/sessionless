@@ -10,21 +10,41 @@ Logical state and durability decisions are specified in the
 The owning [issue #205](https://gitcode.com/urandon/sessionless/issues/205) holds
 the report, problem register, review findings and implementation decisions.
 
-### Proposed authentication extension (not applied schema)
+### Authentication V2 source extension (not applied schema)
 
 The [dual-provider account-linking design](../design/dual-provider-account-linking.md)
-for [#237](https://gitcode.com/urandon/sessionless/issues/237) proposes no new
+for [#237](https://gitcode.com/urandon/sessionless/issues/237) requires no new
 physical table: versioned active/unlinked ownership and shared active-set
 revision live in `external_identities`; `external_identities_by_user` projects
 at most two active methods. Immutable unlinked-subject ownership tombstones
 have no operational TTL and are not account erasure. `web_sessions` snapshot
 the authenticating identity revision; every authorization consumer rechecks it.
-Existing `oidc_login_challenges` hold bounded purpose-tagged challenges and
-24-hour operation receipts, with a proposed separate `delete_after` TTL instead
-of extending logical proof expiry. Existing audit tables retain redacted events.
-Implementation must update the machine registry, retention and consumers with
-its actual migrations/record contracts; these proposals change no active-table
-count, current TTL, stored records or runtime authority in this documentation PR.
+The explicit V2 domain/row helpers and private operation transaction remain
+unmounted source components, not a serving-mode installation. The machine
+registry lists these source consumers and retains the original CREATE lineage.
+Forward migrations [00130](../../migrations/ydb/00130_add_identity_challenge_delete_after.sql)
+and [00131](../../migrations/ydb/00131_set_identity_challenge_delete_after_ttl.sql)
+add nullable `delete_after` and change the SAME `oidc_login_challenges` table's
+physical TTL from `expires_at` to this column. Original `00053` is unchanged.
+There remain 105 historical CREATEs and 101 effective active tables; these two
+ALTERs add neither an account registry nor a challenge/receipt table.
+
+V1 challenge writes set `delete_after` to their original expiry without changing
+their JSON contract or authorizing a V2 fallback. V2 pending operations and
+proof/login challenges retain their original at-most-ten-minute deadline. Only
+a terminal transaction that strips subjects, proofs and secret bindings from
+the JSON AND physical scalar columns may retain a minimal receipt until
+creation plus 24 hours. Consumed proof challenges must clear physical PKCE/nonce too.
+Existing audit tables retain content-free events under their original policy.
+
+The registry's `delete_after` retention is the intended effective SOURCE schema,
+not evidence of applied DDL or runtime enablement. NULL old cells do not expire
+after the switch; logical expiry is checked independently of asynchronous TTL.
+The [freeze/drain, NULL-row maintenance and V1 retirement prerequisites](../development.md#identity-v2-retention-and-cutover-prerequisites)
+remain separately authorized work. No bounded retained-data backfill or cutover
+executor is delivered by this storage description, and no old identity may be
+silently reactivated. Keep V2 serving disabled until the complete transition and
+all transactional authorization consumers are independently verified.
 
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has

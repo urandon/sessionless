@@ -3,7 +3,9 @@ package sessionlessharness
 import (
 	"context"
 	"errors"
+	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -31,6 +33,9 @@ type AttachedResourcePin struct {
 type AttachedResourceBinderConfig struct {
 	Enabled   bool                  `json:"enabled"`
 	Resources []AttachedResourcePin `json:"resources"`
+	// Generations is the SAME immutable operator registry installed in Store.
+	// It never comes from browser input or a worker's reported evidence.
+	Generations *attachedresourcegeneration.Registry `json:"-"`
 }
 
 // AttachedResourceAuthorityStore performs only exact owner-scoped point reads.
@@ -48,16 +53,25 @@ type attachedResourceKey struct {
 }
 
 type AttachedResourceBinder struct {
-	enabled bool
-	store   AttachedResourceAuthorityStore
-	pins    map[attachedResourceKey]AttachedResourcePin
+	enabled         bool
+	store           AttachedResourceAuthorityStore
+	pins            map[attachedResourceKey]AttachedResourcePin
+	generations     *attachedresourcegeneration.Registry
+	generationHeads ports.AttachedResourceGenerationHeadStoreV1
 }
 
 func NewAttachedResourceBinder(config AttachedResourceBinderConfig, store AttachedResourceAuthorityStore) (*AttachedResourceBinder, error) {
-	if store == nil || len(config.Resources) > maxAttachedResourcePins || config.Enabled && len(config.Resources) == 0 {
+	if store == nil || len(config.Resources) > maxAttachedResourcePins || config.Enabled && len(config.Resources) == 0 && config.Generations.Len() == 0 {
 		return nil, ErrAttachedResourceUnavailable
 	}
 	binder := &AttachedResourceBinder{enabled: config.Enabled, store: store, pins: make(map[attachedResourceKey]AttachedResourcePin, len(config.Resources))}
+	if config.Generations != nil {
+		heads, ok := store.(ports.AttachedResourceGenerationHeadStoreV1)
+		if !config.Enabled || !ok || config.Generations.Len() == 0 {
+			return nil, ErrAttachedResourceUnavailable
+		}
+		binder.generations, binder.generationHeads = config.Generations, heads
+	}
 	workerKeys := make(map[struct {
 		tenant domain.TenantID
 		owner  domain.UserID
@@ -75,6 +89,10 @@ func NewAttachedResourceBinder(config AttachedResourceBinderConfig, store Attach
 			owner  domain.UserID
 			worker domain.AttachedWorkerID
 		}{tenant: pin.TenantID, owner: pin.OwnerUserID, worker: pin.WorkerID}
+		if _, collision := config.Generations.Lookup(pin.TenantID, pin.OwnerUserID, pin.SubscriptionConnectionID); collision ||
+			config.Generations.ContainsWorker(pin.TenantID, pin.OwnerUserID, pin.WorkerID) {
+			return nil, ErrAttachedResourceUnavailable
+		}
 		if _, duplicate := binder.pins[key]; duplicate || workerKeys[workerKey] {
 			return nil, domain.ValidationError{Field: "attached_resource_pin", Reason: "resource and worker IDs must be unique within the exact owner scope"}
 		}
@@ -88,6 +106,14 @@ func (binder *AttachedResourceBinder) BindHarness(ctx context.Context, request p
 		return ports.ExecutionAuthorityV2{}, ErrAttachedResourceUnavailable
 	}
 	pin, found := binder.pins[attachedResourceKey{tenant: request.TenantID, owner: request.OwnerUserID, id: request.SubscriptionConnectionID}]
+	if baseline, configured := binder.generations.Lookup(request.TenantID, request.OwnerUserID, request.SubscriptionConnectionID); configured {
+		var err error
+		pin, err = binder.generationPin(ctx, request, baseline)
+		if err != nil {
+			return ports.ExecutionAuthorityV2{}, ErrAttachedResourceUnavailable
+		}
+		found = true
+	}
 	if !found {
 		return ports.ExecutionAuthorityV2{}, ErrAttachedResourceUnavailable
 	}
@@ -111,6 +137,33 @@ func (binder *AttachedResourceBinder) BindHarness(ctx context.Context, request p
 		return ports.ExecutionAuthorityV2{}, ErrAttachedResourceUnavailable
 	}
 	return authority, nil
+}
+
+// This is only owner-scoped preflight. Fresh scheduler/direct-offer admission
+// must re-read the exact head and baseline in their allocating transaction.
+// A missing/revoked head never falls back to the original fixed generation.
+func (binder *AttachedResourceBinder) generationPin(ctx context.Context, request ports.HarnessBindingRequest,
+	baseline domain.AttachedResourceGenerationBaselineV1,
+) (AttachedResourcePin, error) {
+	head, found, err := binder.generationHeads.LoadAttachedResourceGenerationHeadV1(ctx, request.TenantID, request.OwnerUserID, request.SubscriptionConnectionID)
+	if err != nil || !found || head.Validate() != nil || head.Revoked || head.OwnerUserID != baseline.OwnerUserID ||
+		head.WorkerID != baseline.WorkerID || head.EnrollmentGeneration != baseline.EnrollmentGeneration || head.BaselineRevision != baseline.BaselineRevision {
+		return AttachedResourcePin{}, ErrAttachedResourceUnavailable
+	}
+	binding, evidence, err := domain.ProjectAttachedResourceGenerationV1(baseline, head.CredentialGeneration)
+	if err != nil {
+		return AttachedResourcePin{}, ErrAttachedResourceUnavailable
+	}
+	for _, observed := range []time.Time{evidence.Catalog.ObservedAt, evidence.Route.ObservedAt, evidence.Capability.ObservedAt,
+		evidence.Privacy.ObservedAt, evidence.Price.ObservedAt, evidence.Policy.ObservedAt} {
+		if observed.After(request.At) {
+			return AttachedResourcePin{}, ErrAttachedResourceUnavailable
+		}
+	}
+	return AttachedResourcePin{TenantID: baseline.TenantID, OwnerUserID: baseline.OwnerUserID,
+		SubscriptionConnectionID: baseline.SubscriptionConnectionID, WorkerID: baseline.WorkerID,
+		EnrollmentGeneration: baseline.EnrollmentGeneration, CapabilityDigest: baseline.CapabilityDigest,
+		PolicyDigest: domain.AttachedWorkerPolicyDigest(binding.EffectivePolicyDigest), Binding: binding}, nil
 }
 
 func validateAttachedResourcePin(pin AttachedResourcePin) error {

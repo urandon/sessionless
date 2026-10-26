@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/idgen"
@@ -62,6 +63,9 @@ func main() {
 
 func newHTTPServer(address string, handler http.Handler) *http.Server {
 	return &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second,
+		// Bound request body reads too: a context alone does not interrupt a
+		// blocked net/http body reader. This does not bound long-poll responses.
+		ReadTimeout:    15 * time.Second,
 		MaxHeaderBytes: controlapi.MaxRequestHeaderBytes}
 }
 
@@ -77,6 +81,13 @@ func buildHandler(
 	attached, err := attachedControlConfigFromEnv(os.Getenv)
 	if err != nil {
 		return nil, func() {}, err
+	}
+	generations, err := attachedresourcegeneration.LoadRegistryFromEnv(os.Getenv)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if generations != nil && !attached.enabled {
+		return nil, func() {}, fmt.Errorf("attached resource generation requires enabled attached control")
 	}
 	webhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 	if webhookSecret == "" {
@@ -104,7 +115,7 @@ func buildHandler(
 			closeYDB()
 		}
 	}()
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{})
+	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttachedResourceGenerations: generations})
 	if err != nil {
 		return nil, func() {}, err
 	}

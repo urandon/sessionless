@@ -176,6 +176,11 @@ existing generation/revision-fenced lifecycle and exact-file OCI bridge.
 No ambient login, keychain, user HOME, copied provider cache or cloud custody
 is inferred from container placement.
 
+The [owner-local subscription state design](owner-local-subscription-state.md)
+defines a bounded encrypted local adapter for that existing lifecycle and its
+metadata-only native reader. It does not yet provide a serving backend, an
+authenticated generation-publication path or permission to use real OAuth.
+
 The first profile has no shell, model-controlled filesystem operations, MCP,
 plugins, dynamic dependencies or native search. Input/media and structured
 final semantics remain with [the attached media design](attached-harness-media-and-artifacts.md)

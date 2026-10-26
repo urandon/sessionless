@@ -56,6 +56,21 @@ lookup projections; a current execution record may contain several bounded
 operational fields. Separate physical storage requires a concrete access,
 lifecycle or transaction reason, not one table for every state or proof.
 
+## Owner-local subscription state design
+
+The [owner-local subscription state design](../design/owner-local-subscription-state.md)
+under #133 keeps the existing logical canonical credential binding, encrypted
+secret candidates and superseded-secret cleanup intents in one explicitly scoped
+private owner-host root. One bounded atomic metadata image owns generation,
+revocation and cleanup relations; immutable encrypted bodies remain local.
+Invocation handles, refresh serialization and ephemeral auth materialization
+retain the existing lifecycle owner rather than becoming new durable entities.
+This specifies unimplemented local storage, not a new table, cloud secret store, permission
+ledger, scheduler, implementation or applied schema change. The physical registry
+and migration counts are unchanged. Authenticated metadata-only publication into
+the existing resource/admission owner remains separate #133 composition work;
+the local state alone does not make a sealed resource eligible.
+
 The [derived-compaction design](../design/owned-harness-compaction.md#durable-head-and-terminal-correspondence)
 selects one bounded typed head and terminal correspondence in existing Run JSON,
 with immutable summary/manifest bodies in scoped object storage. The typed

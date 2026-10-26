@@ -21,14 +21,28 @@ import (
 // The channel deliberately holds the asynchronous owner notification after
 // the original standard-library active context and socket deadlines expire.
 func TestNativeCompanionDeadlineIOPrecedesOwnerNotification(t *testing.T) {
-	testNativeCompanionDeadlineIO(t, false)
+	testNativeCompanionDeadlineIO(t, false, false)
 }
 
 func TestNativeCompanionDeadlineFirstCloseErrorRemainsSticky(t *testing.T) {
-	testNativeCompanionDeadlineIO(t, true)
+	testNativeCompanionDeadlineIO(t, true, false)
 }
 
-func testNativeCompanionDeadlineIO(t *testing.T, failFirstClose bool) {
+func TestNativeCompanionCancellationWinsAtOriginalDeadline(t *testing.T) {
+	testNativeCompanionDeadlineIO(t, false, true)
+}
+
+// Only deadline-notification publication is withheld. Done/Err/cancellation
+// remain standard-library context state; socket deadlines and logical time use
+// the same immutable original bound. There is no replacement clock/lifetime.
+type companionDelayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c companionDelayedDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func testNativeCompanionDeadlineIO(t *testing.T, failFirstClose, delayedDeadline bool) {
 	f := newNativeConstructorFixture(t)
 	entry, err := NewNativePreparedProcessBoundaryV2(t.Context(), f.config, f.session, f.input, f.bundle)
 	if err != nil {
@@ -60,8 +74,18 @@ func testNativeCompanionDeadlineIO(t *testing.T, failFirstClose bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		active, cancelActive := context.WithTimeout(owner, time.Second)
+		var active context.Context
+		var cancelActive context.CancelFunc
+		if delayedDeadline {
+			active, cancelActive = context.WithCancel(companionDelayedDeadlineContext{owner, time.Now().Add(time.Second)})
+		} else {
+			active, cancelActive = context.WithTimeout(owner, time.Second)
+		}
 		defer cancelActive()
+		originalDeadline, bounded := active.Deadline()
+		if !bounded {
+			t.Fatal("fixture original execution lacks deadline")
+		}
 		c.active, c.cancelActive = active, cancelActive
 		c.connections[client] = struct{}{}
 		c.used = 1
@@ -121,8 +145,14 @@ func testNativeCompanionDeadlineIO(t *testing.T, failFirstClose bool) {
 		}
 		time.Sleep(time.Second) // logical deadline advance, not readiness evidence
 		synctest.Wait()
-		if owner.Err() != nil || !errors.Is(active.Err(), context.DeadlineExceeded) {
-			t.Fatal("fixture did not preserve the tighter original deadline and live outer owner")
+		observedDeadline, stillBounded := active.Deadline()
+		activeErr := active.Err()
+		if !stillBounded || !observedDeadline.Equal(originalDeadline) || time.Now().Before(originalDeadline) ||
+			owner.Err() != nil || activeErr != context.Canceled && activeErr != context.DeadlineExceeded {
+			t.Fatalf("fixture lost its original expired bound/live owner: active=%v owner=%v original=%v observed=%v now=%v", activeErr, owner.Err(), originalDeadline, observedDeadline, time.Now())
+		}
+		if delayedDeadline && activeErr != context.Canceled {
+			t.Fatalf("controlled cancellation did not win original deadline notification: active=%v", activeErr)
 		}
 		select {
 		case <-notificationEntered:

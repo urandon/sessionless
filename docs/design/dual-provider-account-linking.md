@@ -160,6 +160,16 @@ than two, duplicate providers or mismatched/missing forward rows. Validate the
 current authenticating forward row is included. All active rows share one
 positive link-set revision; no separate account revision row is necessary.
 
+The internal arithmetic is checked uint64, but the canonical V2 encoding of
+EVERY identity/session/operation security or expected revision is a decimal
+STRING in both JsonDocument records and Web DTOs: 1–20 ASCII digits, no leading
+zero, sign, whitespace, fraction or exponent, parsed in range 1..MaxUint64.
+Reject JSON-number revisions and alternate spellings; do not accept both forms
+as compatibility aliases. The browser keeps revisions opaque and never converts
+them through JavaScript `Number`. This avoids assuming lossless large JSON
+integers in either the database codec or browser. Actual YDB readback and Web
+DTO tests must include MaxUint64 and overflow denial, not only small counters.
+
 Every link/unlink transaction reads that bounded range and all active forward
 rows, then writes every surviving/added active forward row with the SAME next
 revision. Set next to checked `max(active revision,target tombstone revision)+1`.
@@ -362,7 +372,7 @@ source behavior, not real registration, forced authentication or reachability.
 | Configuration/login | Three allowed modes, both buttons, missing/duplicate/unknown config denied; provider/client/callback/state/nonce mix-up; old singular setting explicitly rejected. |
 | Continuity | Both initial directions, link, sign out, login through EACH method; exact unchanged UserID/memberships/history/files/resources, equal numeric provider subjects isolated. |
 | Proof | New source plus independent target, stale/wrong/consumed/revoked proof, Yandex consent vs password distinction; Telegram missing/old auth_time denied; no reused code/token. |
-| Transactions | Genuine disposable-YDB unique target race, opposing unlink race, link versus ordinary login/bootstrap/ingress, stale revision/overflow/tombstone ABA, atomic audit+projection+cookie outcome. |
+| Transactions | Genuine disposable-YDB unique target race, opposing unlink race, link versus ordinary login/bootstrap/ingress, stale revision/overflow/tombstone ABA, exact MaxUint64 decimal-string storage/API roundtrip, atomic audit+projection+cookie outcome. |
 | Revocation | Old cookies denied across tenants by main BFF AND direct compute/explanation/consent/canonical transactions; currently suspended/revoked membership, unlinked identity and missing row deny. |
 | Recovery | Lost exchange/commit/browser response, expired/missing receipt, relogin after lost rotated cookie, refresh without repeated effect; expired rows remain logically denied before TTL. |
 | UX/security | Settings link/unlink/cancel, last enabled method, changed configuration, safe conflict, no disclosure/log secrets, keyboard/mobile/a11y and two-owner resource isolation. |

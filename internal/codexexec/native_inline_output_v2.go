@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"reflect"
 	"time"
@@ -12,6 +13,19 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
+
+// ErrInlineReceiptPendingV2 reports retained original semantic custody, not
+// successful retirement. Close fences execution/export; only the existing
+// exact ACK/journal retirement path may relinquish these bytes.
+var ErrInlineReceiptPendingV2 = errors.New("codex exec inline receipt remains pending reconciliation")
+
+func (owner *PreparedAttachedWorkerRunnerV1) pendingInlineReceiptLockedV2() bool {
+	slot := owner.slot
+	return owner.nativeIdentityV2 == owner && owner.nativeConfigV2 != nil && owner.nativeConfigV2.InlineOutputV2 &&
+		slot != nil && slot.finalized && slot.stageClean && slot.result.Succeeded(slot.runErr) &&
+		slot.original != nil && slot.original.self == slot.original && slot.original.nativeFinalV2 != nil &&
+		slot.original.nativeFinalV2.self == slot.original.nativeFinalV2 && slot.original.nativeFinalV2.original == slot.original
+}
 
 // NativeInlineOutputV2 retains the original private producer, not a generic
 // output DTO. Metadata is copyable; the original artifact stream is one-shot.
@@ -113,14 +127,14 @@ func (owner *PreparedAttachedWorkerRunnerV1) InlineReceiptCandidate(ctx context.
 }
 
 func (v *NativeInlineOutputV2) validLocked() bool {
-	return v != nil && v.self == v && v.owner != nil && v.owner.nativeIdentityV2 == v.owner && !v.owner.closed &&
+	return v != nil && v.self == v && v.owner != nil && v.owner.nativeIdentityV2 == v.owner &&
 		v.slot != nil && v.owner.slot == v.slot && v.slot.inline == v && v.slot.finalized && v.slot.stageClean &&
 		v.slot.original != nil && v.slot.original.self == v.slot.original && v.slot.original.nativeFinalV2 != nil &&
 		v.slot.original.nativeFinalV2.self == v.slot.original.nativeFinalV2 && v.slot.original.nativeFinalV2.original == v.slot.original
 }
 
 func (v *NativeInlineOutputV2) currentLocked(ctx context.Context) error {
-	if !v.validLocked() || ctx == nil || ctx.Err() != nil || !v.owner.nativeNowV2().Before(v.expires) {
+	if !v.validLocked() || v.owner.closed || ctx == nil || ctx.Err() != nil || !v.owner.nativeNowV2().Before(v.expires) {
 		return ErrAuthorityUnavailable
 	}
 	native := v.slot.original.native
@@ -134,7 +148,8 @@ func (v *NativeInlineOutputV2) currentLocked(ctx context.Context) error {
 }
 
 // Declaration returns detached untrusted wire metadata, never body/provenance
-// authority. It remains readable for metadata-only recovery after expiry.
+// authority. An already issued carrier remains readable for metadata-only
+// recovery after expiry or cooperative owner Close, never for a fresh send.
 func (v *NativeInlineOutputV2) Declaration() (attachedworkeroutput.InlineCandidateV2, attachedworkeroutput.InlineProducerBindingV2, time.Time, error) {
 	if v == nil || v.owner == nil {
 		return attachedworkeroutput.InlineCandidateV2{}, attachedworkeroutput.InlineProducerBindingV2{}, time.Time{}, ErrContract

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,7 +182,16 @@ func nativeJoinedFixtureMediaV2(t *testing.T, final string, media bool, options 
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := runner.Close(ctx); err != nil {
+		if err := runner.Close(ctx); errors.Is(err, ErrInlineReceiptPendingV2) {
+			// A completed inline test without ACK intentionally leaves semantic
+			// custody. This is not successful retirement or synthetic ACK cleanup.
+			runner.mu.Lock()
+			retained := runner.closed && runner.pendingInlineReceiptLockedV2()
+			runner.mu.Unlock()
+			if !retained {
+				t.Error("pending Close did not retain the original closed inline owner")
+			}
+		} else if err != nil {
 			t.Errorf("close owned joined runner: %v", err)
 		}
 	})

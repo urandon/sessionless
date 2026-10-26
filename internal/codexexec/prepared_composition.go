@@ -20,7 +20,8 @@ import (
 // PreparedAttachedWorkerRunnerV1 is an explicitly selected fixed composition,
 // not a spawn port or an issuer. The old constructor remains text-only. Its
 // sole InvocationRunner owns the credential lifecycle.
-// One pending/finalized slot is kept until exact receipt retirement or Close.
+// One pending/finalized slot is kept. For successful inline output only exact
+// receipt retirement relinquishes it; Close fences work, not semantic custody.
 type PreparedAttachedWorkerRunnerV1 struct {
 	config           Config
 	mediaConfig      *MediaConfigV1
@@ -245,7 +246,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	slot.result, slot.runErr, slot.stageClean, slot.finalized = result, runErr, stageErr == nil, true
 	close(slot.done)
 	if owner.closed {
-		owner.clearSlotLocked()
+		owner.closeSlotLocked()
 	}
 	owner.mu.Unlock()
 	return result, runErr
@@ -434,6 +435,16 @@ func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() error {
 	return nil
 }
 
+// Close is not an ACK or definitive disposition. Keep the actual completed
+// inline owner even if Close won the race before its carrier was requested.
+// Failure/non-inline slots retain their existing cleanup and custody checks.
+func (owner *PreparedAttachedWorkerRunnerV1) closeSlotLocked() error {
+	if owner.pendingInlineReceiptLockedV2() {
+		return ErrInlineReceiptPendingV2
+	}
+	return owner.clearSlotLocked()
+}
+
 func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 	if owner == nil || owner.nativeConfigV2 != nil && owner.nativeIdentityV2 != owner || ctx == nil {
 		return ErrContract
@@ -455,7 +466,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 		return nil
 	}
 	if slot.finalized {
-		clearErr := owner.clearSlotLocked()
+		clearErr := owner.closeSlotLocked()
 		owner.mu.Unlock()
 		if clearErr != nil {
 			return clearErr
@@ -480,7 +491,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 	case <-done:
 		owner.mu.Lock()
 		defer owner.mu.Unlock()
-		return owner.clearSlotLocked()
+		return owner.closeSlotLocked()
 	case <-ctx.Done():
 		return ctx.Err()
 	}

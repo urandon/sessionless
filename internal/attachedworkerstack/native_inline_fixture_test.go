@@ -24,6 +24,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroci"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/codexexec"
@@ -548,8 +549,34 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var stackErr error
+		// Compare the actual compact journal across Close; pending custody is
+		// not a successful cleanup result and must not quietly erase its fence.
+		beforeJournal, beforeJournalErr := os.ReadFile(f.JournalPath)
+		defer clear(beforeJournal)
 		if f.Stack != nil {
 			stackErr = f.Stack.Close(ctx)
+		}
+		if errors.Is(stackErr, codexexec.ErrInlineReceiptPendingV2) {
+			afterJournal, journalErr := os.ReadFile(f.JournalPath)
+			defer clear(afterJournal)
+			var outer attachedworkerlocal.ReceiptCheckpointV1
+			var checkpoint attachedworkeroutput.InlineReceiptCheckpointV2
+			if journalErr == nil && len(afterJournal) <= attachedworkeroutput.MaxInlineCheckpointBytesV2 && json.Unmarshal(afterJournal, &outer) == nil {
+				checkpoint, journalErr = attachedworkeroutput.DecodeInlineCheckpointV2(outer.Payload)
+				clear(outer.Payload)
+			} else if journalErr == nil {
+				journalErr = errors.New("retained journal exceeds compact shape")
+			}
+			if beforeJournalErr != nil || journalErr != nil || !bytes.Equal(beforeJournal, afterJournal) || checkpoint.Version != 2 ||
+				f.Stack.prepared == nil || !f.Stack.closed || !errors.Is(f.Stack.prepared.Close(ctx), codexexec.ErrInlineReceiptPendingV2) {
+				t.Errorf("pending Stack.Close lost original owner/journal: before=%v after=%v", beforeJournalErr, journalErr)
+			}
+			if _, err := f.Stack.Run(ctx, f.Original); err == nil {
+				t.Error("pending closed Stack reopened original execution")
+			}
+			if _, err := f.Stack.InlineReceiptCandidate(ctx, f.Original.Identity, attachedworkerdaemon.InvocationResult{}, nil); err == nil {
+				t.Error("pending closed Stack minted an export carrier")
+			}
 		}
 		sessionClosed := false
 		if f.Session != nil {
@@ -564,7 +591,7 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 		command, socketPath := f.command, f.nativeSocketPath
 		f.mu.Unlock()
 		if !injected {
-			if stackErr != nil {
+			if stackErr != nil && !errors.Is(stackErr, codexexec.ErrInlineReceiptPendingV2) {
 				t.Errorf("close original native Stack: %v", stackErr)
 			}
 			return

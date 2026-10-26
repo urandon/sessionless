@@ -168,7 +168,7 @@ func (r *sessionDeletionInventoryQuery) countSessionMaterialRows(ctx context.Con
 	return count, rows.Err()
 }
 
-func (r *sessionDeletionInventoryQuery) listRunOutputReceipts(ctx context.Context, tenant domain.TenantID, run domain.RunID, limit uint64) (receipts []AttachedWorkerOutputReceiptV1, err error) {
+func (r *sessionDeletionInventoryQuery) listRunOutputReceipts(ctx context.Context, tenant domain.TenantID, run domain.RunID, limit uint64) (receipts []attachedWorkerReceiptEnvelope, err error) {
 	if limit == 0 || limit > maxSessionDeletionRows+1 {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -195,11 +195,11 @@ func (r *sessionDeletionInventoryQuery) listRunOutputReceipts(ctx context.Contex
 		if err := rows.Scan(&owner, &worker, &attempt, &generation, &raw); err != nil {
 			return nil, err
 		}
-		var receipt AttachedWorkerOutputReceiptV1
-		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+		receipt, err := decodeAttachedWorkerReceiptEnvelope([]byte(raw))
+		if err != nil {
 			return nil, err
 		}
-		if err := validateAttachedWorkerReceiptRecord(receipt, tenant, run, owner, worker, attempt, generation); err != nil {
+		if err := receipt.validateIdentity(tenant, run, owner, worker, attempt, generation); err != nil {
 			return nil, err
 		}
 		receipts = append(receipts, receipt)

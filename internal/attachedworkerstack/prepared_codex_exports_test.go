@@ -6,6 +6,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"testing"
 )
 
@@ -16,5 +17,15 @@ func PreparedCodexFixtureForTest(t *testing.T) (*Stack, attachedworkerdaemon.Inv
 	t.Helper()
 	stack, invocation, _, _ := newPreparedStackFixture(t)
 	return stack, invocation, preparedCapability(attachedworkerlocal.ManifestV1{WorkerID: stack.scope.worker, EnrollmentGeneration: stack.scope.enrollment,
+		Harness: attachedworkerlocal.HarnessConfigV1{SHA256: fmtDigest(invocation.Process.ExecutableDigest[:])}})
+}
+
+// PreparedAdapterFixtureForTest supplies the original unbound Stack and actual
+// Connector Session to the shared production post-connect assembly tests.
+// It neither runs the fixture process nor preclaims an attempt.
+func PreparedAdapterFixtureForTest(t *testing.T) (*Stack, *attachedworkersession.Session, attachedworkerdaemon.Invocation, attachedworkerprotocol.CapabilityManifestV1) {
+	t.Helper()
+	stack, invocation, _, _, session, _, _ := newPreparedStackSessionFixture(t, false, false, nil)
+	return stack, session, invocation, preparedCapability(attachedworkerlocal.ManifestV1{WorkerID: stack.scope.worker, EnrollmentGeneration: stack.scope.enrollment,
 		Harness: attachedworkerlocal.HarnessConfigV1{SHA256: fmtDigest(invocation.Process.ExecutableDigest[:])}})
 }

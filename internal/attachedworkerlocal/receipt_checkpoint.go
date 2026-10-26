@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 )
 
 const maxReceiptCheckpointPayloadBytes = 128 << 10
@@ -65,9 +67,22 @@ func (lease *RuntimeLease) PersistReceiptCheckpoint(ctx context.Context, next Re
 		}
 		return nil
 	}
-	encoded, err := encodeStrictJSON(next)
+	inline, err := validateInlineReceiptInitialV2(next)
 	if err != nil {
 		return err
+	}
+	var encoded []byte
+	if inline {
+		encoded, err = encodeInlineReceiptCheckpointFileV2(next)
+	} else {
+		encoded, err = encodeStrictJSON(next)
+	}
+	if err != nil {
+		return err
+	}
+	defer clear(encoded)
+	if inline && len(encoded) > attachedworkeroutput.MaxInlineCheckpointBytesV2 {
+		return ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -124,6 +139,9 @@ func (lease *RuntimeLease) RetireReceiptCheckpoint(ctx context.Context, expected
 		prior.ConnectionID != expected.ConnectionID || prior.ConnectionGeneration != expected.ConnectionGeneration {
 		return ErrStateConflict
 	}
+	if err := validateInlineReceiptRetirementV2(prior.Payload); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -139,8 +157,21 @@ func (store *Store) loadReceiptCheckpointOptionalLocked(manifest ManifestV1) (Re
 	if err != nil {
 		return ReceiptCheckpointV1{}, false, err
 	}
-	var checkpoint ReceiptCheckpointV1
-	if decodeStrictJSON(encoded, &checkpoint) != nil || checkpoint.Validate(manifest) != nil {
+	checkpoint, inline, err := decodeInlineReceiptCheckpointFileV2(encoded)
+	if err != nil {
+		return ReceiptCheckpointV1{}, false, ErrInvalidState
+	}
+	if !inline {
+		if decodeStrictJSON(encoded, &checkpoint) != nil {
+			return ReceiptCheckpointV1{}, false, ErrInvalidState
+		}
+		// A large/invalid versioned file may not hide behind the unchanged V1
+		// decoder. Unversioned V1 retains its original codec and scalar bounds.
+		if _, versioned, _ := decodeVersionedInlineReceiptV2(checkpoint.Payload); versioned {
+			return ReceiptCheckpointV1{}, false, ErrInvalidState
+		}
+	}
+	if checkpoint.Validate(manifest) != nil {
 		return ReceiptCheckpointV1{}, false, ErrInvalidState
 	}
 	return checkpoint, true, nil

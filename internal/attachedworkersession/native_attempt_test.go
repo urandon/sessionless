@@ -262,6 +262,50 @@ type passiveNativeEntry struct{ n int }
 
 func (*passiveNativeEntry) NativePreparedEntryIdentityV2() { panic("marker must never be invoked") }
 
+func TestNativeReceiptScopeV2DoesNotReopenClosedExecution(t *testing.T) {
+	s, _, a, job, manifest := nativeClaimedSession(t)
+	child, err := s.BorrowNativeAttemptV2(context.Background(), a, job, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	if child.CheckReceiptScopeV2(context.Background()) == nil {
+		t.Fatal("unbound child supplied receipt scope")
+	}
+	entry := &passiveNativeEntry{}
+	if _, err := child.BindPreparedEntryV2(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.CheckReceiptScopeV2(context.Background()); err != nil {
+		t.Fatalf("original live claim metadata: %v", err)
+	}
+	if child.Current() == nil {
+		t.Fatal("metadata check reactivated Current")
+	}
+	if _, err := child.Lifetime(); err == nil {
+		t.Fatal("metadata check reactivated Lifetime")
+	}
+	if _, err := child.BindPreparedEntryV2(entry); err == nil {
+		t.Fatal("metadata check reactivated entry")
+	}
+	if _, err := s.BorrowNativeAttemptV2(context.Background(), a, job, manifest); err == nil {
+		t.Fatal("metadata check reminted execution child")
+	}
+	copy := *child
+	if copy.CheckReceiptScopeV2(context.Background()) == nil {
+		t.Fatal("copied native child supplied receipt scope")
+	}
+	s.mu.Lock()
+	s.now = func() time.Time { return a.LeaseExpiresAt }
+	s.mu.Unlock()
+	if child.CheckReceiptScopeV2(context.Background()) == nil {
+		t.Fatal("expired original claim supplied receipt scope")
+	}
+}
+
 func TestNativeConduitSessionOriginalPreparedEntryAssociation(t *testing.T) {
 	s, _, a, job, manifest := nativeClaimedSession(t)
 	child, err := s.BorrowNativeAttemptV2(context.Background(), a, job, manifest)

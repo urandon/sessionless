@@ -1009,8 +1009,8 @@ func (g *deletionCaptureGraph) observeRow(spec *deletionCaptureSpec, cells []del
 		g.inventory.CheckpointRows++
 		return g.addObject(checkpoint.State)
 	case "attached_worker_output_receipts":
-		var receipt AttachedWorkerOutputReceiptV1
-		if decode(&receipt) != nil || !receipt.Ready {
+		receipt, err := decodeAttachedWorkerReceiptEnvelope(raw)
+		if err != nil || !receipt.deletionSettled() {
 			return domain.ErrMembershipDenied
 		}
 		var tenant domain.TenantID
@@ -1024,11 +1024,11 @@ func (g *deletionCaptureGraph) observeRow(spec *deletionCaptureSpec, cells []del
 				return domain.ErrMembershipDenied
 			}
 		}
-		if validateAttachedWorkerReceiptRecord(receipt, tenant, run, owner, worker, attempt, generation) != nil || g.runDigests[run] == "" {
+		if receipt.validateIdentity(tenant, run, owner, worker, attempt, generation) != nil || g.runDigests[run] == "" {
 			return domain.ErrMembershipDenied
 		}
 		g.inventory.ReceiptRows++
-		for _, ref := range attachedWorkerReceiptObjectRefs(receipt) {
+		for _, ref := range receipt.objectRefs() {
 			if err := g.addObject(ref); err != nil {
 				return err
 			}
@@ -1042,6 +1042,7 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	// zero-valued fields. Optional SQL NULL/empty representations below are
 	// explicit producer contracts, never a generic missing-field exception.
 	var target any
+	receiptCodecValidated := false
 	switch table {
 	case "sessions":
 		target = new(domain.Session)
@@ -1070,7 +1071,18 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	case "run_explanation_heads_v1":
 		target = new(runexplanation.HeadV1)
 	case "attached_worker_output_receipts":
-		target = new(AttachedWorkerOutputReceiptV1)
+		envelope, err := decodeAttachedWorkerReceiptEnvelope(body)
+		if err != nil {
+			return domain.ErrMembershipDenied
+		}
+		if envelope.v1 != nil {
+			target = new(AttachedWorkerOutputReceiptV1)
+		} else {
+			// The V2 codec already checked its closed compact shape and
+			// restored the exact domain record. The raw stored bytes are not
+			// a full-domain encoding; do not decode them a second way.
+			receiptCodecValidated = true
+		}
 	case "substrate_execution_evidence":
 		target = new(domain.ExecutionEvidenceV2)
 	case "attempt_effect_reconciliation_evidence":
@@ -1085,7 +1097,7 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	default:
 		return domain.ErrMembershipDenied
 	}
-	if decodeOwnedEffectCanonicalJSON(string(body), target) != nil {
+	if !receiptCodecValidated && decodeOwnedEffectCanonicalJSON(string(body), target) != nil {
 		return domain.ErrMembershipDenied
 	}
 	mapping := deletionCaptureScalarPaths[table]

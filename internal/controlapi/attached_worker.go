@@ -64,9 +64,14 @@ func AttachedWorkerOptionsWithSignals(audience string, state *ydbstore.Store, bl
 	if err != nil {
 		return Options{}, err
 	}
+	inline, err := attachedworkerreceipt.NewInlineServiceV2(service, state, blobs)
+	if err != nil {
+		return Options{}, err
+	}
 	return Options{
 		AttachedWorkerBootstrap: bootstrap, AttachedWorkerExchange: exchange,
-		AttachedWorkerSealedInput:   attachedworkersealedinput.Handler(sealed),
-		AttachedWorkerOutputReceipt: attachedworkerreceipt.Handler(receipt),
+		AttachedWorkerSealedInput:    attachedworkersealedinput.Handler(sealed),
+		AttachedWorkerOutputReceipt:  attachedworkerreceipt.Handler(receipt),
+		AttachedWorkerInlineOutputV2: attachedworkerreceipt.HandlerInlineV2(inline),
 	}, nil
 }

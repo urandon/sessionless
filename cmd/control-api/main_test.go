@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"gitcode.com/urandon/sessionless/internal/controlapi"
 )
 
 func TestAttachedControlConfigStrictFlag(t *testing.T) {
@@ -104,12 +107,28 @@ func TestBuildHandlerDefaultOffDoesNotInitializeDependencies(t *testing.T) {
 		{method: http.MethodPost, path: "/attached-worker/v1/exchange", want: http.StatusNotFound},
 		{method: http.MethodPost, path: "/attached-worker/v1/sealed-input", want: http.StatusNotFound},
 		{method: http.MethodPost, path: "/attached-worker/v1/output-receipt", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/attached-worker/v2/output/prepare", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/attached-worker/v2/output/body", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/attached-worker/v2/output/reconcile", want: http.StatusNotFound},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
 		if recorder.Code != tc.want {
 			t.Errorf("%s %s: status=%d, want %d", tc.method, tc.path, recorder.Code, tc.want)
 		}
+	}
+}
+
+func TestControlHTTPServerHasFiniteHeaderParserBounds(t *testing.T) {
+	t.Parallel()
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	server := newHTTPServer("127.0.0.1:0", handler)
+	if server.Addr != "127.0.0.1:0" || server.Handler == nil || server.ReadHeaderTimeout != 5*time.Second ||
+		server.MaxHeaderBytes != controlapi.MaxRequestHeaderBytes {
+		t.Fatalf("control server parser bounds: timeout=%v bytes=%d addr=%s", server.ReadHeaderTimeout, server.MaxHeaderBytes, server.Addr)
+	}
+	if controlapi.MaxRequestHeaderBytes != 8<<10 {
+		t.Fatal("control header policy changed from eight KiB")
 	}
 }
 

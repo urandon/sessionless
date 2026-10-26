@@ -142,6 +142,62 @@ func TestNativeStackV3ExplicitCompositionPinsOriginalPlatform(t *testing.T) {
 	}
 }
 
+func TestNativeStackV3OutputSelectionPreservesFrozenProfile(t *testing.T) {
+	for _, inline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "receipt-v1", true: "inline-v2"}[inline], func(t *testing.T) {
+			f, deps, launcher := nativeStackFixtureV3(t)
+			f.config.PreparedCodexNative.InlineOutputV2 = inline
+			stack, err := newNativeStackV3(t.Context(), f.manifest, f.config, f.credentials, deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := stack.Close(ctx); err != nil {
+					t.Error(err)
+				}
+			})
+			f.config.PreparedCodexNative.InlineOutputV2 = !inline
+			capability := preparedCapability(f.manifest)
+			capability.OperatingSystem, capability.Architecture, capability.HarnessVersion = "linux", "amd64", "0.162.1"
+			got, err := stack.PreparedInlineOutputV2(f.manifest.Harness.Executable, f.harnessDigest, f.manifest.Harness.Arguments, nil, capability)
+			if err != nil || got != inline {
+				t.Fatalf("frozen output selection=%t want=%t err=%v", got, inline, err)
+			}
+			// CODEX_HOME is allowed only for the original credential owner,
+			// never as caller-supplied native environment. Name-only checks
+			// cannot distinguish that owned injection from this override.
+			for _, name := range []string{"CODEX_HOME", "FOREIGN_MODE"} {
+				env := []attachedworkerdaemon.EnvironmentVariable{{Name: name, Value: "/caller/not-owned"}}
+				if _, err := stack.PreparedInlineOutputV2(f.manifest.Harness.Executable, f.harnessDigest, f.manifest.Harness.Arguments, env, capability); err == nil {
+					t.Errorf("native caller environment %s accepted", name)
+				}
+			}
+			for _, field := range []string{"os", "architecture", "version", "executable-digest"} {
+				other := capability
+				switch field {
+				case "os":
+					other.OperatingSystem = "darwin"
+				case "architecture":
+					other.Architecture = "arm64"
+				case "version":
+					other.HarnessVersion = "0.162.2"
+				case "executable-digest":
+					other.HarnessExecutableDigest = append([]byte(nil), capability.HarnessExecutableDigest...)
+					other.HarnessExecutableDigest[0]++
+				}
+				if _, err := stack.PreparedInlineOutputV2(f.manifest.Harness.Executable, f.harnessDigest, f.manifest.Harness.Arguments, nil, other); err == nil {
+					t.Errorf("native capability %s drift accepted", field)
+				}
+			}
+			if launcher.prepares != 0 {
+				t.Fatal("configuration metadata acquired process authority")
+			}
+		})
+	}
+}
+
 func TestNativeStackV3RejectsDriftBeforeEngine(t *testing.T) {
 	cases := []struct {
 		name   string

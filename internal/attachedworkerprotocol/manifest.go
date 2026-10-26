@@ -18,10 +18,11 @@ const (
 type ProtocolFeatureV1 string
 
 const (
-	FeatureCancellation  ProtocolFeatureV1 = "cancellation_v1"
-	FeatureOutputReceipt ProtocolFeatureV1 = "output_receipt_v1"
-	FeatureProgress      ProtocolFeatureV1 = "progress_v1"
-	FeatureReconnect     ProtocolFeatureV1 = "reconnect_v1"
+	FeatureCancellation   ProtocolFeatureV1 = "cancellation_v1"
+	FeatureOutputReceipt  ProtocolFeatureV1 = "output_receipt_v1"
+	FeatureInlineOutputV2 ProtocolFeatureV1 = "output_inline_v2"
+	FeatureProgress       ProtocolFeatureV1 = "progress_v1"
+	FeatureReconnect      ProtocolFeatureV1 = "reconnect_v1"
 )
 
 type HarnessSurfaceV1 string
@@ -68,7 +69,7 @@ func (manifest CapabilityManifestV1) Validate() error {
 	}
 	previousFeature := ProtocolFeatureV1("")
 	for _, feature := range manifest.Features {
-		if feature != FeatureCancellation && feature != FeatureOutputReceipt && feature != FeatureProgress && feature != FeatureReconnect {
+		if feature != FeatureCancellation && feature != FeatureOutputReceipt && feature != FeatureInlineOutputV2 && feature != FeatureProgress && feature != FeatureReconnect {
 			return protocolError(ErrorInvalidFrame)
 		}
 		if previousFeature != "" && feature <= previousFeature {

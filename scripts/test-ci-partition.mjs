@@ -55,9 +55,16 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
 ];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
+const generationStoreGateCommand = 'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\\n\t\tgo test -race -count=3 -shuffle=on -timeout=5m \\\n\t\t-run \'^TestAttachedResourceGenerationYDB\' ./internal/ydbstore';
+const generationJoinedGateCommand = [
+  'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\',
+  '\t\tgo test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \\',
+  "\t\t-run '^TestAttachedResourceGenerationYDBJoined' ./internal/attachedworkerstack",
+].join('\n');
 const generationGateRecipe = [
   '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
-  'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\\n\t\tgo test -race -count=3 -shuffle=on -timeout=5m \\\n\t\t-run \'^TestAttachedResourceGenerationYDB\' ./internal/ydbstore',
+  generationStoreGateCommand,
+  generationJoinedGateCommand,
 ].join('\n\t');
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
@@ -202,6 +209,43 @@ test('generation SQL qualification cannot lose its guards, coverage or real tran
   ]) assert.throws(() => verify({ ...original, make }));
   const nativeStep = step(job(original.ci, 'ydb'), generationStepName);
   assert.throws(() => verify({ ...original, ci: original.ci.replace(nativeStep, nativeStep.replace('go_query_mode=data&', 'go_query_mode=scripting&go_fake_tx=scripting&')) }));
+});
+
+test('joined generation qualification keeps exact selection, order and independent bounds', () => {
+  const mutations = [
+    ['missing joined command', generationGateRecipe.replace('\n\t' + generationJoinedGateCommand, '')],
+    ['missing joined explicit gate', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 ', ''))],
+    ['missing joined disposable guard', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 ', ''))],
+    ['missing joined race detector', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace(' -race', ''))],
+    ['missing joined repeat', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('-count=3', '-count=1'))],
+    ['missing joined shuffle', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('-shuffle=on', '-shuffle=off'))],
+    ['renewed joined failure budget', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('-timeout=5m', '-timeout=15m'))],
+    ['missing joined build tag', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace(' -tags=ydbintegration', ''))],
+    ['wrong joined test selector', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('^TestAttachedResourceGenerationYDBJoined', '^TestOther'))],
+    ['wrong joined package', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace('./internal/attachedworkerstack', './internal/ydbstore'))],
+    ['skipped joined negative', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand.replace(' -tags=ydbintegration', " -tags=ydbintegration -skip='GateRemoval'"))],
+    ['ignored joined failure', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand + ' || true')],
+    ['parallel joined command', generationGateRecipe.replace(generationJoinedGateCommand,
+      generationJoinedGateCommand + ' &')],
+    ['joined before SQL qualification', generationGateRecipe.replace(generationStoreGateCommand + '\n\t' + generationJoinedGateCommand,
+      generationJoinedGateCommand + '\n\t' + generationStoreGateCommand)],
+  ];
+  for (const [name, mutated] of mutations) {
+    assert.notEqual(mutated, generationGateRecipe, name + ' mutation must change the recipe');
+    assert.throws(() => verify({ ...original, make: original.make.replace(generationGateRecipe, mutated) }),
+      /bounded disposable exact generation test selector/, name);
+  }
 });
 
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {

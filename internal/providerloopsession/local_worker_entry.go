@@ -169,6 +169,33 @@ func (v *LocalV1) EnterWorkerEffect(ctx context.Context, reserved ports.ReserveA
 	return s.installEntry(ctx, call, entry)
 }
 
+// RunWorkerLoop consumes the already-entered original Manager invocation once.
+// It shares the direct routes' finite engine, but never starts or reserves a
+// second parent and never owns a credential lifecycle. The original session
+// gate and absolute lifetime cover the whole MODEL/COMPACTION/MCP sequence;
+// terminal publication, cleanup and canonical completion remain with Manager.
+func (v *LocalV1) RunWorkerLoop(ctx context.Context) (result ModelStepResultV1, err error) {
+	s, call, finish, err := v.begin(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer finish()
+	if s.entryRoute != localEntryWorker || !s.started || s.entry == nil || s.credentialed || s.attempted || s.runtimeStarted || s.runtimeFailed {
+		return result, ErrSession
+	}
+	// Claim before the engine validates its policy: an early failure must not
+	// leave a retryable entry. Invalid/duplicate callers above do not cancel a
+	// different invocation that already owns this shared gate.
+	s.runtimeStarted = true
+	defer func() {
+		if err != nil {
+			s.runtimeFailed = true
+			s.cancel()
+		}
+	}()
+	return s.runBoundedEngine(ctx, call)
+}
+
 // Both routes retain the first caller's absolute lifetime, independently of
 // the short gate call. Callers hold s.gate; Close only accesses these fields
 // under s.mu. No later reservation or handoff renews this context.

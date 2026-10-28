@@ -12,8 +12,8 @@ import (
 // runLocalOwned joins the original Manager admission/lease/reservation to the
 // concrete session's existing composer, cleanup owner and canonical finalizer.
 // There is no V1 evidence conversion, caller-authored completion or replacement
-// executor. RunModelStep is currently model-only: this route does not establish
-// the separately required typed tool/result loop or a real model qualification.
+// executor. The already-entered session runs the same bounded model/tool engine
+// as direct execution; controlled composition is not real model qualification.
 func (manager *Manager) runLocalOwned(ctx context.Context, message ports.ReceivedMessage, loaded ports.WorkerJobState,
 	lease domain.Lease, effect ports.ReserveAttemptEffectResultV1,
 ) (Outcome, error) {
@@ -58,7 +58,7 @@ func (manager *Manager) runLocalOwned(ctx context.Context, message ports.Receive
 		manager.observeManagedDeadline(ctx, executionCtx, err)
 		return fail(err)
 	}
-	if modelResult, err := session.RunModelStep(executionCtx); err != nil {
+	if modelResult, err := session.RunWorkerLoop(executionCtx); err != nil {
 		manager.observeManagedModelStep(ctx, executionCtx, modelResult, err)
 		return fail(err)
 	}

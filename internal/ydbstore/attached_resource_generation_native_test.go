@@ -3,11 +3,13 @@ package ydbstore_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -193,11 +195,45 @@ func (f *nativeGenerationFixture) requireStored(t *testing.T, ctx context.Contex
 	if !raw.Valid {
 		t.Fatal("acknowledged generation has no persisted JsonDocument")
 	}
-	// MUST use the strict numeric codec without float/string coercion. In
-	// particular MaxUint64 cannot be accepted as a rounded or exponent value.
+	// MUST use the strict decimal-string codec without numeric repair or float
+	// coercion. MaxUint64 cannot be accepted as a rounded/exponent JSON number.
 	head, err := domain.DecodeAttachedResourceGenerationHeadV1([]byte(raw.String))
 	if err != nil || head != expected {
 		t.Fatalf("actual stored JsonDocument failed lossless exact-head roundtrip: err=%v generation=%d want=%d revoked=%t want=%t bytes=%d", err, head.CredentialGeneration, expected.CredentialGeneration, head.Revoked, expected.Revoked, len(raw.String))
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw.String), &fields); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]uint64{"enrollment_generation": expected.EnrollmentGeneration, "baseline_revision": expected.BaselineRevision, "credential_generation": expected.CredentialGeneration} {
+		var text string
+		if err := json.Unmarshal(fields[name], &text); err != nil || text != strconv.FormatUint(value, 10) {
+			t.Errorf("actual JsonDocument %s lost canonical string: raw=%s want=%d err=%v", name, fields[name], value, err)
+		}
+	}
+}
+
+// Qualify the column's representation independently of current baseline/worker
+// counter values. These are exact newly generated test-owned keys, not an ACK,
+// enrollment change or admission grant. The existing publication/maximum/CAS
+// tests separately exercise real authenticated semantics without weakening them.
+func TestAttachedResourceGenerationYDBLosslessHeadStrings(t *testing.T) {
+	for _, value := range []uint64{1<<53 - 1, 1 << 53, 1<<53 + 1, math.MaxUint64} {
+		t.Run(strconv.FormatUint(value, 10), func(t *testing.T) {
+			f := newNativeGenerationFixture(t)
+			head := f.head(value, value == math.MaxUint64)
+			head.EnrollmentGeneration, head.BaselineRevision = value, value
+			raw, err := domain.EncodeAttachedResourceGenerationHeadV1(head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call, cancel := context.WithTimeout(f.ctx, ports.AttachedResourceGenerationOperationTimeoutV1)
+			defer cancel()
+			if _, err := f.db.ExecContext(call, `UPDATE subscription_connections SET attached_resource_generation_v1=CAST($1 AS JsonDocument) WHERE tenant_id=$2 AND subscription_connection_id=$3`, string(raw), f.auth.TenantID, f.auth.SubscriptionConnectionID); err != nil {
+				t.Fatalf("write exact test-owned generation column: %v", err)
+			}
+			f.requireStored(t, call, head)
+		})
 	}
 }
 

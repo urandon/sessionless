@@ -186,13 +186,16 @@ func TestResourceGenerationClientRejectsClosedOrForeignResponses(t *testing.T) {
 		{"missing revoked", bytes.Replace(valid, []byte(`,"revoked":false`), nil, 1)},
 		{"null revoked", bytes.Replace(valid, []byte(`"revoked":false`), []byte(`"revoked":null`), 1)},
 		{"foreign scope", bytes.Replace(valid, []byte(`"owner"`), []byte(`"foreign"`), 1)},
-		{"other generation", bytes.Replace(valid, []byte(`"credential_generation":1`), []byte(`"credential_generation":2`), 1)},
+		{"other generation", bytes.Replace(valid, []byte(`"credential_generation":"1"`), []byte(`"credential_generation":"2"`), 1)},
 		{"unexpected revoke", bytes.Replace(valid, []byte(`"revoked":false`), []byte(`"revoked":true`), 1)},
 		{"unknown status", bytes.Replace(valid, []byte(`"applied"`), []byte(`"invented"`), 1)},
 		{"denied with head", bytes.Replace(valid, []byte(`"applied"`), []byte(`"denied"`), 1)},
 		{"trailing", append(bytes.Clone(valid), []byte(" {}")...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if bytes.Equal(tc.raw, valid) {
+				t.Fatal("response mutation did not change the canonical fixture")
+			}
 			calls := 0
 			client, _, publication := generationClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) { calls++; return generationClientReply(tc.raw), nil }))
 			result, err := client.Publish(t.Context(), publication)
@@ -201,6 +204,68 @@ func TestResourceGenerationClientRejectsClosedOrForeignResponses(t *testing.T) {
 				t.Fatalf("response violation caused calls=%d", calls)
 			}
 		})
+	}
+}
+
+func TestResourceGenerationClientPreservesDecimalHeadCounters(t *testing.T) {
+	t.Parallel()
+	for _, value := range []uint64{1<<53 - 1, 1 << 53, 1<<53 + 1, ^uint64(0)} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			var head domain.AttachedResourceGenerationHeadV1
+			client, _, publication := generationClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return generationClientReply(generationClientJSON(t, ports.AttachedWorkerExecutionApplied, head)), nil
+			}))
+			publication.Authorization.EnrollmentGeneration = value
+			publication.Authorization.BaselineRevision = value
+			head = publication.Target
+			head.EnrollmentGeneration, head.BaselineRevision, head.CredentialGeneration = value, value, value
+			head.Revoked = value == ^uint64(0)
+			result, err := client.Read(t.Context(), publication.Authorization)
+			if err != nil || result.Head != head {
+				t.Fatalf("decimal head value=%d result=%+v err=%v", value, result, err)
+			}
+		})
+	}
+}
+
+func TestResourceGenerationClientRejectsNoncanonicalHeadCounters(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+		for _, replacement := range []string{`1`, `9007199254740993`, `"01"`, `"+1"`, `"1e0"`, `"1.0"`, `"\u0031"`, `null`} {
+			t.Run(field+"/"+replacement, func(t *testing.T) {
+				// A permissive decoder would produce the SAME authorized value.
+				// A scope mismatch must not mask failure to enforce the codec.
+				value := uint64(1)
+				if replacement == `9007199254740993` {
+					value = 1<<53 + 1
+				}
+				var raw []byte
+				calls := 0
+				client, _, publication := generationClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return generationClientReply(raw), nil
+				}))
+				publication.Authorization.EnrollmentGeneration, publication.Authorization.BaselineRevision = value, value
+				head := publication.Target
+				head.EnrollmentGeneration, head.BaselineRevision, head.CredentialGeneration = value, value, value
+				valid := generationClientJSON(t, ports.AttachedWorkerExecutionApplied, head)
+				raw = valid
+				control, err := client.Read(t.Context(), publication.Authorization)
+				if err != nil || control.Head != head || calls != 1 {
+					t.Fatalf("same-scope positive control failed: %v calls=%d", err, calls)
+				}
+				original := []byte(fmt.Sprintf(`"%s":"%d"`, field, value))
+				raw = bytes.Replace(valid, original, []byte(`"`+field+`":`+replacement), 1)
+				if bytes.Equal(raw, valid) {
+					t.Fatal("counter mutation did not change the canonical fixture")
+				}
+				result, err := client.Read(t.Context(), publication.Authorization)
+				requireGenerationClientError(t, result, err, ErrorProtocol)
+				if calls != 2 {
+					t.Fatalf("control+noncanonical head caused calls=%d want2 (one per explicit Read)", calls)
+				}
+			})
+		}
 	}
 }
 

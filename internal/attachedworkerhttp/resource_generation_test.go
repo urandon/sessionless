@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +102,62 @@ func TestResourceGenerationHTTPBoundedClosedSuccessAndExplicitRead(t *testing.T)
 	}
 }
 
+func TestResourceGenerationHTTPHeadStringsPreserveEveryCounterBoundary(t *testing.T) {
+	t.Parallel()
+	for _, value := range []uint64{1<<53 - 1, 1 << 53, 1<<53 + 1, math.MaxUint64} {
+		t.Run(strconv.FormatUint(value, 10), func(t *testing.T) {
+			handler, core, payload, _ := generationHTTPFixture(t)
+			payload.Target.EnrollmentGeneration, payload.Target.BaselineRevision, payload.Target.CredentialGeneration = value, value, value
+			payload.Target.Revoked = value == math.MaxUint64
+			payload.Authorization.EnrollmentGeneration, payload.Authorization.BaselineRevision = value, value
+			payload.ExpectedCredentialGeneration = value - 1
+			core.result.Head = payload.Target
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, generationHTTPRequest(ResourceGenerationPublishPathV1, raw))
+			var result ResourceGenerationResponseV1
+			if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &result) != nil || result.Head != payload.Target || core.calls != 1 || core.auth != payload.Authorization || core.publication.ExpectedCredentialGeneration != value-1 {
+				t.Fatalf("metadata boundary %d lost typed scope/head: status=%d result=%+v calls=%d", value, recorder.Code, result, core.calls)
+			}
+			var body map[string]json.RawMessage
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(recorder.Body.Bytes(), &body) != nil || json.Unmarshal(body["head"], &fields) != nil {
+				t.Fatal("success response lost exact nested head")
+			}
+			for _, name := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+				if string(fields[name]) != strconv.Quote(strconv.FormatUint(value, 10)) {
+					t.Errorf("HTTP head %s not exact decimal string: %s", name, fields[name])
+				}
+			}
+		})
+	}
+}
+
+func TestResourceGenerationHTTPRejectsNumericAndNoncanonicalHeadCountersBeforeCore(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+		for index, invalid := range []string{`1`, `1e0`, `"0"`, `"01"`, `"+1"`, `"-1"`, `" 1"`, `"1.0"`, `"1e0"`, `"\u0031"`, `"18446744073709551616"`, `null`, `true`, `[]`, `{}`} {
+			t.Run(fmt.Sprintf("%s/%d", name, index), func(t *testing.T) {
+				handler, core, payload, raw := generationHTTPFixture(t)
+				values := map[string]uint64{"enrollment_generation": payload.Target.EnrollmentGeneration, "baseline_revision": payload.Target.BaselineRevision, "credential_generation": payload.Target.CredentialGeneration}
+				needle := []byte(strconv.Quote(name) + ":" + strconv.Quote(strconv.FormatUint(values[name], 10)))
+				mutant := bytes.Replace(raw, needle, []byte(strconv.Quote(name)+":"+invalid), 1)
+				if bytes.Equal(mutant, raw) {
+					t.Fatalf("test did not alter nested head %s", name)
+				}
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, generationHTTPRequest(ResourceGenerationPublishPathV1, mutant))
+				if recorder.Code != http.StatusBadRequest || core.calls != 0 || core.reads != 0 || recorder.Body.Len() != 0 {
+					t.Errorf("invalid %s=%s reached authority: status=%d calls/reads=%d/%d", name, invalid, recorder.Code, core.calls, core.reads)
+				}
+			})
+		}
+	}
+}
+
 func TestResourceGenerationHTTPRejectsClosedShapeViolationsBeforeCore(t *testing.T) {
 	t.Parallel()
 	_, _, _, valid := generationHTTPFixture(t)
@@ -119,7 +178,7 @@ func TestResourceGenerationHTTPRejectsClosedShapeViolationsBeforeCore(t *testing
 		{"remote digest", bytes.Replace(valid, []byte(`"tenant_id":"tenant"`), []byte(`"tenant_id":"tenant","presented_secret_digest":"must-not-be-accepted"`), 1)},
 		{"unknown instruction", bytes.Replace(valid, []byte(`"version":1`), []byte(`"version":1,"instruction":"no-authority"`), 1)},
 		{"fraction", bytes.Replace(valid, []byte(`"expected_credential_generation":0`), []byte(`"expected_credential_generation":0.0`), 1)},
-		{"overflow", bytes.Replace(valid, []byte(`"credential_generation":1`), []byte(`"credential_generation":18446744073709551616`), 1)},
+		{"overflow", bytes.Replace(valid, []byte(`"credential_generation":"1"`), []byte(`"credential_generation":"18446744073709551616"`), 1)},
 		{"trailing", append(append([]byte(nil), valid...), []byte(`{}`)...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

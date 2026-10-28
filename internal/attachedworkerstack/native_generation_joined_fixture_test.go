@@ -48,11 +48,13 @@ type NativeGenerationJoinedSettingsV3ForTest struct {
 // binary. The joined caller creates the original manifest, baseline, concrete
 // lifecycle and generation owner using its actual state-store/connected path.
 type NativeGenerationJoinedInstallationV3ForTest struct {
-	t        *testing.T
-	settings NativeGenerationJoinedSettingsV3ForTest
-	mu       sync.Mutex
-	now      time.Time
-	launches uint64
+	t                     *testing.T
+	settings              NativeGenerationJoinedSettingsV3ForTest
+	mu                    sync.Mutex
+	now                   time.Time
+	launches              uint64
+	credentialServiceName string
+	credentialServiceInfo os.FileInfo
 }
 
 // NewNativeGenerationJoinedInstallationV3ForTest installs one closed shell and
@@ -129,9 +131,8 @@ func NewNativeGenerationJoinedInstallationV3ForTest(t *testing.T, dbAt time.Time
 		if err := os.Remove(ownedScratch); err != nil {
 			t.Errorf("joined original stack scratch residue: %v", err)
 		}
-		entries, err := os.ReadDir(credentialRoot)
-		if err != nil || len(entries) != 0 {
-			t.Errorf("joined original credential scratch not empty: count=%d err=%v", len(entries), err)
+		if err := v.checkCredentialScratchV3ForTest(); err != nil {
+			t.Error(err)
 		}
 	})
 	scratch, err = filepath.EvalSymlinks(scratch)
@@ -169,6 +170,118 @@ func (v *NativeGenerationJoinedInstallationV3ForTest) Settings() NativeGeneratio
 	data.Profile = data.Profile.Clone()
 	data.Harness.Arguments = slices.Clone(data.Harness.Arguments)
 	return data
+}
+
+// PinCredentialServiceRootV3ForTest records filesystem DATA immediately after
+// the real Lifecycle constructor. It grants no credential/execution authority.
+// Service.Close closes its FD but intentionally retains this service directory;
+// Release owns removal of invocation/auth children, which must not survive.
+func (v *NativeGenerationJoinedInstallationV3ForTest) PinCredentialServiceRootV3ForTest() error {
+	if v == nil {
+		return errors.New("joined credential service root unavailable")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.credentialServiceInfo != nil {
+		return errors.New("joined credential service root already pinned")
+	}
+	entries, err := os.ReadDir(v.settings.CredentialScratchRoot)
+	if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "sessionless-credentials-") {
+		return errors.New("joined credential service requires its sole original directory")
+	}
+	info, err := os.Lstat(filepath.Join(v.settings.CredentialScratchRoot, entries[0].Name()))
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("joined credential service directory is not private")
+	}
+	v.credentialServiceName, v.credentialServiceInfo = entries[0].Name(), info
+	return nil
+}
+
+// Runs after the actual Lifecycle.Close cleanup. An empty service-root
+// directory is expected; accepting any invocation/auth residue is not.
+func (v *NativeGenerationJoinedInstallationV3ForTest) checkCredentialScratchV3ForTest() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	entries, err := os.ReadDir(v.settings.CredentialScratchRoot)
+	if err != nil {
+		return errors.New("joined credential scratch cannot be inspected")
+	}
+	if v.credentialServiceInfo == nil {
+		if len(entries) != 0 {
+			return errors.New("joined credential scratch has an unpinned entry")
+		}
+		return nil // Pure installation tests never construct a lifecycle.
+	}
+	if len(entries) != 1 || entries[0].Name() != v.credentialServiceName {
+		return errors.New("joined credential scratch original service root changed")
+	}
+	root := filepath.Join(v.settings.CredentialScratchRoot, v.credentialServiceName)
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(v.credentialServiceInfo, info) {
+		return errors.New("joined credential scratch original service directory identity changed")
+	}
+	children, err := os.ReadDir(root)
+	if err != nil || len(children) != 0 {
+		return errors.New("joined credential service retains invocation or auth residue")
+	}
+	return nil
+}
+
+// Filesystem assertion tests use owned empty synthetic directories only, not
+// a credential lifecycle, invocation, native process or cleanup substitute.
+func TestNativeGenerationJoinedCredentialScratchContract(t *testing.T) {
+	t.Run("installation without lifecycle", func(t *testing.T) {
+		v := &NativeGenerationJoinedInstallationV3ForTest{settings: NativeGenerationJoinedSettingsV3ForTest{CredentialScratchRoot: t.TempDir()}}
+		if err := v.checkCredentialScratchV3ForTest(); err != nil {
+			t.Fatal("empty installation-only scratch", err)
+		}
+	})
+	for _, fault := range []string{"none", "auth residue", "foreign entry", "replacement", "symlink", "mode"} {
+		t.Run(fault, func(t *testing.T) {
+			scratch := t.TempDir()
+			root := filepath.Join(scratch, "sessionless-credentials-synthetic")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal("owned synthetic service root", err)
+			}
+			v := &NativeGenerationJoinedInstallationV3ForTest{settings: NativeGenerationJoinedSettingsV3ForTest{CredentialScratchRoot: scratch}}
+			if err := v.PinCredentialServiceRootV3ForTest(); err != nil {
+				t.Fatal("pin original synthetic service directory", err)
+			}
+			if err := v.PinCredentialServiceRootV3ForTest(); err == nil {
+				t.Fatal("second pin replaced original directory identity")
+			}
+			switch fault {
+			case "auth residue":
+				if err := os.WriteFile(filepath.Join(root, "auth.json"), []byte("synthetic-residue"), 0o600); err != nil {
+					t.Fatal("owned synthetic residue", err)
+				}
+			case "foreign entry":
+				if err := os.Mkdir(filepath.Join(scratch, "unexpected-synthetic"), 0o700); err != nil {
+					t.Fatal("owned unexpected directory", err)
+				}
+			case "replacement", "symlink":
+				retained := filepath.Join(t.TempDir(), "retained-original")
+				if err := os.Rename(root, retained); err != nil {
+					t.Fatal("retain original owned directory identity", err)
+				}
+				if fault == "replacement" {
+					if err := os.Mkdir(root, 0o700); err != nil {
+						t.Fatal("owned replacement directory", err)
+					}
+				} else if err := os.Symlink(retained, root); err != nil {
+					t.Fatal("owned synthetic directory symlink", err)
+				}
+			case "mode":
+				if err := os.Chmod(root, 0o755); err != nil {
+					t.Fatal("owned directory mode mutation", err)
+				}
+			}
+			err := v.checkCredentialScratchV3ForTest()
+			if (fault == "none") != (err == nil) {
+				t.Fatalf("scratch assertion fault=%s denied=%t", fault, err != nil)
+			}
+		})
+	}
 }
 
 // ObserveDBTime changes only the concrete test clock. It cannot refresh a

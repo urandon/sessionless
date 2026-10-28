@@ -560,6 +560,9 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 			t.Error(err)
 		}
 	})
+	if err := installation.PinCredentialServiceRootV3ForTest(); err != nil {
+		t.Fatal(err)
+	}
 	metadataOwner, err := attachedresourcegenerationsession.NewV1("https://generation-joined.invalid", httpClient, source, lifecycle, baseline)
 	if err != nil {
 		t.Fatal(err)
@@ -898,7 +901,7 @@ func TestAttachedResourceGenerationYDBJoinedTwoCanonicalJobs(t *testing.T) {
 	f := newJoinedGenerationScenario(t)
 	originalBaseline := f.baseline.Clone()
 	first := f.ingest(1)
-	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, f.adapter)
+	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
 	}

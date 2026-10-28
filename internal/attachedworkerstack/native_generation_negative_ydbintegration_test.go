@@ -25,7 +25,7 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 	if err := f.wire.removeGateAfterAcceptedInput(); err != nil {
 		t.Fatal(err)
 	}
-	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, f.adapter)
+	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestAttachedResourceGenerationYDBJoinedQueuedStaleOutboxDenied(t *testing.T
 	if err != nil || !found || head.CredentialGeneration != 1 || head.Revoked {
 		t.Fatalf("queued intent did not originate under active N1: found=%t err=%v", found, err)
 	}
-	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, f.adapter)
+	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
 	}

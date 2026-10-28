@@ -138,11 +138,19 @@ original authority. Removing a registry does not make a resource with published
 metadata fall back to an unchecked fixed pin. The original fixed-resource path
 is preserved for resources with no generation metadata.
 
-Migration `00130_add_attached_resource_generation.sql` adds one nullable column
+Migration `00132_add_attached_resource_generation.sql` adds one nullable column
 to the existing subscription row; source changes do not authorize applying it.
 Generation publication does not activate entitlement, extend evidence expiry
 or enable native execution. Full native consumption, joined proof and live
 resource activation retain their #234/#235/#133 owners.
+
+The three generation-head counters use strict canonical decimal JSON strings,
+not JsonDocument numbers, across storage and nested metadata HTTP heads. The
+internal counters and checked CAS arithmetic remain uint64; existing unrelated
+baseline/evidence/authentication encodings do not change. Zero-head internal
+denial carriers may serialize but are never valid heads or success responses.
+This source-only correction precedes initial generation-head deployment; it
+does not authorize converting retained data or applying the additive migration.
 
 Canonical context windows are retained and sealed using the same event/snapshot
 codecs as the managed worker. Materialization verifies the exact session,

@@ -76,7 +76,7 @@ the local state alone does not make a sealed resource eligible.
 
 The generation-publication source adds only the nullable bounded
 `attached_resource_generation_v1` JsonDocument column to the existing
-`subscription_connections` resource (migration `00130_add_attached_resource_generation.sql`).
+`subscription_connections` resource (migration `00132_add_attached_resource_generation.sql`).
 Its seven fields retain the exact owner/worker/enrollment/baseline generation
 and revocation fence, not credentials, provider observations or entitlement.
 Authenticated mutation and exact readback reuse current membership, canonical

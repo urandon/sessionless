@@ -207,6 +207,120 @@ func attachedGenerationHead() domain.AttachedResourceGenerationHeadV1 {
 	return domain.AttachedResourceGenerationHeadV1{Version: 1, OwnerUserID: "owner", WorkerID: "worker", EnrollmentGeneration: 3, BaselineRevision: 7, CredentialGeneration: 1}
 }
 
+func attachedGenerationStringHead(t *testing.T, head domain.AttachedResourceGenerationHeadV1) []byte {
+	t.Helper()
+	return []byte(fmt.Sprintf(`{"version":1,"owner_user_id":"owner","worker_id":"worker","enrollment_generation":"%d","baseline_revision":"%d","credential_generation":"%d","revoked":%t}`,
+		head.EnrollmentGeneration, head.BaselineRevision, head.CredentialGeneration, head.Revoked))
+}
+
+func TestAttachedResourceGenerationHeadCanonicalDecimalStrings(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+		for _, counter := range []uint64{1<<53 - 1, 1 << 53, 1<<53 + 1, math.MaxUint64} {
+			t.Run(fmt.Sprintf("%s/%d", field, counter), func(t *testing.T) {
+				head := attachedGenerationHead()
+				switch field {
+				case "enrollment_generation":
+					head.EnrollmentGeneration = counter
+				case "baseline_revision":
+					head.BaselineRevision = counter
+				case "credential_generation":
+					head.CredentialGeneration = counter
+					head.Revoked = counter == math.MaxUint64
+				}
+				want := attachedGenerationStringHead(t, head)
+				for _, encode := range []struct {
+					name string
+					fn   func() ([]byte, error)
+				}{
+					{name: "named", fn: func() ([]byte, error) { return domain.EncodeAttachedResourceGenerationHeadV1(head) }},
+					{name: "direct", fn: func() ([]byte, error) { return json.Marshal(head) }},
+					{name: "nested", fn: func() ([]byte, error) {
+						return json.Marshal(struct {
+							Head domain.AttachedResourceGenerationHeadV1 `json:"head"`
+						}{Head: head})
+					}},
+				} {
+					raw, err := encode.fn()
+					expected := want
+					if encode.name == "nested" {
+						expected = append(append([]byte(`{"head":`), want...), '}')
+					}
+					if err != nil || !bytes.Equal(raw, expected) {
+						t.Errorf("%s encoded %s=%d as %s, want %s: %v", encode.name, field, counter, raw, expected, err)
+					}
+				}
+				decoded, err := domain.DecodeAttachedResourceGenerationHeadV1(want)
+				if err != nil || decoded != head {
+					t.Errorf("named exact string roundtrip: got=%+v want=%+v err=%v", decoded, head, err)
+				}
+				var direct domain.AttachedResourceGenerationHeadV1
+				if err := json.Unmarshal(want, &direct); err != nil || direct != head {
+					t.Errorf("direct exact string roundtrip: got=%+v want=%+v err=%v", direct, head, err)
+				}
+				var nested struct {
+					Head domain.AttachedResourceGenerationHeadV1 `json:"head"`
+				}
+				raw := append(append([]byte(`{"head":`), want...), '}')
+				if err := json.Unmarshal(raw, &nested); err != nil || nested.Head != head {
+					t.Errorf("nested exact string roundtrip: got=%+v want=%+v err=%v", nested.Head, head, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAttachedResourceGenerationHeadRejectsNoncanonicalCountersEveryJSONPath(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+		for _, literal := range []string{`1`, `1.0`, `1e0`, `-1`, `null`, `true`, `""`, `"0"`, `"01"`, `"+1"`, `"-1"`, `" 1"`, `"1 "`, `"1.0"`, `"1e0"`, `"18446744073709551616"`, `"999999999999999999999"`, `"\u0031"`, `"1\n"`} {
+			t.Run(field+"/"+literal, func(t *testing.T) {
+				var members map[string]json.RawMessage
+				if err := json.Unmarshal(attachedGenerationStringHead(t, attachedGenerationHead()), &members); err != nil {
+					t.Fatal(err)
+				}
+				members[field] = json.RawMessage(literal)
+				raw, err := json.Marshal(members)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := domain.DecodeAttachedResourceGenerationHeadV1(raw)
+				if err == nil || got != (domain.AttachedResourceGenerationHeadV1{}) {
+					t.Errorf("named decode accepted %s=%s: got=%+v err=%v", field, literal, got, err)
+				}
+				direct := attachedGenerationHead()
+				if err := json.Unmarshal(raw, &direct); err == nil || direct != (domain.AttachedResourceGenerationHeadV1{}) {
+					t.Errorf("direct decode accepted %s=%s/retained old authority: got=%+v err=%v", field, literal, direct, err)
+				}
+				nested := struct {
+					Head domain.AttachedResourceGenerationHeadV1 `json:"head"`
+				}{Head: attachedGenerationHead()}
+				if err := json.Unmarshal(append(append([]byte(`{"head":`), raw...), '}'), &nested); err == nil || nested.Head != (domain.AttachedResourceGenerationHeadV1{}) {
+					t.Errorf("nested decode accepted %s=%s/retained old authority: got=%+v err=%v", field, literal, nested.Head, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAttachedResourceGenerationHeadZeroDenialCarrierIsNotDecodedAuthority(t *testing.T) {
+	t.Parallel()
+	carrier := struct {
+		Status string                                  `json:"status"`
+		Head   domain.AttachedResourceGenerationHeadV1 `json:"head"`
+	}{Status: "denied"}
+	raw, err := json.Marshal(carrier)
+	if err != nil || !bytes.Contains(raw, []byte(`"credential_generation":"0"`)) {
+		t.Fatalf("zero denial carrier cannot be bounded-serialized: raw=%s err=%v", raw, err)
+	}
+	if _, err := domain.EncodeAttachedResourceGenerationHeadV1(carrier.Head); err == nil {
+		t.Error("zero denial carrier encoded as a valid head")
+	}
+	if err := json.Unmarshal(raw, &carrier); err == nil || carrier.Head != (domain.AttachedResourceGenerationHeadV1{}) {
+		t.Errorf("zero denial carrier decoded as head authority: got=%+v err=%v", carrier.Head, err)
+	}
+}
+
 func TestAttachedResourceGenerationHeadStrictCodec(t *testing.T) {
 	t.Parallel()
 	head := attachedGenerationHead()
@@ -218,13 +332,19 @@ func TestAttachedResourceGenerationHeadStrictCodec(t *testing.T) {
 	if err != nil || decoded != head {
 		t.Fatalf("head roundtrip: got=%+v err=%v", decoded, err)
 	}
-	reordered := []byte(` { "revoked":false,"credential_generation":1,"baseline_revision":7,"enrollment_generation":3,"worker_id":"worker","owner_user_id":"owner","version":1 } `)
+	reordered := []byte(` { "revoked":false,"credential_generation":"1","baseline_revision":"7","enrollment_generation":"3","worker_id":"worker","owner_user_id":"owner","version":1 } `)
 	if got, err := domain.DecodeAttachedResourceGenerationHeadV1(reordered); err != nil || got != head {
 		t.Fatalf("JsonDocument normalization rejected: %v", err)
 	}
-	exactBound := append(append([]byte(nil), raw...), bytes.Repeat([]byte(" "), domain.AttachedResourceGenerationMetadataMaxBytesV1-len(raw))...)
+	// Internal object padding is seen by direct and nested JSON methods too;
+	// their enclosing JSON decoder owns any whitespace outside this value.
+	exactBound := append(append(append([]byte(nil), raw[:len(raw)-1]...), bytes.Repeat([]byte(" "), domain.AttachedResourceGenerationMetadataMaxBytesV1-len(raw))...), '}')
 	if got, err := domain.DecodeAttachedResourceGenerationHeadV1(exactBound); err != nil || got != head {
 		t.Fatalf("inclusive 4KiB head bound rejected: %v", err)
+	}
+	var direct domain.AttachedResourceGenerationHeadV1
+	if err := json.Unmarshal(exactBound, &direct); err != nil || direct != head {
+		t.Fatalf("direct inclusive 4KiB head bound rejected: %v", err)
 	}
 	for _, tc := range []struct {
 		name string
@@ -242,11 +362,21 @@ func TestAttachedResourceGenerationHeadStrictCodec(t *testing.T) {
 		{"unsupported", bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":2`), 1)},
 		{"unicode loss", bytes.Replace(raw, []byte(`"owner"`), []byte(`"\ud800"`), 1)},
 		{"trailing", append(append([]byte(nil), raw...), []byte(`{}`)...)},
-		{"oversize", append(append([]byte(nil), raw...), bytes.Repeat([]byte(" "), domain.AttachedResourceGenerationMetadataMaxBytesV1)...)},
+		{"oversize", append(append(append([]byte(nil), raw[:len(raw)-1]...), bytes.Repeat([]byte(" "), domain.AttachedResourceGenerationMetadataMaxBytesV1)...), '}')},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got, err := domain.DecodeAttachedResourceGenerationHeadV1(tc.raw); err == nil || got != (domain.AttachedResourceGenerationHeadV1{}) {
 				t.Fatalf("invalid head yielded data=%+v err=%v", got, err)
+			}
+			var direct domain.AttachedResourceGenerationHeadV1
+			if err := json.Unmarshal(tc.raw, &direct); err == nil || direct != (domain.AttachedResourceGenerationHeadV1{}) {
+				t.Errorf("direct invalid head yielded data=%+v err=%v", direct, err)
+			}
+			var nested struct {
+				Head domain.AttachedResourceGenerationHeadV1 `json:"head"`
+			}
+			if err := json.Unmarshal(append(append([]byte(`{"head":`), tc.raw...), '}'), &nested); err == nil || nested.Head != (domain.AttachedResourceGenerationHeadV1{}) {
+				t.Errorf("nested invalid head yielded data=%+v err=%v", nested.Head, err)
 			}
 		})
 	}

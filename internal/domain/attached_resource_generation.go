@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"strconv"
 
 	"gitcode.com/urandon/sessionless/internal/strictjson"
 )
@@ -134,14 +135,40 @@ func ProjectAttachedResourceGenerationV1(baseline AttachedResourceGenerationBase
 
 // AttachedResourceGenerationHeadV1 contains exactly the seven persisted
 // metadata fields. Tenant/resource scope comes from the original row keys.
+// Only these three head counters use quoted canonical decimals; the existing
+// baseline, authorization and expected-generation uint64 contracts are separate.
 type AttachedResourceGenerationHeadV1 struct {
 	Version              uint32           `json:"version"`
 	OwnerUserID          UserID           `json:"owner_user_id"`
 	WorkerID             AttachedWorkerID `json:"worker_id"`
-	EnrollmentGeneration uint64           `json:"enrollment_generation"`
-	BaselineRevision     uint64           `json:"baseline_revision"`
-	CredentialGeneration uint64           `json:"credential_generation"`
+	EnrollmentGeneration uint64           `json:"enrollment_generation,string"`
+	BaselineRevision     uint64           `json:"baseline_revision,string"`
+	CredentialGeneration uint64           `json:"credential_generation,string"`
 	Revoked              bool             `json:"revoked"`
+}
+
+// This private wire type has no JSON methods, avoiding recursive dispatch while
+// retaining the one head field/encoding shape in every nested JSON envelope.
+type attachedResourceGenerationHeadJSONV1 AttachedResourceGenerationHeadV1
+
+func (head AttachedResourceGenerationHeadV1) MarshalJSON() ([]byte, error) {
+	// Internal denied/missing result carriers have a zero head and still need
+	// bounded JSON serialization. That is not a valid or acknowledged head:
+	// EncodeHead and every direct/nested decoder below require full validation.
+	return json.Marshal(attachedResourceGenerationHeadJSONV1(head))
+}
+
+func (head *AttachedResourceGenerationHeadV1) UnmarshalJSON(raw []byte) error {
+	if head == nil {
+		return attachedGenerationError("head.codec", "requires a non-nil destination")
+	}
+	*head = AttachedResourceGenerationHeadV1{}
+	decoded, err := DecodeAttachedResourceGenerationHeadV1(raw)
+	if err != nil {
+		return err
+	}
+	*head = decoded
+	return nil
 }
 
 func (head AttachedResourceGenerationHeadV1) Validate() error {
@@ -180,11 +207,33 @@ func DecodeAttachedResourceGenerationHeadV1(raw []byte) (AttachedResourceGenerat
 			return AttachedResourceGenerationHeadV1{}, attachedGenerationError("head.codec", "requires non-null exact fields")
 		}
 	}
-	var head AttachedResourceGenerationHeadV1
-	if json.Unmarshal(raw, &head) != nil || head.Validate() != nil {
+	for _, name := range []string{"enrollment_generation", "baseline_revision", "credential_generation"} {
+		if _, err := parseAttachedResourceGenerationHeadCounterV1(members[name]); err != nil {
+			return AttachedResourceGenerationHeadV1{}, err
+		}
+	}
+	var wire attachedResourceGenerationHeadJSONV1
+	if json.Unmarshal(raw, &wire) != nil || AttachedResourceGenerationHeadV1(wire).Validate() != nil {
 		return AttachedResourceGenerationHeadV1{}, attachedGenerationError("head.codec", "contains invalid metadata")
 	}
-	return head, nil
+	return AttachedResourceGenerationHeadV1(wire), nil
+}
+
+func parseAttachedResourceGenerationHeadCounterV1(raw []byte) (uint64, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) < 3 || len(raw) > 22 || raw[0] != '"' || raw[len(raw)-1] != '"' || raw[1] < '1' || raw[1] > '9' {
+		return 0, attachedGenerationError("head.codec", "requires quoted canonical positive uint64 counters")
+	}
+	for _, character := range raw[1 : len(raw)-1] {
+		if character < '0' || character > '9' {
+			return 0, attachedGenerationError("head.codec", "requires quoted canonical positive uint64 counters")
+		}
+	}
+	counter, err := strconv.ParseUint(string(raw[1:len(raw)-1]), 10, 64)
+	if err != nil {
+		return 0, attachedGenerationError("head.codec", "requires quoted canonical positive uint64 counters")
+	}
+	return counter, nil
 }
 
 // ValidateAttachedResourceGenerationTransitionV1 validates DATA CAS semantics

@@ -1,6 +1,6 @@
 # Attached resource generation publication
 
-Version: 0.1.0. Status: accepted engineering design; implementation and activation pending.
+Version: 0.1.1. Status: engineering encoding amendment; implementation and activation pending.
 Owner: [#133](https://gitcode.com/urandon/sessionless/issues/133).
 Prerequisites: [owner-local state](owner-local-subscription-state.md),
 [native boundary](external-harness-boundary.md) and
@@ -107,6 +107,30 @@ There is no new table, secret store, historical snapshot collection or operation
 journal. Its closed `AttachedResourceGenerationHeadV1` fields are `version`,
 `owner_user_id`, `worker_id`, `enrollment_generation`, `baseline_revision`,
 `credential_generation` and `revoked`. Row keys provide tenant/subscription scope.
+The THREE head counters (`enrollment_generation`, `baseline_revision`,
+`credential_generation`) use one canonical JSON decimal-STRING representation,
+including when nested in metadata HTTP targets/responses. Internal arithmetic
+remains checked uint64. Each accepted counter is 1–20 ASCII digits in
+1..MaxUint64, without leading zero, sign, whitespace, fraction, exponent or
+escaped-digit spelling. Reject JSON numbers and alternate representations;
+there is no numeric/string compatibility reader or repair by rounding.
+`version` remains the bounded JSON number 1; `revoked` remains a boolean.
+
+This corrects the still-unshipped metadata encoding before initial #233
+delivery. [YDB JsonDocument](https://ydb.tech/docs/en/yql/reference/types/primitive?version=v25.1#string-types)
+stores JSON numbers as Double; a numeric uint64 contract cannot promise exact
+full-range persistence. The genuine YDB test exposed strict-decoder rejection
+at MaxUint64. It did not observe stored zero values. Keep the same existing
+column, seven head fields and authority/CAS rules; no deployed head conversion
+or migration application follows from this correction.
+
+This is NOT a representation change to existing resource/evidence/baseline
+digests or ordinary connection/auth/expected-generation uint64 fields. Those
+metadata transport inputs retain typed integer decoding without float coercion.
+Encoding data is not authorization: direct serialization may retain a zero-head
+denial/not-found carrier for existing bounded internal results. Named head
+Encode and every head Decode/Unmarshal still reject it; success responses must
+validate the canonical positive head and exact authenticated scope first.
 Credential references remain empty. Do not store secret bytes, fingerprints or
 hashes of auth bodies. Keep existing entitlement/quota/observed-at semantics;
 publication may update the row's ordinary modification timestamp only.
@@ -119,6 +143,11 @@ Request, response and persisted metadata are each at most 4 KiB, with existing
 ID validation, positive bounded scalars and checked uint64 arithmetic. One
 operation and at most one exact point-read reconciliation share a caller-bounded
 window of at most 15 seconds; no scan or automatic retry loop is introduced.
+Verify all three head strings at 2^53−1, 2^53, 2^53+1 and MaxUint64 through
+actual JsonDocument write/readback as well as standalone/nested HTTP codecs.
+Keep MaxUint64 credential generation restricted to revoke and retain genuine
+same-target CAS, exact duplicate and overflow-denial tests. A synthetic codec
+roundtrip or prior failed numeric run does not qualify the corrected artifact.
 
 Extend the existing authenticated connection service/handler composition.
 [Bearer binding](../../internal/attachedworkertransport/service.go) lines

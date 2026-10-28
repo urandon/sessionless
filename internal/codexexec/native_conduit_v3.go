@@ -122,7 +122,7 @@ func (v *nativeConduitOwner) currentEnvelopeV2(ctx context.Context, now time.Tim
 	} // Existing V2 authority contract is unchanged.
 	if ctx == nil || ctx.Err() != nil || v.child == nil || v.child.Current() != nil ||
 		v.runtimeDeadlineV2.IsZero() || !now.Before(v.runtimeDeadlineV2) ||
-		validateNativeEnvelopeEvidenceV2(v.profileV2, v.evidenceV2, v.bindingV2, now) != nil ||
+		v.validateNativeEvidence(now) != nil || v.checkGenerationInput(ctx) != nil ||
 		nativeCredentialCurrentV2(ctx, v.credentialBindingsV2, v.authority, now) != nil || ctx.Err() != nil {
 		return ErrAuthorityUnavailable
 	}
@@ -150,7 +150,7 @@ func (v *nativeConduitOwner) conduitHosts() []string {
 func (v *nativeConduitOwner) conduitPolicyValid() bool {
 	if v.bundleV3 != nil {
 		h, err := v.bundleV3.InstallPolicyDigestV3()
-		return err == nil && h == v.bundleV3.PolicyDigest && v.profileV2 != nil && v.bundleV3.StaticProfileDigest == v.profileV2.launch.StaticProfileDigest
+		return err == nil && h == v.bundleV3.PolicyDigest && v.fullNativeProfile() && v.bundleV3.StaticProfileDigest == v.nativeLaunch().StaticProfileDigest
 	}
 	h, err := v.bundle.InstallPolicyDigestV2()
 	return err == nil && h == v.bundle.PolicyDigest

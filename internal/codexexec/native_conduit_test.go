@@ -75,6 +75,11 @@ func newNativeConstructorFixtureAtProfile(t *testing.T, path string, companion *
 }
 
 func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time, native *NativePreparedConfigV2, media bool, setup ...func(*attachedworkerdaemon.VerifiedAttachedInputV1)) nativeConstructorFixture {
+	return newNativeConstructorFixtureAtProfiles(t, path, companion, now, native, nil, media, setup...)
+}
+
+func newNativeConstructorFixtureAtProfiles(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time,
+	native *NativePreparedConfigV2, generation *nativeGenerationFixtureV3, media bool, setup ...func(*attachedworkerdaemon.VerifiedAttachedInputV1)) nativeConstructorFixture {
 	t.Helper()
 	root := canonicalTempDir(t)
 	if path == "" {
@@ -130,6 +135,13 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		manifest.OCI = native.Profile.Platform
 		manifest.Harness.Arguments = append([]string(nil), nativeProfile.launch.NativeArguments[0]...)
 	}
+	if generation != nil {
+		manifest.OCI = generation.profile.Platform
+		manifest.Harness.Arguments, err = generation.profile.ArgumentsV3()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	store, err := attachedworkerlocal.NewStore(filepath.Join(root, "state"), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +157,11 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn, HarnessExecutableDigest: digest[:],
 		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{attachedworkerprotocol.IsolationFilesystemBoundary, attachedworkerprotocol.IsolationNetworkBoundary, attachedworkerprotocol.IsolationProcessBoundary},
 		Features:          []attachedworkerprotocol.ProtocolFeatureV1{attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureProgress, attachedworkerprotocol.FeatureReconnect}, MaxConcurrentAttempts: 1}
-	connector, err := attachedworkersession.New(store, peer, peer, attachedworkersession.Config{Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
+	var exchange attachedworkersession.ExchangeFactory = peer
+	if generation != nil {
+		exchange = generation.install(t, manifest, capability, peer)
+	}
+	connector, err := attachedworkersession.New(store, peer, exchange, attachedworkersession.Config{Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
 		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: time.Second,
 		Random: bytes.NewReader(append(bytes.Repeat([]byte{0x41}, 32), bytes.Repeat([]byte{0x42}, 32)...)), Now: func() time.Time { return now }})
 	if err != nil {
@@ -161,6 +177,9 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		}
 	})
 	snapshot := session.Snapshot()
+	if generation != nil {
+		generation.bind(t, session)
+	}
 	request, authority := validDriverRequestAt(t, now)
 	request.ExecutionPlacementV2.PolicyDigest = domain.AttachedWorkerPolicyDigest(hex.EncodeToString(policy[:]))
 	authority.PolicyDigest = request.ExecutionPlacementV2.PolicyDigest
@@ -174,6 +193,11 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		request.HarnessBinding.Backend = nativeProfile.descriptor
 		request.HarnessBinding.ModelID = native.Profile.Backend.Model
 		nativeJoinedEvidenceV2(t, nativeProfile, &native.Evidence, &request.HarnessBinding, now)
+	}
+	if generation != nil {
+		generation.sealRequest(t, &request, snapshot)
+		authority.PolicyDigest = request.ExecutionPlacementV2.PolicyDigest
+		authority.ProviderResource = request.HarnessBinding.Resource
 	}
 	authority.ConnectionID = snapshot.ConnectionID
 	authority.EnrollmentGeneration = snapshot.EnrollmentGeneration
@@ -192,7 +216,7 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		}
 		input = projected
 	}
-	if nativeProfile != nil {
+	if nativeProfile != nil || generation != nil {
 		// The actual process tests use their one sampled wall clock, not the
 		// historical driver fixture's unrelated fixed creation timestamp.
 		input.AcceptedAttempt.CreatedAt, input.AcceptedAttempt.UpdatedAt = now, now
@@ -215,7 +239,7 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 		t.Fatal(err)
 	}
 	var supervisor *attachedworkerdaemon.Supervisor
-	if nativeProfile == nil {
+	if nativeProfile == nil && generation == nil {
 		supervisor, err = attachedworkerdaemon.NewSupervisorV2(attachedworkerdaemon.SupervisorConfigV2{Base: attachedworkerdaemon.SupervisorConfig{
 			ScratchRoot: canonicalTempDir(t), Timeout: 10 * time.Second, TerminationGrace: time.Second, MaxStdoutBytes: 4096, MaxStderrBytes: 4096}, Launcher: &nativeConstructorLauncher{}})
 		if err != nil {
@@ -225,6 +249,12 @@ func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, compan
 	arguments := []string{"--native"}
 	if nativeProfile != nil {
 		arguments = nativeProfile.launch.NativeArguments[0]
+	}
+	if generation != nil {
+		arguments, err = generation.profile.ArgumentsV3()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	return nativeConstructorFixture{session: session, input: input, config: PreparedProcessBoundaryConfigV1{Supervisor: supervisor, Authority: authority,
 		Executable: path, ExecutableDigest: digest, Arguments: arguments, Now: func() time.Time { return now }},

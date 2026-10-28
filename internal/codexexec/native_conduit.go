@@ -32,6 +32,9 @@ type nativeConduitOwner struct {
 	// V3 is selected only by the explicit full-profile constructor. It retains
 	// the same child, prepared consumed entry, companion and counters.
 	profileV2            *nativeFrozenProfileV2
+	profileV3            *nativeFrozenProfileV3
+	generationConfigV3   *NativePreparedConfigV3
+	generationSessionV3  *attachedworkersession.Session
 	bundleV3             *attachedworkerdaemon.NativeLaunchV3
 	evidenceV2           domain.ProviderEvidenceBundleV1
 	credentialBindingsV2 NativeCredentialBindingReaderV2

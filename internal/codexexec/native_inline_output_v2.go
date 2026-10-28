@@ -22,7 +22,7 @@ var ErrInlineReceiptPendingV2 = errors.New("codex exec inline receipt remains pe
 
 func (owner *PreparedAttachedWorkerRunnerV1) pendingInlineReceiptLockedV2() bool {
 	slot := owner.slot
-	return owner.nativeIdentityV2 == owner && owner.nativeConfigV2 != nil && owner.nativeConfigV2.InlineOutputV2 &&
+	return owner.nativeIdentityV2 == owner && owner.nativeInlineSelected() &&
 		slot != nil && slot.finalized && slot.stageClean && slot.result.Succeeded(slot.runErr) &&
 		slot.original != nil && slot.original.self == slot.original && slot.original.nativeFinalV2 != nil &&
 		slot.original.nativeFinalV2.self == slot.original.nativeFinalV2 && slot.original.nativeFinalV2.original == slot.original
@@ -55,7 +55,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) InlineReceiptCandidate(ctx context.
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	slot := owner.slot
-	if owner.nativeConfigV2 == nil || !owner.nativeConfigV2.InlineOutputV2 || owner.closed || slot == nil ||
+	if !owner.nativeInlineSelected() || owner.closed || slot == nil ||
 		!slot.finalized || !slot.stageClean || identity != slot.identity || !reflect.DeepEqual(result, slot.result) ||
 		!reflect.DeepEqual(runErr, slot.runErr) || !result.Succeeded(runErr) || !result.CleanupComplete() ||
 		slot.original == nil || slot.original.self != slot.original || slot.original.nativeFinalV2 == nil ||
@@ -73,7 +73,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) InlineReceiptCandidate(ctx context.
 	boundary, concrete := slot.driver.boundary.(*PreparedProcessBoundaryV1)
 	if !concrete || boundary.nativeIdentity != boundary || slot.original.boundary != boundary ||
 		boundary.native == nil || slot.original.native != boundary.native || f.self != f || f.original != slot.original ||
-		f.profileDigest != owner.nativeProfileV2.descriptor.BackendProfileDigest || f.schema != owner.nativeProfileV2.launch.Schema ||
+		f.profileDigest != owner.nativeDescriptor().BackendProfileDigest || f.schema != owner.nativeLaunch().Schema ||
 		f.rawDigest != slot.original.rawFinalDigestV2 || f.answer != slot.semantic.Summary ||
 		boundary.native.stageV2 == nil || !boundary.native.stageV2.dispatched || !boundary.native.stageV2.quiesced ||
 		slot.accepted.ReservationID.Validate() != nil || slot.accepted.CreatedAt.IsZero() {
@@ -141,7 +141,7 @@ func (v *NativeInlineOutputV2) currentLocked(ctx context.Context) error {
 	native := v.slot.original.native
 	now := v.owner.nativeNowV2()
 	if native == nil || native.self != native || native.child == nil || native.child.CheckReceiptScopeV2(ctx) != nil ||
-		validateNativeEnvelopeEvidenceV2(native.profileV2, native.evidenceV2, native.bindingV2, now) != nil {
+		native.validateNativeEvidence(now) != nil {
 		return ErrAuthorityUnavailable
 	}
 	// Only this original private finalized slot supplies the writeback result.

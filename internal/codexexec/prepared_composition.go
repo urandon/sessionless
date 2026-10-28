@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -15,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 // PreparedAttachedWorkerRunnerV1 is an explicitly selected fixed composition,
@@ -298,7 +301,7 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 	if len(input.Artifacts) == 0 && len(input.Manifest.Artifacts) == 0 {
 		return true // Existing admitted history-only library inputs.
 	}
-	if len(input.Artifacts) != 1 || len(input.Manifest.Artifacts) != 1 {
+	if len(input.Artifacts) == 0 || len(input.Artifacts) != len(input.Manifest.Artifacts) {
 		return false
 	}
 	artifact, ref := input.Artifacts[0], input.Manifest.Artifacts[0]
@@ -316,10 +319,38 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 	}
 	trigger := records[len(records)-1]
 	event, job := trigger.Event, input.Job
-	return event.ID == job.TriggerEventID && event.Sequence == job.ContextWindow.ThroughSequence &&
+	if !(event.ID == job.TriggerEventID && event.Sequence == job.ContextWindow.ThroughSequence &&
 		event.TenantID == job.TenantID && event.SessionID == job.SessionID && event.Kind == domain.SessionEventUserMessage &&
 		event.AuthorUserID != nil && *event.AuthorUserID == job.CredentialOwnerUserID &&
-		event.RunID != nil && *event.RunID == job.RunID && ref.Blob == event.Payload && bytes.Equal(artifact.Body, trigger.Payload)
+		event.RunID != nil && *event.RunID == job.RunID && ref.Blob == event.Payload && bytes.Equal(artifact.Body, trigger.Payload)) ||
+		!strictJSONObject(trigger.Payload) {
+		return false
+	}
+	// Reuse ingress's closed envelope validator: these must be exactly its
+	// ordered current-event uploads, not arbitrary independently valid blobs.
+	uploads := input.Manifest.Artifacts[1:]
+	prepared, err := sessionmaterial.PrepareV1(event, trigger.Payload, uploads)
+	if err != nil {
+		return false
+	}
+	defer prepared.Release()
+	proof := input.CanonicalContext
+	if len(proof.Attachments) < len(uploads) {
+		return false
+	}
+	// ProjectCanonical/ValidateFor already bound the complete ordered history.
+	// Its last record is this trigger, so its uploads form only the final suffix;
+	// older attachments remain present and must not be mistaken for new uploads.
+	current := proof.Attachments[len(proof.Attachments)-len(uploads):]
+	for index, upload := range uploads {
+		body := input.Artifacts[index+1]
+		name := strings.TrimPrefix(upload.Name, fmt.Sprintf("attachment-%02d-", index+1))
+		qualified := sessioncontext.AttachmentRef{Name: fmt.Sprintf("%020d-%02d-%s", event.Sequence, index+1, name), MediaType: upload.MediaType, Blob: upload.Blob}
+		if body.Name != upload.Name || current[index].AttachmentRef != qualified || !bytes.Equal(body.Body, current[index].Body) {
+			return false
+		}
+	}
+	return true
 }
 
 func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared attachedworkerdaemon.PreparedInvocationV1) (attachedworkerdaemon.AttemptResult, error) {

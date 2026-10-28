@@ -680,19 +680,25 @@ func (f *joinedGenerationScenario) canonicalOutbox(generation uint64, externalEv
 	if err := f.wire.sample(f.ctx); err != nil {
 		f.t.Fatal(err)
 	}
-	var pngBody, jpegBody bytes.Buffer
-	if err := png.Encode(&pngBody, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
-		f.t.Fatal(err)
+	var attachments []sessioningress.Attachment
+	if generation == 1 {
+		var pngBody, jpegBody bytes.Buffer
+		if err := png.Encode(&pngBody, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+			f.t.Fatal(err)
+		}
+		if err := jpeg.Encode(&jpegBody, image.NewRGBA(image.Rect(0, 0, 1, 1)), &jpeg.Options{Quality: 80}); err != nil {
+			f.t.Fatal(err)
+		}
+		attachments = []sessioningress.Attachment{
+			{Name: "request.txt", MediaType: "text/plain", Body: strings.NewReader("original bounded request")},
+			{Name: "request.json", MediaType: "application/json", Body: strings.NewReader(` { "n": 9007199254740993123456789 } `)},
+			{Name: "request.png", MediaType: "image/png", Body: bytes.NewReader(pngBody.Bytes())},
+			{Name: "request.jpg", MediaType: "image/jpeg", Body: bytes.NewReader(jpegBody.Bytes())},
+		}
 	}
-	if err := jpeg.Encode(&jpegBody, image.NewRGBA(image.Rect(0, 0, 1, 1)), &jpeg.Options{Quality: 80}); err != nil {
-		f.t.Fatal(err)
-	}
-	result, err := f.ingress.Ingest(f.ctx, sessioningress.UserInput{Actor: sessioningress.Actor{TenantID: f.worker.TenantID, UserID: f.worker.OwnerUserID, Frontend: domain.FrontendWeb, ExternalConversationID: "joined-owned-conversation"}, ExternalEventID: externalEventID, ReceivedAt: f.installation.Now(), Text: "Return the two original requested files", Attachments: []sessioningress.Attachment{
-		{Name: "request.txt", MediaType: "text/plain", Body: strings.NewReader("original bounded request")},
-		{Name: "request.json", MediaType: "application/json", Body: strings.NewReader(` { "n": 9007199254740993123456789 } `)},
-		{Name: "request.png", MediaType: "image/png", Body: bytes.NewReader(pngBody.Bytes())},
-		{Name: "request.jpg", MediaType: "image/jpeg", Body: bytes.NewReader(jpegBody.Bytes())},
-	}, SubscriptionConnectionID: f.resource})
+	// N2 is a fresh text instruction using the original N1 history/files, not
+	// four duplicate uploads that exceed the unchanged whole-history media cap.
+	result, err := f.ingress.Ingest(f.ctx, sessioningress.UserInput{Actor: sessioningress.Actor{TenantID: f.worker.TenantID, UserID: f.worker.OwnerUserID, Frontend: domain.FrontendWeb, ExternalConversationID: "joined-owned-conversation"}, ExternalEventID: externalEventID, ReceivedAt: f.installation.Now(), Text: "Return the two original requested files", Attachments: attachments, SubscriptionConnectionID: f.resource})
 	if err != nil || !result.Created {
 		f.t.Fatalf("canonical generation%d ingress: created=%t err=%v", generation, result.Created, err)
 	}
@@ -767,8 +773,13 @@ func (f *joinedGenerationScenario) assertCanonicalResult(original ports.WorkerJo
 		}
 	}
 	projected, refs, err := sessioncontext.ProjectCanonical(input.Job, input.CanonicalContext, input.Job.Limits.MaxContextBytes)
-	if err != nil || !bytes.Equal(projected, input.Context) || !bytes.Contains(projected, []byte("Return the two original requested files")) || len(refs) != 4*ordinal || len(input.CanonicalContext.Attachments) != 4*ordinal {
+	if err != nil || !bytes.Equal(projected, input.Context) || !bytes.Contains(projected, []byte("Return the two original requested files")) || len(refs) != 4 || len(input.CanonicalContext.Attachments) != 4 {
 		f.t.Fatalf("canonical text/history/media projection lost: refs=%d ordinal=%d err=%v", len(refs), ordinal, err)
+	}
+	firstInput := seen.inputs[0]
+	if firstInput.CanonicalContext == nil || firstInput.Job.ContextWindow == nil ||
+		!reflect.DeepEqual(input.CanonicalContext.Attachments, firstInput.CanonicalContext.Attachments) {
+		f.t.Fatal("successor replaced or duplicated the original four history attachments")
 	}
 	var originalPNG, originalJPEG bytes.Buffer
 	if err := png.Encode(&originalPNG, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
@@ -789,7 +800,8 @@ func (f *joinedGenerationScenario) assertCanonicalResult(original ports.WorkerJo
 		case 3:
 			name, media = "request.jpg", "image/jpeg"
 		}
-		if attachment.Name != name || attachment.MediaType != media {
+		qualifiedName := fmt.Sprintf("%020d-%02d-%s", firstInput.Job.ContextWindow.ThroughSequence, i+1, name)
+		if attachment.Name != qualifiedName || attachment.MediaType != media {
 			f.t.Fatal("canonical original attachment name/media changed")
 		}
 		sum := sha256.Sum256(attachment.Body)

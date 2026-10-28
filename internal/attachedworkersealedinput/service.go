@@ -1,6 +1,6 @@
-// Package attachedworkersealedinput serves only immutable, synthetic input for
-// the exact claimed attached-worker attempt. It cannot select a process,
-// credential, host path, or provider operation.
+// Package attachedworkersealedinput serves immutable input for the exact claimed
+// attached-worker attempt. Its explicit native subscription mode constructs
+// credential-request metadata, never issues credentials or selects a process.
 package attachedworkersealedinput
 
 import (
@@ -49,6 +49,8 @@ type Service struct {
 	// Only the ydbintegration-tagged test constructor may enable this path.
 	allowTestProvider bool
 	testProviderNow   func() time.Time
+	// Installed only by the explicit ordinary Codex subscription constructor.
+	nativeSubscriptionNow func() time.Time
 }
 
 func NewService(authorizer Authorizer, jobs JobStore, blobs BlobStore) (*Service, error) {
@@ -92,8 +94,7 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		return result, ErrUnauthorized
 	}
 	job, manifest := state.Job, state.InputManifest
-	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
-		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !service.allowTestProvider {
+	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil || !service.supportsProvider(job) {
 		return result, ErrUnsupported
 	}
 	if len(manifest.Artifacts) > maxArtifacts || uint64(len(manifest.Artifacts)) > uint64(job.Limits.MaxArtifacts) ||
@@ -107,7 +108,13 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		}
 	}()
 	if job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
-		credential, credentialErr := service.testProviderCredential(ctx, request, job)
+		var credential *attachedworkerdaemon.CredentialInvocation
+		var credentialErr error
+		if service.nativeSubscriptionNow != nil {
+			credential, credentialErr = service.providerCredential(ctx, request, job, service.nativeSubscriptionNow)
+		} else {
+			credential, credentialErr = service.testProviderCredential(ctx, request, job)
+		}
 		if credentialErr != nil {
 			return result, credentialErr
 		}
@@ -154,6 +161,9 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 	if checkErr != nil || ctx.Err() != nil || !observed.Matches(authorization) || observed.Attempt != authorized.Attempt {
 		return result, authorizationError(checkErr)
 	}
+	if service.nativeSubscriptionNow != nil && (result.Credential == nil || result.Credential.IssueRequest.ValidateAt(service.nativeSubscriptionNow().UTC()) != nil) {
+		return result, ErrUnauthorized
+	}
 	return result, nil
 }
 
@@ -170,6 +180,13 @@ func (service *Service) testProviderCredential(ctx context.Context, request atta
 		job.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 {
 		return nil, ErrUnsupported
 	}
+	return service.providerCredential(ctx, request, job, service.testProviderNow)
+}
+
+// providerCredential builds the one authoritative request shared by the two
+// explicit modes. Mode admission happens before this helper; no Issue effect
+// or worker-supplied run/attempt/lease replacement is possible here.
+func (service *Service) providerCredential(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1, job domain.WorkerJob, now func() time.Time) (*attachedworkerdaemon.CredentialInvocation, error) {
 	store, ok := service.jobs.(credentialJobStore)
 	if !ok {
 		return nil, ErrUnsupported
@@ -183,6 +200,10 @@ func (service *Service) testProviderCredential(ctx context.Context, request atta
 		request.WorkerID, domain.RunID(request.Attempt.RunID), domain.AttemptID(request.Attempt.AttemptID),
 		domain.LeaseID(request.Attempt.LeaseID), request.Attempt.LeaseGeneration)
 	if !found || fenceErr != nil || string(fence) != request.Attempt.FenceToken ||
+		authoritative.Run.TenantID != request.TenantID || authoritative.Run.ID != job.RunID ||
+		authoritative.Run.SessionID != job.SessionID || authoritative.Run.TriggerEventID != job.TriggerEventID ||
+		authoritative.Attempt.ID != job.AttemptID || uint64(authoritative.Attempt.Number) != request.AttemptSequence ||
+		authoritative.Lease.ID != domain.LeaseID(request.Attempt.LeaseID) ||
 		authoritative.Lease.FenceToken != request.Attempt.LeaseGeneration ||
 		authoritative.Lease.ExpiresAt.UnixMicro() != request.Attempt.ExpiresAtUnixMicro ||
 		authoritative.Attempt.WorkerID != string(request.WorkerID) ||
@@ -190,11 +211,11 @@ func (service *Service) testProviderCredential(ctx context.Context, request atta
 		return nil, ErrUnauthorized
 	}
 	issue := ports.CredentialIssueRequest{
-		OwnerUserID: job.CredentialOwnerUserID, Run: authoritative.Run,
+		OwnerUserID: job.CredentialOwnerUserID, Run: authoritative.Run.Clone(),
 		Attempt: authoritative.Attempt, Lease: authoritative.Lease,
 		ExpiresAt: authoritative.Lease.ExpiresAt, ProviderResource: job.HarnessBinding.Resource,
 	}
-	if service.testProviderNow == nil || issue.ValidateAt(service.testProviderNow()) != nil {
+	if now == nil || issue.ValidateAt(now().UTC()) != nil {
 		return nil, ErrUnauthorized
 	}
 	home := "SESSIONLESS_PROVIDER_HOME"

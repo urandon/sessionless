@@ -243,6 +243,13 @@ attached-worker-build: prepare
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
 		-o "$(BIN_DIR)/attached-worker" ./cmd/attached-worker
 
+# Explicit owner-local tool, not a deployed service or a stand startup effect.
+.PHONY: local-profile-install-build
+local-profile-install-build: prepare
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o "$(BIN_DIR)/local-profile-install" ./cmd/local-profile-install
+
 attached-worker-package-test: prepare
 	go test -race -count=1 ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
 	go test -race -count=20 -shuffle=on ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker

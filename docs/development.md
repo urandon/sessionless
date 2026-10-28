@@ -68,6 +68,84 @@ Reports and unresolved reduction decisions belong in
 [#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
 or the original task description.
 
+### Explicit local profile installation (operator tool)
+
+Build with `make local-profile-install-build`. This tool does not run as part
+of stand startup or deployment. It neither creates operator declarations/keys
+nor downloads a model, starts a daemon or probes the model endpoint.
+
+The operator must supply `SESSIONLESS_ENVIRONMENT=local`,
+`YDB_CONNECTION_STRING`, and three canonical absolute paths:
+`WEB_LOCAL_INSTALLATION_ROOT` (existing private source installation),
+`WEB_LOCAL_WORKER_EXECUTABLE` (the declared installed worker), and
+`WEB_LOCAL_PROFILE_RECEIPT_FILE` (an unused destination in a private directory).
+Attached mode must be disabled in this invocation. Run
+`.build/bin/local-profile-install` and enter the exact confirmation
+`INSTALL LOCAL PROFILE`. This is an actual profile publication, not a dry run;
+source/fixture test permission does not authorize running it against a service.
+
+After database readiness, the tool durably reserves the unused receipt path,
+opens one fresh original Source, calls the existing Store publisher, accepts
+its exact receipt, and writes/syncs/closes that private receipt before reporting
+success. Existing, empty, partial or uncertain output is never overwritten or
+deleted. On failure, reconcile the original publication and retained slot;
+do not delete the file and reinstall with fresh IDs. The shared bounded reader
+returns historical DATA only. Normal startup must use that receipt with
+`OpenExisting` and retain current Source/Store checks, never reinstall per
+message or treat receipt text as execution permission.
+
+This tool delivers the first-install handoff only. Worker startup is described
+below; Web wiring, genuine no-subscription canonical queued admission and the
+separately authorized real-model demo remain under #218. Defaults and schema
+are unchanged.
+
+### Local per-delivery worker ownership (library, default off)
+
+`worker.NewLocalRuntime` accepts the original opened operator `Source`, its
+accepted profile receipt, borrowed DB/blob clients and ordinary worker
+configuration. Construction performs no SQL, socket or invocation effects.
+Each `RunOnce(ctx, queue)` creates fresh preparation/operation issuers, the
+original `providerloopsession.LocalV1` factory and `WorkerState()` facade, then
+one ordinary Manager. The entered worker uses the shared finite agent engine;
+Runtime does not start or reserve a second invocation. Every return attempts
+bounded close/join of that delivery's session, including empty and duplicate
+deliveries. Cleanup failure remains an error, not evidence of completed joining
+or permission to replay work. It never closes the borrowed Source or DB. Do not open a fresh
+installation or retain one session/Manager across queue deliveries.
+
+This library does not enable a profile. Controlled running-lease fixtures do
+not establish fresh canonical queued admission or real-model/Web outcomes.
+
+### Normal local worker startup (default off)
+
+After the explicit installation, select `WORKER_LOCAL_EXECUTION_ENABLED=true`
+with `SESSIONLESS_ENVIRONMENT=local` and the same three canonical `WEB_LOCAL_*`
+paths above. The receipt destination now refers to the existing accepted
+receipt, not a new output path. Missing/malformed selection, disabled selection
+with stray local paths, mixed attached configuration and non-noauth profiles
+fail closed. There is no alias, endpoint discovery, automatic reinstall or
+paid-provider fallback. The ordinary deterministic worker remains the default
+when no local selection or paths are supplied.
+
+`worker-runtime` reads that receipt and opens its original Source once for the
+process. Both its SQS path and each message of an HTTP-trigger batch use
+`LocalRuntime.RunOnce` with fresh invocation owners. The original Source is
+installed as all three profile/spending/effect-source verifiers; the existing
+four startup cutover checks remain mandatory. Process cancellation reaches
+active HTTP callbacks; shutdown denies late callbacks and waits up to 30 seconds
+for their invocation cleanup before Source and bounded database-client closure.
+An unproven drain is a failed process shutdown, not retirement proof: borrowed
+dependencies are not closed underneath active work. Local errors retain only
+content-free expected retry/redrive/cancel/policy classifications; invocation
+cleanup failure remains unexpected. The worker never starts/stops the
+operator's model server.
+
+This is source wiring, not evidence that a new message can be admitted without
+a subscription. That separate canonical capacity/admission/release contract,
+Web integration, two productive messages and the authorized real-model demo
+remain under #218. No command, profile or cloud route is enabled by this code
+change; running against services requires its own operation authority.
+
 ### Attached execution composition (default off)
 
 The normal Web BFF can use the existing attached scheduler admission path with

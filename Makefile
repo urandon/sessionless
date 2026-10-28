@@ -403,6 +403,14 @@ web-auth-ydb-gate: prepare
 	go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
 		-run '^(TestYandexLoginYDBFreshIdentityMembershipIsolationReplayAndRevocation|TestYandexLoginYDBClientAndProviderBindingDenials|TestYandexBootstrapYDBAtomicFirstIdentityAndNoLink)$$' ./test/ydbintegration
 
+.PHONY: web-identity-v2-ydb-gate
+# Closed V2 row primitives only; no serving mode or provider activation.
+web-identity-v2-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE=1 SESSIONLESS_WEB_IDENTITY_V2_YDB_DISPOSABLE=1 \
+		go test -race -count=3 -shuffle=on -timeout=5m \
+		-run '^TestWebIdentityV2YDB' ./internal/ydbstore
+
 local-integration: prepare
 	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
 	YDB_ANONYMOUS_CREDENTIALS="$${YDB_ANONYMOUS_CREDENTIALS:-1}" \

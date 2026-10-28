@@ -1,6 +1,6 @@
 # Attached resource generation publication
 
-Version: 0.1.1. Status: engineering encoding amendment; implementation and activation pending.
+Version: 0.1.1. Status: accepted engineering design; implementation and activation pending.
 Owner: [#133](https://gitcode.com/urandon/sessionless/issues/133).
 Prerequisites: [owner-local state](owner-local-subscription-state.md),
 [native boundary](external-harness-boundary.md) and

@@ -714,6 +714,122 @@ and bot setup. The existing Telegram OIDC configuration remains the default for
 backward compatibility; selecting Yandex is explicit and never falls back to
 Telegram when credentials are absent or verification fails.
 
+### Dual-provider identity V2 groundwork (not enabled)
+
+The [accepted dual-provider design](design/dual-provider-account-linking.md)
+is being implemented in #238–#240. New closed V2 identity/session domain and
+private row helpers are groundwork only: they do not install a serving V2
+reader, expose linking routes, migrate existing records or change the current
+single-provider configuration. Do not write V2 rows into a serving V1 deployment.
+
+`make web-identity-v2-ydb-gate` is restricted to the existing disposable GitHub
+CI database, with real data transactions and no `go_fake_tx`. It checks actual
+JsonDocument decimal-string revision roundtrips at 2^53−1, 2^53, 2^53+1 and
+MaxUint64, the bounded reverse/canonical join, and old-cookie denial after a
+committed identity-revision or membership change. It does not start YDB, create
+a schema or use a provider. Controlled-driver tests are separate offline
+evidence; passing these primitives is not proof of the pending complete
+operation/proof/audit/cookie protocol or live account linking.
+
+### Identity V2 retention and cutover prerequisites
+
+This is a source-only maintenance contract for #238, not an implemented
+backfill/cutover command or permission to change a retained environment. The
+[accepted design](design/dual-provider-account-linking.md) and
+[migration safety protocol](../migrations/ydb/README.md#safety-protocol) remain
+authoritative. No migration, reset, credential/provider operation or deployment
+was executed by authoring these sources. Keep V2 serving and sensitive operations
+disabled until the missing bounded maintenance implementation, all V2 writers
+and transaction-local consumers, genuine disposable-YDB cases and exact-source
+independent review are complete. A successful primitive gate is not that proof.
+
+The forward source order is deliberately two one-statement files:
+
+1. [00130](../migrations/ydb/00130_add_identity_challenge_delete_after.sql) adds
+   nullable `delete_after Timestamp`; existing cells are NULL and the original
+   `expires_at` TTL remains active at this step.
+2. [00131](../migrations/ydb/00131_set_identity_challenge_delete_after_ttl.sql)
+   changes the SAME table's physical TTL to `delete_after`. The original
+   `00053` CREATE and every applied checksum remain unchanged. The ordinary
+   runner applies all pending files; it has no maintenance pause between them.
+
+These forms follow the official YDB v25.3 [ADD COLUMN](https://ydb.tech/docs/en/yql/reference/syntax/alter_table/columns?version=v25.3)
+and [TTL SET](https://ydb.tech/docs/en/yql/reference/syntax/alter_table/set?version=v25.3)
+syntax. YDB's [TTL contract](https://ydb.tech/docs/en/concepts/ttl?version=v25.3)
+states that NULL TTL cells do not expire and physical deletion is asynchronous.
+Logical expiry is therefore always enforced by the record/transaction, never
+by assuming a row was already deleted.
+
+Before separately authorized application, require this complete ordered plan:
+
+1. Pin the exact environment, source commit, migration checksums and trusted
+   provider/client/callback/proof-policy manifest. Inspect actual column types,
+   primary keys, current TTL and Goose/checksum histories; source layout alone
+   is not a schema preflight. Preserve content-free inventory and drain evidence.
+   `schema-migrate status` bootstraps its metadata tables and is not a purely
+   read-only schema-inspection substitute.
+2. Freeze all auth starts, callbacks, operation continuation/confirmation and
+   identity/session writers BEFORE either migration: every BFF revision and
+   direct/private invoker, bootstrap and `EnsureTelegramIdentity` included.
+   Stop new invocations and prove old work has drained; a traffic switch or
+   sleeping for a guessed interval is not proof. Respect the original 15-second
+   sensitive-handler/10-second exchange/5-second transaction bounds; do not
+   extend an old operation to survive maintenance. The schema lease does not
+   freeze application writers on its own.
+3. Apply the forward metadata only through the separately authorized runner.
+   Check actual nullable column type and final zero-delay `delete_after` TTL.
+   Old rows can remain NULL after both files: do not unfreeze a writer that
+   omits this column, and do not mistake absence of TTL deletion for validity.
+   `writeChallenge`'s V1 physical field equals its ORIGINAL `ExpiresAt`; it is
+   not a V2 decoder, lifetime extension, identity migration or rollout gate.
+4. Complete a separately implemented/reviewed bounded maintenance pass while
+   writers remain frozen. Enumerate each of the fixed 16 hash buckets in
+   primary-key order, with an exclusive last-key cursor, finite page/byte/time
+   and total-run bounds, and durable content-free progress. Inventory every
+   legacy/NULL `delete_after` row, including expired rows TTL has not removed.
+   Re-read each exact `(shard_bucket,state_digest)` row in its serializable
+   maintenance transaction; verify its original kind, immutable timestamps,
+   full current record and scalar correspondence before changing anything.
+   An earlier inventory is not a CAS. For a valid V1 challenge, retire that exact
+   row, or backfill ONLY the original expiry to its missing retention column
+   under the reviewed plan; never extend it or create V2 authority from it.
+   Malformed/mismatched rows stop the pass for explicit classification, not a
+   guessed expiry, unbounded `UPDATE`, blind overwrite or broad deletion.
+   Reconcile exact outcomes after an ambiguous commit before advancing progress.
+   Prove complete coverage/no remaining NULL cells with all writers still
+   stopped; per-page success or an operational TTL delay is not full coverage.
+5. Separately validate forward/reverse identity correspondence, unique immutable
+   ownership, maximum two active methods/one per provider, common positive
+   revision and no tombstone reactivation. Any V1-to-V2 identity conversion needs
+   its separately accepted bounded executor and anomaly report; this runbook
+   supplies neither a backfill implementation nor a new account grant. Retire
+   outstanding V1 challenges and V1 Web cookies by bounded exact-key work under
+   the same freeze. Do not change canonical conversation Sessions, history,
+   memberships, actors or resource ownership; deterministic Telegram-user
+   mismatch remains a denial, not a migration.
+6. Install explicit V2 mode only after EVERY writer and direct transactional
+   Web reader checks current same-user active identity/revision, existing
+   membership/session/participant/CSRF rules and trusted configuration. No V1
+   JSON, missing revision or NULL retention field is a compatibility fallback.
+   Require terminal privacy pruning in both JsonDocument and physical scalar
+   fields before extending a receipt to original creation plus 24 hours;
+   pending/proof records stay at the original deadline. Receipt reads require
+   current same-user authorization and cannot restore a lost replacement cookie.
+   Reconfirm complete coverage and exclusive writer/manifest pins, then unfreeze
+   only through the separately accepted rollout. Configuration changes require
+   the design's freeze/drain across every old revision, not just a digest match.
+
+`ADD COLUMN` has no assumed already-exists replay guarantee here. If DDL may
+have succeeded before Goose/checksum completion, STOP: preserve the exact source,
+pending checksum, Goose state and actual column/TTL observations. Do not blindly
+retry the ADD, edit an applied file, ignore a schema error, or manually advance
+migration metadata. The current runner has no semantic ambiguous-ADD repair;
+an exact reviewed incident-recovery procedure is still required before resume.
+This limitation must not be disguised as automatic idempotence. Rollback keeps
+revision-aware V2 readers and tombstones, disables new operations, and retains
+forward schema/receipts. It never restores V1 readers, TTL on `expires_at`, old
+writers that omit retention, a destructive Down, or provider-token replay.
+
 ### Yandex ID login
 
 Set `WEB_LOGIN_PROVIDER=yandex`, `YANDEX_LOGIN_CLIENT_ID` to the registered

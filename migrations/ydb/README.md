@@ -381,8 +381,8 @@ incident procedure.
 
 ## Legacy ready/expiry retirement
 
-The complete ordered source has 129 SQL operations: 105 historical CREATEs,
-20 ALTERs and four retirement DROPs. Its intended effective application layout
+The complete ordered source has 132 SQL operations: 105 historical CREATEs,
+23 ALTERs and four retirement DROPs. Its intended effective application layout
 has 101 tables. Migration-runner bookkeeping is not an application entity, and
 source counts are not a census of a retained environment.
 
@@ -433,6 +433,21 @@ them when absent and compares preserved v2/source tuples and complete table
 ownership. It does not reset the database, call a model or prove deployed drain.
 Local author validation is offline source/model tests and integration compilation
 only. A successful CI run certifies its disposable fixture, not a shared rollout.
+
+Migrations `00130` and `00131` add nullable `delete_after` to the existing Web
+challenge table, then change that table's TTL to this column. The original
+`00053` CREATE/checksum and 105/101 table lineage remain unchanged. Apply only
+under the [identity-retention freeze/drain and cutover prerequisites](../../docs/development.md#identity-v2-retention-and-cutover-prerequisites).
+The runner applies both pending files without a maintenance pause. Old NULL
+cells do not expire after the TTL switch; bounded inventory/backfill/retirement
+and V1 writer/challenge/cookie retirement are not implemented by these DDL files.
+Do not unfreeze until their separately authorized coverage is complete.
+
+`ADD COLUMN` is not asserted idempotent after DDL succeeded but Goose did not
+record its version. On ambiguity, stop and inspect exact schema, file checksum
+and Goose/checksum histories under the migration safety protocol; do not blindly
+retry, ignore an already-exists error or advance metadata by hand. This change
+adds no automatic ambiguous-ADD recovery or destructive down operation.
 
 References:
 

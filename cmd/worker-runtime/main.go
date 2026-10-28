@@ -34,14 +34,60 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	signals := opssignal.NewWriter(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
+	err := run(ctx, logger)
+	stop()
 	if err != nil {
-		logger.Error("open YDB", "error", err)
+		logger.Error("worker invocation failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
+	if ctx == nil || ctx.Err() != nil || logger == nil {
+		return errWorkerLocalExecution
+	}
+	localConfig, err := workerLocalExecutionFromEnv(os.Getenv)
+	if err != nil {
+		return errWorkerLocalExecution
+	}
+	signals := opssignal.NewWriter(os.Stdout)
+	var localExecution *workerLocalExecution
+	var ydb *ydbclient.Client
+	var invocations *workerTriggerDrain
+	// Registered before acquisition. Invocation cleanup happens inside RunOnce;
+	// installation closure precedes the borrowed database's process-owned close.
+	defer func() {
+		drainCtx, stopDrain := context.WithTimeout(context.Background(), 30*time.Second)
+		drainErr := invocations.close(drainCtx)
+		stopDrain()
+		if drainErr != nil {
+			// Do not close borrowed dependencies under a still-active callback.
+			// main exits with failure; this is not successful join/retirement proof.
+			resultErr = errors.Join(resultErr, drainErr)
+		} else {
+			if err := localExecution.close(); err != nil {
+				resultErr = errors.Join(resultErr, err)
+			}
+			if ydb != nil {
+				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := ydb.Close(closeCtx); err != nil {
+					resultErr = errors.Join(resultErr, err)
+				}
+			}
+		}
+		if resultErr != nil && localConfig.enabled {
+			resultErr = errWorkerLocalExecution
+		}
+	}()
+	localExecution, err = openWorkerLocalExecution(ctx, localConfig)
+	if err != nil {
+		return errWorkerLocalExecution
+	}
+	ydb, err = ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
+	if err != nil {
+		return workerRuntimeError(localConfig.enabled, "open YDB", err)
 	}
 	deliveryWakeQueue, err := sqsqueue.New(ctx, sqsqueue.Config{
 		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
@@ -50,40 +96,33 @@ func main() {
 		SecretAccessKey: firstNonEmpty(os.Getenv("OUTBOX_QUEUE_SECRET_ACCESS_KEY"), os.Getenv("QUEUE_SECRET_ACCESS_KEY")),
 	})
 	if err != nil {
-		logger.Error("create delivery wake queue", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create delivery wake queue", err)
 	}
 	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue, signals)
 	if err != nil {
-		logger.Error("create delivery wake publisher", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create delivery wake publisher", err)
 	}
-	defer ydb.Close(context.Background())
 	effectIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
 	if err != nil {
-		logger.Error("create provider effect grant issuer", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create provider effect grant issuer", err)
 	}
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttemptEffectGrantIssuer: effectIssuer})
+	storeOptions := localExecution.storeOptions()
+	storeOptions.AttemptEffectGrantIssuer = effectIssuer
+	state, err := ydbstore.New(ydb.DB, storeOptions)
 	if err != nil {
-		logger.Error("create worker state store", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create worker state store", err)
 	}
 	if err := state.RequireExecutionPlacementCutover(ctx); err != nil {
-		logger.Error("require execution placement cutover", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "require execution placement cutover", err)
 	}
 	if err := state.RequireHarnessBindingCutover(ctx); err != nil {
-		logger.Error("require harness binding cutover", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "require harness binding cutover", err)
 	}
 	if err := state.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
-		logger.Error("require managed execution authority v2 cutover", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "require managed execution authority v2 cutover", err)
 	}
 	if err := state.RequireAdmissionCostV2Cutover(ctx); err != nil {
-		logger.Error("require admission cost v2 cutover", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "require admission cost v2 cutover", err)
 	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: envOrDefault("S3_REGION", "ru-central1"),
@@ -94,53 +133,52 @@ func main() {
 		MaxObjectBytes:         int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
 	})
 	if err != nil {
-		logger.Error("create worker blob store", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create worker blob store", err)
 	}
-	harness, err := deterministicharness.New(deterministicharness.Config{
-		Turns:                 envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
-		Artifacts:             envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
-		FailBeforeFirstTurn:   envBool("DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN"),
-		FailAtTurn:            envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
-		RetryableFail:         envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
-		CaptureContextHistory: envBool("DETERMINISTIC_HARNESS_CAPTURE_CONTEXT_HISTORY"),
-	})
-	if err != nil {
-		logger.Error("create deterministic harness", "error", err)
-		os.Exit(1)
-	}
-	harnessRegistry, err := sessionlessharness.NewRegistry(time.Now, sessionlessharness.Registration{
-		Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
-		Enabled:         true,
-		ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
-		Driver:          harness,
-	})
-	if err != nil {
-		logger.Error("create Sessionless harness registry", "error", err)
-		os.Exit(1)
-	}
-	inProcessSubstrate, err := serverlessharness.NewInProcessExecutionSubstrateV1(
-		time.Now, effectIssuer, sessionlessharness.DeterministicFixtureDescriptorV1(),
-	)
-	if err != nil {
-		logger.Error("create deterministic execution substrate", "error", err)
-		os.Exit(1)
-	}
-	executionPreparer, err := serverlessharness.NewExactExecutionPreparerV1(
-		time.Now,
-		effectIssuer,
-		func(authority domain.ServerlessInvocationAuthorityV1) (serverlessharness.SubstrateRegistrationV1, error) {
-			if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(authority); err != nil {
-				return serverlessharness.SubstrateRegistrationV1{}, err
-			}
-			return serverlessharness.SubstrateRegistrationV1{
-				Binding: authority.SubstrateBinding, Enabled: true, Driver: inProcessSubstrate,
-			}, nil
-		},
-	)
-	if err != nil {
-		logger.Error("create exact execution preparer", "error", err)
-		os.Exit(1)
+	var harnessRegistry *sessionlessharness.Registry
+	var executionPreparer *serverlessharness.ExactExecutionPreparerV1
+	if !localConfig.enabled {
+		harness, err := deterministicharness.New(deterministicharness.Config{
+			Turns:                 envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
+			Artifacts:             envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
+			FailBeforeFirstTurn:   envBool("DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN"),
+			FailAtTurn:            envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
+			RetryableFail:         envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
+			CaptureContextHistory: envBool("DETERMINISTIC_HARNESS_CAPTURE_CONTEXT_HISTORY"),
+		})
+		if err != nil {
+			return workerRuntimeError(localConfig.enabled, "create deterministic harness", err)
+		}
+		harnessRegistry, err = sessionlessharness.NewRegistry(time.Now, sessionlessharness.Registration{
+			Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
+			Enabled:         true,
+			ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
+			Driver:          harness,
+		})
+		if err != nil {
+			return workerRuntimeError(localConfig.enabled, "create Sessionless harness registry", err)
+		}
+		inProcessSubstrate, err := serverlessharness.NewInProcessExecutionSubstrateV1(
+			time.Now, effectIssuer, sessionlessharness.DeterministicFixtureDescriptorV1(),
+		)
+		if err != nil {
+			return workerRuntimeError(localConfig.enabled, "create deterministic execution substrate", err)
+		}
+		executionPreparer, err = serverlessharness.NewExactExecutionPreparerV1(
+			time.Now,
+			effectIssuer,
+			func(authority domain.ServerlessInvocationAuthorityV1) (serverlessharness.SubstrateRegistrationV1, error) {
+				if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(authority); err != nil {
+					return serverlessharness.SubstrateRegistrationV1{}, err
+				}
+				return serverlessharness.SubstrateRegistrationV1{
+					Binding: authority.SubstrateBinding, Enabled: true, Driver: inProcessSubstrate,
+				}, nil
+			},
+		)
+		if err != nil {
+			return workerRuntimeError(localConfig.enabled, "create exact execution preparer", err)
+		}
 	}
 	managerConfig := worker.Config{
 		OpsSignals:            signals,
@@ -150,6 +188,9 @@ func main() {
 		LeaseWatchdogInterval: envDuration("WORKER_LEASE_WATCHDOG_INTERVAL", 0),
 		RetryDelay:            envDuration("WORKER_RETRY_DELAY", 5*time.Second),
 		RetryObserver: func(cause error) {
+			if localConfig.enabled {
+				cause = errWorkerLocalExecution
+			}
 			logger.Warn("worker invocation scheduled for retry", "error", cause)
 		},
 		MaxDeliveryCount:      uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
@@ -158,6 +199,16 @@ func main() {
 		DeliveryWakePublisher: deliveryWakePublisher,
 		ExecutionPreparer:     executionPreparer,
 	}
+	var localRuntime *worker.LocalRuntime
+	if localExecution != nil {
+		localRuntime, err = worker.NewLocalRuntime(worker.LocalRuntimeConfig{
+			Source: localExecution.source, Receipt: localExecution.receipt,
+			DB: ydb.DB, Blobs: blobs, Worker: managerConfig,
+		}, systemClock{})
+		if err != nil {
+			return errWorkerLocalExecution
+		}
+	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(
 			managerConfig, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue, signals),
@@ -165,22 +216,38 @@ func main() {
 		)
 	}
 	if envBool("SERVERLESS_TRIGGER_HTTP") {
+		invocations = newWorkerTriggerDrain(ctx)
 		err = serverlesshttp.Serve(
 			ctx, ":"+envOrDefault("PORT", "8080"), logger,
 			func(invocationCtx context.Context, request *http.Request) (any, error) {
+				invocationCtx, finish, beginErr := invocations.begin(invocationCtx)
+				if beginErr != nil {
+					return nil, workerRuntimeError(localConfig.enabled, "worker trigger draining", beginErr)
+				}
+				defer finish()
 				queue, parseErr := yandextriggers.NewYMQQueue(request.Body, 10)
 				if parseErr != nil {
-					return nil, parseErr
+					return nil, workerRuntimeError(localConfig.enabled, "parse worker trigger", parseErr)
 				}
-				manager, managerErr := newManager(queue)
-				if managerErr != nil {
-					return nil, managerErr
+				var manager *worker.Manager
+				if localRuntime == nil {
+					var managerErr error
+					manager, managerErr = newManager(queue)
+					if managerErr != nil {
+						return nil, managerErr
+					}
 				}
 				outcomes := make([]worker.Outcome, 0, queue.Remaining())
 				for queue.Remaining() > 0 {
-					outcome, runErr := manager.RunOnce(invocationCtx)
+					var outcome worker.Outcome
+					var runErr error
+					if localRuntime != nil {
+						outcome, runErr = localRuntime.RunOnce(invocationCtx, portlog.NewQueue(logger, "worker-runtime", queue, signals))
+					} else {
+						outcome, runErr = manager.RunOnce(invocationCtx)
+					}
 					if runErr != nil {
-						return nil, runErr
+						return nil, workerRuntimeError(localConfig.enabled, "worker trigger invocation", runErr)
 					}
 					outcomes = append(outcomes, outcome)
 				}
@@ -188,10 +255,9 @@ func main() {
 			}, signals,
 		)
 		if err != nil {
-			logger.Error("worker trigger server stopped", "error", err)
-			os.Exit(1)
+			return workerRuntimeError(localConfig.enabled, "worker trigger server stopped", err)
 		}
-		return
+		return nil
 	}
 
 	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
@@ -201,24 +267,27 @@ func main() {
 		WaitTime: envDuration("WORKER_QUEUE_WAIT", 2*time.Second),
 	})
 	if err != nil {
-		logger.Error("create worker queue", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "create worker queue", err)
 	}
-	manager, err := newManager(queue)
-	if err != nil {
-		logger.Error("create worker manager", "error", err)
-		os.Exit(1)
+	var outcome worker.Outcome
+	if localRuntime != nil {
+		outcome, err = localRuntime.RunOnce(ctx, portlog.NewQueue(logger, "worker-runtime", queue, signals))
+	} else {
+		manager, managerErr := newManager(queue)
+		if managerErr != nil {
+			return workerRuntimeError(false, "create worker manager", managerErr)
+		}
+		outcome, err = manager.RunOnce(ctx)
 	}
-	outcome, err := manager.RunOnce(ctx)
-	if errors.Is(err, sqsqueue.ErrNoMessage) {
+	if workerQueueEmpty(localRuntime != nil, err) {
 		logger.Info("worker queue empty")
-		return
+		return nil
 	}
 	if err != nil {
-		logger.Error("worker invocation failed", "error", err)
-		os.Exit(1)
+		return workerRuntimeError(localConfig.enabled, "worker invocation failed", err)
 	}
 	logger.Info("worker invocation finished", "outcome", outcome)
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

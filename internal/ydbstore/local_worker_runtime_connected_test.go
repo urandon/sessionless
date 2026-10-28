@@ -203,7 +203,17 @@ func TestLocalSessionRuntimeOwnsEachRunOnceConnected(t *testing.T) {
 		return nil
 	}
 	if outcome, err := runtime.RunOnce(caller, queue); err != nil || outcome != worker.OutcomeCompleted {
-		t.Fatalf("actual fresh runtime -> Manager terminal: outcome=%s err=%v retry=%v", outcome, err, observed)
+		// Failure-only original fixture DATA locates the failing phase without
+		// exposing errors, SQL, identifiers, bodies or private file paths.
+		stats, terminal := seed.Stats(), fixture.Snapshot(t)
+		peer.mu.Lock()
+		modelCalls := len(peer.kinds)
+		peer.mu.Unlock()
+		t.Fatalf("actual fresh runtime -> Manager terminal: completed=%t retried=%t runError=%t retryError=%t retrySession=%t retryIncomplete=%t retryDeadline=%t retryCanceled=%t before=%+v after=%+v modelCalls=%d receives=%d ack=%d retry=%d dead=%d wake=%d finalizations=%d events=%d runSucceeded=%t runTerminal=%t leasePresent=%t activeRuns=%d",
+			outcome == worker.OutcomeCompleted, outcome == worker.OutcomeRetried, err != nil, observed != nil,
+			errors.Is(observed, providerloopsession.ErrSession), errors.Is(observed, providerloopsession.ErrIncomplete), errors.Is(observed, context.DeadlineExceeded), errors.Is(observed, context.Canceled),
+			before, stats, modelCalls, queue.receives, queue.ack, queue.retry, queue.dead, queue.wake,
+			terminal.Finalizations, len(terminal.Events), terminal.Run.Status == domain.RunSucceeded, terminal.Run.Status.Terminal(), terminal.LeasePresent, terminal.ActiveRuns)
 	}
 	first, stats := fixture.Snapshot(t), seed.Stats()
 	if first.Finalizations != 1 || first.Run.Status != domain.RunSucceeded || first.Attempt.Status != domain.AttemptSucceeded || first.Reservation.Status != domain.ReservationCommitted || first.LeasePresent || first.ActiveRuns != 0 || len(first.Events) != 1 || first.Events[0].Kind != domain.SessionEventAssistantMessage || queue.ack != 1 || queue.wake != 1 || queue.retry != 0 || queue.dead != 0 || observed != nil || stats.Parent != before.Parent+1 || stats.Burn != before.Burn+1 || stats.Operation != before.Operation+1 || stats.Observation != before.Observation+1 || seed.ProviderCredentialReadCount() != 0 {

@@ -94,9 +94,10 @@ returns historical DATA only. Normal startup must use that receipt with
 `OpenExisting` and retain current Source/Store checks, never reinstall per
 message or treat receipt text as execution permission.
 
-This delivers the first-install handoff only. Worker/Web startup wiring,
-genuine no-subscription canonical queued admission and the separately authorized
-real-model demo remain under #218. Defaults and schema are unchanged.
+This tool delivers the first-install handoff only. Worker startup is described
+below; Web wiring, genuine no-subscription canonical queued admission and the
+separately authorized real-model demo remain under #218. Defaults and schema
+are unchanged.
 
 ### Local per-delivery worker ownership (library, default off)
 
@@ -112,10 +113,38 @@ deliveries. Cleanup failure remains an error, not evidence of completed joining
 or permission to replay work. It never closes the borrowed Source or DB. Do not open a fresh
 installation or retain one session/Manager across queue deliveries.
 
-This is library composition, not a command/configuration switch or an enabled
-profile. Command receipt loading/installation, genuine no-subscription queued
-admission and separately authorized real-model/Web proof remain under #218.
-Controlled running-lease fixtures do not establish those product outcomes.
+This library does not enable a profile. Controlled running-lease fixtures do
+not establish fresh canonical queued admission or real-model/Web outcomes.
+
+### Normal local worker startup (default off)
+
+After the explicit installation, select `WORKER_LOCAL_EXECUTION_ENABLED=true`
+with `SESSIONLESS_ENVIRONMENT=local` and the same three canonical `WEB_LOCAL_*`
+paths above. The receipt destination now refers to the existing accepted
+receipt, not a new output path. Missing/malformed selection, disabled selection
+with stray local paths, mixed attached configuration and non-noauth profiles
+fail closed. There is no alias, endpoint discovery, automatic reinstall or
+paid-provider fallback. The ordinary deterministic worker remains the default
+when no local selection or paths are supplied.
+
+`worker-runtime` reads that receipt and opens its original Source once for the
+process. Both its SQS path and each message of an HTTP-trigger batch use
+`LocalRuntime.RunOnce` with fresh invocation owners. The original Source is
+installed as all three profile/spending/effect-source verifiers; the existing
+four startup cutover checks remain mandatory. Process cancellation reaches
+active HTTP callbacks; shutdown denies late callbacks and waits up to 30 seconds
+for their invocation cleanup before Source and bounded database-client closure.
+An unproven drain is a failed process shutdown, not retirement proof: borrowed
+dependencies are not closed underneath active work. Local errors retain only
+content-free expected retry/redrive/cancel/policy classifications; invocation
+cleanup failure remains unexpected. The worker never starts/stops the
+operator's model server.
+
+This is source wiring, not evidence that a new message can be admitted without
+a subscription. That separate canonical capacity/admission/release contract,
+Web integration, two productive messages and the authorized real-model demo
+remain under #218. No command, profile or cloud route is enabled by this code
+change; running against services requires its own operation authority.
 
 ### Attached execution composition (default off)
 

@@ -480,7 +480,7 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 		t.Fatal(err)
 	}
 	blobs := &joinedGenerationBlobs{objects: make(map[string][]byte)}
-	core, err := attachedworkertransport.NewReceiptFinalizingService(attachedworkertransport.ServiceConfig{IDs: testkit.NewSequenceIDGenerator(suffix), Audience: enrollment.Audience, PlatformOffer: capability.ProtocolOffer, ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, ChallengeLifetime: time.Minute, ChallengeRetention: time.Hour, PresenceTTL: 10 * time.Minute, AuthTTL: time.Hour, CheckpointInterval: attachedworkertransport.MinimumHeartbeatInterval}, store, store)
+	core, err := attachedworkertransport.NewReceiptFinalizingService(joinedGenerationTransportConfig(testkit.NewSequenceIDGenerator(suffix), enrollment.Audience, capability.ProtocolOffer), store, store)
 	if err != nil {
 		t.Fatal(err)
 	}

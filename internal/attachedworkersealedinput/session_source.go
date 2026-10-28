@@ -23,11 +23,13 @@ type SessionSourceFactory struct {
 	endpoint        string
 	client          *http.Client
 	receiptEndpoint string
+	inlineOrigin    string // Set only by the explicit inline-capable constructor.
 
 	mu        sync.Mutex
 	state     sourceState
 	source    *ClientSource
 	publisher *attachedworkerreceipt.ClientPublisher
+	inline    *attachedworkerreceipt.InlineClientV2
 	port      attachedworkersession.ExchangePort
 	cancel    context.CancelFunc
 	life      context.Context
@@ -106,10 +108,34 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 			return nil, ErrInvalid
 		}
 	}
+	var inline *attachedworkerreceipt.InlineClientV2
+	if factory.inlineOrigin != "" {
+		inline, err = attachedworkerreceipt.NewInlineClientV2(factory.inlineOrigin, factory.client, bearer)
+		if err != nil {
+			_ = source.Close()
+			_ = publisher.Close()
+			_ = factory.Close()
+			return nil, ErrInvalid
+		}
+	}
+	// Constructors above perform no I/O. Register every owned bearer copy
+	// before entering foreign Open, so concurrent retirement can scrub them
+	// even when that delegate does not return. Never hold our lock across it.
+	factory.mu.Lock()
+	if factory.state != sourceOpening {
+		factory.mu.Unlock()
+		_ = source.Close()
+		_ = publisher.Close()
+		_ = inline.Close()
+		return nil, ErrUnavailable
+	}
+	factory.source, factory.publisher, factory.inline = source, publisher, inline
+	factory.mu.Unlock()
 	exchange, err := factory.delegate.Open(binding, bearer)
 	if err != nil || exchange == nil {
 		_ = source.Close()
 		_ = publisher.Close()
+		_ = inline.Close()
 		_ = factory.Close()
 		if closer, ok := exchange.(interface{ Close() error }); ok {
 			_ = closer.Close()
@@ -121,13 +147,12 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 		factory.mu.Unlock()
 		_ = source.Close()
 		_ = publisher.Close()
+		_ = inline.Close()
 		if closer, ok := exchange.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
 		return nil, ErrUnavailable
 	}
-	factory.source = source
-	factory.publisher = publisher
 	factory.port = exchange
 	factory.state = sourceOpen
 	factory.mu.Unlock()
@@ -176,7 +201,7 @@ func (factory *SessionSourceFactory) Publish(ctx context.Context, submission att
 	return publisher.Publish(requestCtx, submission)
 }
 
-// revokeSource clears both bearers and cancels in-flight input reads/receipts
+// revokeSource clears all owned bearers and cancels in-flight input/receipts
 // without waiting for the transport delegate's Close. This lets a bounded
 // caller revoke fetch authority before a late session/lease finalizer waits
 // for an injected exchange implementation that ignores its close contract.
@@ -194,14 +219,16 @@ func (factory *SessionSourceFactory) revokeSource() error {
 	factory.mu.Lock()
 	source := factory.source
 	publisher := factory.publisher
+	inline := factory.inline
 	factory.source = nil
 	factory.publisher = nil
+	factory.inline = nil
 	factory.state = sourceClosed
 	if factory.cancel != nil {
 		factory.cancel()
 	}
 	factory.mu.Unlock()
-	return errors.Join(source.Close(), publisher.Close())
+	return errors.Join(source.Close(), publisher.Close(), inline.Close())
 }
 
 // Close revokes the bearer and closes the acquired exchange. The outer

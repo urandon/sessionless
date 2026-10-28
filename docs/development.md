@@ -173,6 +173,18 @@ not promoted. The actual initial/reconnect runtime constructors require the
 configured concrete metadata owner as their exchange factory and the same
 lifecycle; wrappers or matching declarations are not substitutes.
 
+For an inline-output profile, explicitly construct
+`attachedworkersealedinput.NewInlineSessionSourceFactoryV2` with the canonical
+HTTPS origin, HTTP client and original exchange factory. Use this SAME object
+as the generation owner's source delegate, the normal materializer's source,
+the V1 failure receipt publisher and the inline publisher. Only the genuine
+Session's one-shot `Open` supplies its accepted bearer; do not extract a token
+or construct a separately authenticated inline client. Input, failure and inline
+clients share retirement/cancellation, including while foreign `Open` is still
+pending. Ordinary source factories do not implement the inline-publisher
+interface. The factory adds no execution grant, retry, output journal or new
+deadline; the original adapter retains receipt burns and body ownership.
+
 After the original Session is Ready,
 `NewNativeGenerationPreparedAdapterV3` binds it to that Stack and synchronizes
 metadata before the first available heartbeat. Fresh idle polls synchronize

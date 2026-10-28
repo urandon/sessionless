@@ -114,7 +114,7 @@ func reconnectIdleCadence(
 		recovery.TerminalDecision != attachedworkerprotocol.ReconnectTerminalNone || recovery.Terminal != nil {
 		return cleanup(ErrReconciliationRequired)
 	}
-	adapter, err := New(session, materializer, adapterConfig)
+	adapter, err := newRuntimeAdapterV3(ctx, session, materializer, adapterConfig, attachedworkersession.ResourceGenerationReconnectV1)
 	if err != nil {
 		// A root/profile that changed after the pre-network check is no longer
 		// a harmless local validation failure: reconnect already had an effect.

@@ -25,6 +25,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -215,6 +216,9 @@ type Adapter struct {
 	materializer Materializer
 	config       Config
 	gate         chan struct{}
+	// Only the explicit context-aware generation constructor installs this
+	// original concrete Stack; no caller callback can synchronize fresh work.
+	generationStack *attachedworkerstack.Stack
 
 	mu     sync.Mutex
 	active *activeAttempt
@@ -223,6 +227,10 @@ type Adapter struct {
 
 func New(session SessionPort, materializer Materializer, config Config) (*Adapter, error) {
 	if config.preparedReceipt != nil {
+		if config.preparedReceipt.nativeGenerationV3 {
+			// Contextless construction cannot bind/synchronize generation state.
+			return nil, ErrInvalidConfiguration
+		}
 		original, ok := session.(*attachedworkersession.Session)
 		if !ok || original == nil {
 			return nil, ErrInvalidConfiguration
@@ -325,6 +333,20 @@ func (adapter *Adapter) Next(ctx context.Context) (attachedworkerdaemon.Invocati
 	snapshot, err := adapter.readySnapshot()
 	if err != nil {
 		return attachedworkerdaemon.Invocation{}, false, err
+	}
+	if adapter.generationStack != nil {
+		original, ok := adapter.session.(*attachedworkersession.Session)
+		if !ok || original == nil {
+			return attachedworkerdaemon.Invocation{}, false, ErrInvalidAuthority
+		}
+		if err := adapter.generationStack.SynchronizePreparedGenerationV3(ctx, original); err != nil {
+			return attachedworkerdaemon.Invocation{}, false, errors.Join(ErrReconciliationRequired, err)
+		}
+		// Metadata I/O cannot cache/renew the original Session's readiness.
+		snapshot, err = adapter.readySnapshot()
+		if err != nil {
+			return attachedworkerdaemon.Invocation{}, false, err
+		}
 	}
 	response, err := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
 		ObservedAtUnixMicro: adapter.config.Now().UTC().UnixMicro(), Available: true, ActiveAttempts: 0,

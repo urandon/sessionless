@@ -132,6 +132,9 @@ func ConnectPinnedForegroundRuntime(
 			return concreteInitialConnectPort{connector: connector}, nil
 		},
 		func(ctx context.Context, manifest attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, credentials ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			if config.PreparedCodexNativeGeneration != nil {
+				return attachedworkerstack.NewNativeGenerationV3(ctx, manifest, config, credentials)
+			}
 			if config.PreparedCodexNative != nil {
 				return attachedworkerstack.NewNativeV3(ctx, manifest, config, credentials)
 			}
@@ -158,12 +161,15 @@ func connectPinnedForegroundRuntime(
 	if ctx == nil || newConnector == nil || newStack == nil || credentials == nil || sessionConfig.RuntimePreflight != nil {
 		return nil, ErrInvalidConfiguration
 	}
+	if err := validateNativeGenerationRuntimeV3(stackConfig, exchange, credentials, materializer); err != nil {
+		return nil, err
+	}
 	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
 	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, adapterConfig.Profile, stackConfig, credentials, newStack)
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil || stackConfig.PreparedCodexNativeGeneration != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}
@@ -199,6 +205,9 @@ func pinnedRuntimePreflight(
 	if stackConfig.PreparedCodexNative != nil {
 		selected++
 	}
+	if stackConfig.PreparedCodexNativeGeneration != nil {
+		selected++
+	}
 	if selected > 1 {
 		return nil, nil, ErrInvalidConfiguration
 	}
@@ -230,6 +239,13 @@ func pinnedRuntimePreflight(
 		}
 		stackConfig.PreparedCodexNative = &native
 	}
+	if stackConfig.PreparedCodexNativeGeneration != nil {
+		native, err := freezeNativeGenerationRuntimeV3(capability, profile, stackConfig.PreparedCodexNativeGeneration, credentials)
+		if err != nil {
+			return nil, nil, err
+		}
+		stackConfig.PreparedCodexNativeGeneration = &native
+	}
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
 	digest, err := attachedworkerprotocol.ManifestDigestV1(capability)
@@ -243,7 +259,8 @@ func pinnedRuntimePreflight(
 	}
 	capabilityExecutableDigest := slices.Clone(capability.HarnessExecutableDigest)
 	profile = cloneProfile(profile)
-	inlineOutputV2 := stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2
+	inlineOutputV2 := stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2 ||
+		stackConfig.PreparedCodexNativeGeneration != nil && stackConfig.PreparedCodexNativeGeneration.InlineOutputV2
 	var runner attachedworkerdaemon.Runner
 	preflight := func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
 		if !profileMatchesManifest(profile, manifest) ||
@@ -260,15 +277,16 @@ func pinnedRuntimePreflight(
 		runner = pinned
 		return nil
 	}
-	return preflight, &preflightRunner{current: &runner, inlineOutputV2: inlineOutputV2}, nil
+	return preflight, &preflightRunner{current: &runner, inlineOutputV2: inlineOutputV2, nativeGenerationV3: stackConfig.PreparedCodexNativeGeneration != nil}, nil
 }
 
 // preflightRunner only exists so local configuration can be validated before
 // Connect. It never dispatches unless the lease-held preflight installed a
 // fully verified runner. A failed preflight cannot leave process authority.
 type preflightRunner struct {
-	current        *attachedworkerdaemon.Runner
-	inlineOutputV2 bool // Frozen with the exact stack configuration, not caller state.
+	current            *attachedworkerdaemon.Runner
+	inlineOutputV2     bool // Frozen with the exact stack configuration, not caller state.
+	nativeGenerationV3 bool
 }
 
 func installPreparedReceipt(config *Config, capability attachedworkerprotocol.CapabilityManifestV1, runner *preflightRunner) error {
@@ -402,7 +420,7 @@ func connectForegroundRuntime(
 	if prepared, ok := runner.(*preflightRunner); ok && !prepared.ready() {
 		return cleanup(ErrReconciliationRequired)
 	}
-	adapter, err := New(session, materializer, adapterConfig)
+	adapter, err := newRuntimeAdapterV3(ctx, session, materializer, adapterConfig, attachedworkersession.ResourceGenerationInitialV1)
 	if err != nil {
 		return cleanup(ErrReconciliationRequired)
 	}
@@ -486,6 +504,9 @@ func ReconnectPinnedForegroundRuntime(
 			return concreteReconnectPort{connector: connector}, nil
 		},
 		func(ctx context.Context, manifest attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, credentials ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			if config.PreparedCodexNativeGeneration != nil {
+				return attachedworkerstack.NewNativeGenerationV3(ctx, manifest, config, credentials)
+			}
 			if config.PreparedCodexNative != nil {
 				return attachedworkerstack.NewNativeV3(ctx, manifest, config, credentials)
 			}
@@ -512,6 +533,9 @@ func reconnectPinnedForegroundRuntime(
 	if ctx == nil || newConnector == nil || sessionConfig.RuntimePreflight != nil {
 		return nil, ErrInvalidConfiguration
 	}
+	if err := validateNativeGenerationRuntimeV3(stackConfig, exchange, credentials, materializer); err != nil {
+		return nil, err
+	}
 	if _, err := validateRuntimeConfig(config); err != nil {
 		return nil, err
 	}
@@ -520,7 +544,7 @@ func reconnectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil || stackConfig.PreparedCodexNativeGeneration != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}

@@ -210,7 +210,9 @@ func (v *OwnerV1) authorization(c connection) ports.AttachedResourceGenerationAu
 }
 
 // SynchronizeV1 owns ONE publication and at most ONE exact readback within the
-// same original bounded context. Reconnect is read-only. A failed/unknown
+// same original bounded context. Initial reconnect recovery is read-only;
+// after its exact ACK, subsequent local changes use the same one-shot CAS as
+// an initially connected owner. Connection mode never changes. A failed/unknown
 // publication target cannot be automatically published again by this owner.
 func (v *OwnerV1) SynchronizeV1(ctx context.Context) error {
 	if v == nil || v.self != v || ctx == nil || ctx.Err() != nil {
@@ -229,15 +231,19 @@ func (v *OwnerV1) SynchronizeV1(ctx context.Context) error {
 		return ErrDenied
 	}
 	target, err := v.localHead(op)
-	if err != nil || v.check(op, c, !target.Revoked && c.mode == attachedworkersession.ResourceGenerationInitialV1) != nil {
+	v.mu.Lock()
+	recovering := c.mode == attachedworkersession.ResourceGenerationReconnectV1 && v.ack == nil
+	v.mu.Unlock()
+	positive := !target.Revoked && !recovering
+	if err != nil || v.check(op, c, positive) != nil {
 		return ErrDenied
 	}
 	v.mu.Lock()
 	if v.ack != nil && *v.ack == target {
 		v.mu.Unlock()
-		return v.confirm(op, c, target)
+		return v.confirm(op, c, target, positive)
 	}
-	if c.mode == attachedworkersession.ResourceGenerationReconnectV1 {
+	if recovering {
 		if v.reconnectRead {
 			v.mu.Unlock()
 			return ErrUnavailable
@@ -248,7 +254,7 @@ func (v *OwnerV1) SynchronizeV1(ctx context.Context) error {
 		if err != nil || result.Status != ports.AttachedWorkerExecutionApplied || result.Head != target {
 			return ErrUnavailable
 		}
-		return v.confirm(op, c, target)
+		return v.confirm(op, c, target, false)
 	}
 	if v.attempted != nil && *v.attempted == target {
 		v.mu.Unlock()
@@ -278,12 +284,12 @@ func (v *OwnerV1) SynchronizeV1(ctx context.Context) error {
 	if err != nil || result.Head != target || result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
 		return ErrUnavailable
 	}
-	return v.confirm(op, c, target)
+	return v.confirm(op, c, target, positive)
 }
 
-func (v *OwnerV1) confirm(ctx context.Context, c connection, target domain.AttachedResourceGenerationHeadV1) error {
+func (v *OwnerV1) confirm(ctx context.Context, c connection, target domain.AttachedResourceGenerationHeadV1, positive bool) error {
 	current, err := v.localHead(ctx)
-	if err != nil || current != target || v.check(ctx, c, !target.Revoked && c.mode == attachedworkersession.ResourceGenerationInitialV1) != nil {
+	if err != nil || current != target || v.check(ctx, c, positive) != nil {
 		return ErrDenied
 	}
 	v.mu.Lock()

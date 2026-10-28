@@ -129,7 +129,7 @@ polling. The service performs one transaction, without automatic mutation
 retry or hidden readback; the original Session client must keep publication
 and its one optional exact readback inside the same original 15-second window.
 An unknown result is not an ACK or permission to repeat credential/provider
-effects. Native Session/client integration remains #234.
+effects. The explicit native Session/client composition is described below.
 
 Fresh admission rechecks the current metadata and full projected binding in
 the allocating transaction. It never upgrades an old outbox/job to a later
@@ -141,8 +141,9 @@ is preserved for resources with no generation metadata.
 Migration `00132_add_attached_resource_generation.sql` adds one nullable column
 to the existing subscription row; source changes do not authorize applying it.
 Generation publication does not activate entitlement, extend evidence expiry
-or enable native execution. Full native consumption, joined proof and live
-resource activation retain their #234/#235/#133 owners.
+or enable native execution. Native consumption, joined proof and live resource
+activation retain their #234/#235/#133 owners; source composition is not rollout
+evidence.
 
 The three generation-head counters use strict canonical decimal JSON strings,
 not JsonDocument numbers, across storage and nested metadata HTTP heads. The
@@ -152,13 +153,64 @@ denial carriers may serialize but are never valid heads or success responses.
 This source-only correction precedes initial generation-head deployment; it
 does not authorize converting retained data or applying the additive migration.
 
+#### Generation-aware native library composition (default off)
+
+This is an explicit library path, not a command-line activation or promotion of
+an existing native profile. `codexexec.NativePreparedConfigV3` contains a complete
+immutable baseline, an explicitly qualified `NativeProfileV3`, the concrete
+`attachedresourcegenerationsession.OwnerV1`, and the SAME concrete
+`ownerlocalcredential.Lifecycle` used for credential currentness and invocation.
+`attachedworkerstack.NewNativeGenerationV3` selects this path. The separate
+`NewNativeV3` constructor retains its fixed-evidence semantics; neither silently
+selects the other.
+
+Use `attachedworkersealedinput.NewNativeSubscriptionServiceV1` and
+`attachedworkerdaemontransport.NewNativeSubscriptionBoundMaterializerV1` for the
+normal Codex subscription input path. It derives one IssueRequest from the
+canonical Run/Attempt/Lease and original resource, preserving content and
+accepted-attempt checks. The credentialless and test-provider constructors are
+not promoted. The actual initial/reconnect runtime constructors require the
+configured concrete metadata owner as their exchange factory and the same
+lifecycle; wrappers or matching declarations are not substitutes.
+
+After the original Session is Ready,
+`NewNativeGenerationPreparedAdapterV3` binds it to that Stack and synchronizes
+metadata before the first available heartbeat. Fresh idle polls synchronize
+again under the existing adapter serial gate. Unchanged state uses the exact
+current acknowledged head; changed metadata gets one publication and at most
+one exact point read within the original 15-second budget. Idle reconnect uses
+a fresh connection source and metadata owner with the same baseline/lifecycle,
+and reads the current head without rotation or another publication. After that
+exact recovery ACK, a later own WriteBack may publish its successor through the
+same bounded CAS path; the connection keeps its original reconnect identity.
+Retired sources and active recovery journals cannot be reused as fresh admission.
+
+Each authentic accepted input is privately projected and checked against the
+current ACK before the original outer lifecycle's Issue. Its independent
+evidence stays with that attempt; no later generation mutates an old slot or
+shared configuration. The accepted dynamic policy digest remains distinct from
+the descriptor-pinned, recomputed static installation policy. V3 qualification
+does not reinterpret the V2 policy identity.
+
+Own successful WriteBack may leave an original N receipt while local metadata
+has advanced to N+1. New-input ACK checks do not gate that original receipt,
+finalizer, journal, exact terminal ACK or retirement. Failed N+1 synchronization
+fences new work, not retained result ownership. No additional lifecycle, ACK
+table, timer, provider retry or credential store is introduced.
+
+Owned synthetic-process/transport tests qualify source composition only.
+Joined durable receipt proof, platform/profile qualification, real credentials
+and a useful WebUI turn remain separate gates; no engine, native workload,
+provider or cloud operation is enabled by these constructors.
+
 Canonical context windows are retained and sealed using the same event/snapshot
 codecs as the managed worker. Materialization verifies the exact session,
 snapshot, event window, trigger, immutable references and size limits. Terminal
 publication uses a ready server-owned receipt, not caller-supplied completion
 material. This composition does **not** activate a real provider or grant a
-credential: the production sealed-input constructor remains credentialless.
-The credential-bearing provider proof uses only the integration-test adapter;
+credential: the default sealed-input constructor remains credentialless, and
+the explicit native-subscription successor above is not mounted by default.
+The existing credential-bearing provider proof uses an integration-test adapter;
 real attached-provider activation remains the separately reviewed #133
 workstream. It is required for the selected attached MVP path, independently of
 managed implementation. #176/#180 own the agent-harness minimum/design;

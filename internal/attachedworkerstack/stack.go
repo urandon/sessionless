@@ -1,6 +1,6 @@
 // Package attachedworkerstack assembles the manifest-pinned local execution
-// stack for an already enrolled attached worker. It performs no enrollment,
-// network exchange, provider call, or product activation.
+// stack for an already enrolled attached worker. Construction performs no
+// enrollment, network exchange, provider call, or product activation.
 package attachedworkerstack
 
 import (
@@ -46,15 +46,18 @@ type Config struct {
 	PreparedCodexMedia *codexexec.MediaConfigV1
 	// Native selection requires NewNativeV3; ordinary New rejects it before
 	// engine access. No shipped configuration selects this profile.
-	PreparedCodexNative     *codexexec.NativePreparedConfigV2
-	ScratchRoot             string
-	Timeout                 time.Duration
-	TerminationGrace        time.Duration
-	MaxStdoutBytes          int
-	MaxStderrBytes          int
-	AllowedEnvironmentNames []string
-	AllowedReadRoots        []string
-	CredentialFinalizeGrace time.Duration
+	PreparedCodexNative *codexexec.NativePreparedConfigV2
+	// Generation-aware native selection is separate from the fixed V2 bundle.
+	// Only NewNativeGenerationV3 accepts it; no shipped configuration selects it.
+	PreparedCodexNativeGeneration *codexexec.NativePreparedConfigV3
+	ScratchRoot                   string
+	Timeout                       time.Duration
+	TerminationGrace              time.Duration
+	MaxStdoutBytes                int
+	MaxStderrBytes                int
+	AllowedEnvironmentNames       []string
+	AllowedReadRoots              []string
+	CredentialFinalizeGrace       time.Duration
 }
 
 // EvidenceV1 is redacted startup evidence. It intentionally contains no
@@ -85,6 +88,8 @@ type Stack struct {
 	evidence                EvidenceV1
 	prepared                *codexexec.PreparedAttachedWorkerRunnerV1
 	nativePrepared          bool
+	nativeGeneration        *codexexec.NativePreparedConfigV3
+	generationBindAttempted bool
 	inlineOutputV2          bool
 	allowedEnvironmentNames []string
 	nativeOperatingSystem   string
@@ -181,7 +186,7 @@ func (stack *Stack) BindPreparedConnection(session *attachedworkersession.Sessio
 	}
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
-	if stack.closed || stack.connection != nil {
+	if stack.closed || stack.connection != nil || stack.nativeGeneration != nil {
 		return ErrReconciliationRequired
 	}
 	snapshot := session.Snapshot()
@@ -274,7 +279,7 @@ func newStack(
 	credentials ports.CredentialLifecycle,
 	deps dependencies,
 ) (*Stack, error) {
-	if config.PreparedCodexNative != nil || manifest.OCI.Boundary == attachedworkerlocal.BoundaryLinuxRootlessNativeV3 {
+	if config.PreparedCodexNative != nil || config.PreparedCodexNativeGeneration != nil || manifest.OCI.Boundary == attachedworkerlocal.BoundaryLinuxRootlessNativeV3 {
 		return nil, ErrInvalidConfiguration
 	}
 	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)

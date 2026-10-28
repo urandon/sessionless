@@ -431,7 +431,7 @@ func TestOwnerRereadsOriginalMetadataBeforeCachingACK(t *testing.T) {
 	assertNoNewWork(t, f, 1)
 }
 
-func TestOwnerActualReconnectReadsOnlyAndRetainsCurrentGeneration(t *testing.T) {
+func TestOwnerActualReconnectReadsOnlyThenPublishesOwnSuccessor(t *testing.T) {
 	f := newOwnerFixture(t, true)
 	peer := &metadataPeer{}
 	f.connect(t, peer.roundTrip)
@@ -456,10 +456,72 @@ func TestOwnerActualReconnectReadsOnlyAndRetainsCurrentGeneration(t *testing.T) 
 		t.Fatal("metadata-only reconnect fence", err)
 	}
 	f.writeback(t, 2, true)
-	if err := f.owner.SynchronizeV1(t.Context()); err == nil || len(peer.calls()) != before+1 {
-		t.Fatal("reconnect rotated/published/reread after its one point read")
+	if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+		t.Fatal("own successor after acknowledged reconnect was not published", err)
 	}
-	assertNoNewWork(t, f, 3)
+	calls = peer.calls()
+	if len(calls) != before+2 || calls[before+1].path != attachedworkerhttp.ResourceGenerationPublishPathV1 ||
+		calls[before+1].publication.ExpectedCredentialGeneration != 2 || calls[before+1].publication.Target.CredentialGeneration != 3 ||
+		calls[before+1].auth != calls[before].auth {
+		t.Fatal("own successor did not use one exact CAS on the recovered current connection")
+	}
+	if err := f.owner.CheckNewResourceV1(t.Context(), f.resource(3)); err != nil {
+		t.Fatal("acknowledged own successor not available to new input", err)
+	}
+	assertNoNewWork(t, f, 2)
+	if err := f.owner.SynchronizeV1(t.Context()); err != nil || len(peer.calls()) != before+2 {
+		t.Fatal("unchanged recovered successor republished/reread", err)
+	}
+}
+
+func TestOwnerReconnectSuccessorPreservesExpirySequenceAndUnknownFences(t *testing.T) {
+	for _, name := range []string{"expired baseline", "jump beyond successor", "lost successor ACK"} {
+		t.Run(name, func(t *testing.T) {
+			f := newOwnerFixture(t, true)
+			peer := &metadataPeer{}
+			f.connect(t, peer.roundTrip)
+			if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+				t.Fatal("initial ACK", err)
+			}
+			f.reconnect(t, peer.roundTrip)
+			if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+				t.Fatal("exact recovery read positive control", err)
+			}
+			if err := f.owner.CheckNewResourceV1(t.Context(), f.resource(1)); err != nil {
+				t.Fatal("recovered positive control", err)
+			}
+			f.writeback(t, 1, true)
+			wantCalls := 0
+			switch name {
+			case "expired baseline":
+				f.clock.Advance(31 * time.Minute)
+			case "jump beyond successor":
+				f.writeback(t, 2, true)
+			case "lost successor ACK":
+				peer.mu.Lock()
+				peer.losePublish, peer.readMissing = true, true
+				peer.mu.Unlock()
+				wantCalls = 2 // One CAS and one exact read within the SAME budget.
+			}
+			before := len(peer.calls())
+			if err := f.owner.SynchronizeV1(t.Context()); err == nil {
+				t.Fatal("denied/unknown recovered successor accepted")
+			}
+			calls := peer.calls()[before:]
+			if len(calls) != wantCalls {
+				t.Fatalf("metadata calls=%d want=%d", len(calls), wantCalls)
+			}
+			if wantCalls == 2 && (calls[0].path != attachedworkerhttp.ResourceGenerationPublishPathV1 ||
+				calls[1].path != attachedworkerhttp.ResourceGenerationReadPathV1 || calls[0].deadline != calls[1].deadline || calls[0].auth != calls[1].auth) {
+				t.Fatal("unknown successor escaped original publication/read budget or connection")
+			}
+			assertNoNewWork(t, f, 2)
+			assertNoNewWork(t, f, 3)
+			if err := f.owner.SynchronizeV1(t.Context()); err == nil || len(peer.calls()) != before+wantCalls {
+				t.Fatal("denied/unknown successor automatically retried", err)
+			}
+		})
+	}
 }
 
 func TestOwnerReconnectReadDoesNotRenewPositiveEligibility(t *testing.T) {

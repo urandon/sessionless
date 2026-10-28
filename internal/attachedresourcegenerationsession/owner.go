@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -316,6 +317,36 @@ func (v *OwnerV1) CheckNewResourceV1(ctx context.Context, resource domain.Provid
 	acknowledged := !v.closed && !v.retired && v.ack != nil && *v.ack == target
 	v.mu.Unlock()
 	if !acknowledged || v.check(ctx, c, true) != nil {
+		return ErrDenied
+	}
+	return nil
+}
+
+// CheckNewResourceForSessionV1 is only a concrete new-input consistency fence,
+// never an accepted-job, execution or terminal grant. Matching snapshots,
+// credential metadata or baseline digests cannot replace the original owners.
+// It neither synchronizes/publishes metadata nor issues credentials/reads secret bytes.
+func (v *OwnerV1) CheckNewResourceForSessionV1(ctx context.Context, actual *attachedworkersession.Session,
+	same *ownerlocalcredential.Lifecycle, installed domain.AttachedResourceGenerationBaselineV1,
+	resource domain.ProviderResourceBindingV1) error {
+	if v == nil || v.self != v || ctx == nil || ctx.Err() != nil || actual == nil || same == nil || installed.Validate() != nil {
+		return ErrDenied
+	}
+	v.mu.Lock()
+	matched := !v.closed && !v.retired && v.session == actual && v.lifecycle == same && reflect.DeepEqual(v.baseline, installed)
+	v.mu.Unlock()
+	if !matched {
+		return ErrDenied
+	}
+	// The existing check rereads the original lifecycle's metadata and exact
+	// current active ACK, with the original connection checked before AND after.
+	if err := v.CheckNewResourceV1(ctx, resource); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	matched = !v.closed && !v.retired && v.session == actual && v.lifecycle == same
+	v.mu.Unlock()
+	if !matched || ctx.Err() != nil {
 		return ErrDenied
 	}
 	return nil

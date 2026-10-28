@@ -5,10 +5,13 @@ package attachedresourcegenerationsession
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -723,5 +726,282 @@ func waitOwnerSignal(t *testing.T, ch <-chan struct{}, message string) {
 	case <-ch:
 	case <-time.After(5 * time.Second):
 		t.Fatal(message)
+	}
+}
+
+type concreteCheckEffectsV1 struct {
+	binding  domain.CredentialBinding
+	metadata [32]byte
+	scratch  []string
+	http     int
+}
+
+// Observe only the fixture's metadata file and scratch names, never its secret
+// body/key. Issue/Materialize/Release would change this original durable state
+// or scratch inventory; the check must only read existing in-memory metadata.
+func concreteCheckEffects(t *testing.T, f *ownerFixture, peer *metadataPeer) concreteCheckEffectsV1 {
+	t.Helper()
+	binding, found, err := f.lifecycle.LoadCredentialBinding(t.Context(), f.baseline.TenantID, f.baseline.SubscriptionConnectionID)
+	if err != nil || !found {
+		t.Fatal("cannot inspect original fixture metadata", err)
+	}
+	parent := filepath.Dir(f.manifest.Harness.Executable)
+	metadata := filepath.Join(parent, "credentials", "state.v1")
+	info, err := os.Stat(metadata)
+	if err != nil || info.Size() > 64<<10 {
+		t.Fatal("fixture metadata is absent or unbounded", err)
+	}
+	raw, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal("read synthetic fixture metadata", err)
+	}
+	result := concreteCheckEffectsV1{binding: binding, metadata: sha256.Sum256(raw), http: len(peer.calls())}
+	entries, err := os.ReadDir(filepath.Join(parent, "scratch"))
+	if err != nil || len(entries) > 64 {
+		t.Fatal("fixture scratch inventory is absent or unbounded", err)
+	}
+	for _, entry := range entries {
+		result.scratch = append(result.scratch, entry.Name())
+	}
+	return result
+}
+
+func requireConcreteCheckNoEffects(t *testing.T, f *ownerFixture, peer *metadataPeer, before concreteCheckEffectsV1) {
+	t.Helper()
+	if after := concreteCheckEffects(t, f, peer); !reflect.DeepEqual(before, after) {
+		t.Error("nongrant check changed HTTP count, credential metadata/state or scratch inventory")
+	}
+}
+
+func TestOwnerConcreteCheckSameSessionLifecycleBaselineAndSuccessor(t *testing.T) {
+	f := newOwnerFixture(t, true)
+	peer := &metadataPeer{}
+	f.connect(t, peer.roundTrip)
+	before := concreteCheckEffects(t, f, peer)
+	if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, f.baseline.Clone(), f.resource(1)); err != ErrDenied {
+		t.Errorf("original owners without ACK accepted: %v", err)
+	}
+	requireConcreteCheckNoEffects(t, f, peer, before)
+	if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for generation := uint64(1); generation <= 2; generation++ {
+		before := concreteCheckEffects(t, f, peer)
+		if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, f.baseline.Clone(), f.resource(generation)); err != nil {
+			t.Fatalf("same original owners/exact ACK generation=%d denied: %v", generation, err)
+		}
+		requireConcreteCheckNoEffects(t, f, peer, before)
+		if generation == 1 {
+			f.writeback(t, 1, true) // original lifecycle alone creates N+1
+			before = concreteCheckEffects(t, f, peer)
+			for _, stale := range []uint64{1, 2} {
+				if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, f.baseline, f.resource(stale)); err != ErrDenied {
+					t.Errorf("stale/unacknowledged generation=%d accepted: %v", stale, err)
+				}
+			}
+			requireConcreteCheckNoEffects(t, f, peer, before)
+			if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestOwnerConcreteCheckRejectsForeignGenuineOwnersAndInvalidCalls(t *testing.T) {
+	f := newOwnerFixture(t, true)
+	peer := &metadataPeer{}
+	f.connect(t, peer.roundTrip)
+	if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	foreign := newOwnerFixture(t, true)
+	otherPeer := &metadataPeer{}
+	foreign.connect(t, otherPeer.roundTrip)
+	if !reflect.DeepEqual(f.session.Snapshot(), foreign.session.Snapshot()) || f.session == foreign.session || f.lifecycle == foreign.lifecycle {
+		t.Fatal("causal fixture requires distinct genuine owners with identical Ready snapshots")
+	}
+	copiedLifecycle := *f.lifecycle // shares original internals, not its concrete owner pointer
+	for _, test := range []struct {
+		name      string
+		session   *attachedworkersession.Session
+		lifecycle *ownerlocalcredential.Lifecycle
+	}{
+		{name: "genuine matching-snapshot Session", session: foreign.session, lifecycle: f.lifecycle},
+		{name: "foreign concrete lifecycle", session: f.session, lifecycle: foreign.lifecycle},
+		{name: "copied lifecycle wrapper", session: f.session, lifecycle: &copiedLifecycle},
+		{name: "both foreign", session: foreign.session, lifecycle: foreign.lifecycle},
+		{name: "nil Session", lifecycle: f.lifecycle},
+		{name: "nil lifecycle", session: f.session},
+		{name: "unconstructed Session", session: &attachedworkersession.Session{}, lifecycle: f.lifecycle},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := concreteCheckEffects(t, f, peer)
+			if err := f.owner.CheckNewResourceForSessionV1(t.Context(), test.session, test.lifecycle, f.baseline, f.resource(1)); err != ErrDenied {
+				t.Errorf("%s replaced original concrete authority: %v", test.name, err)
+			}
+			requireConcreteCheckNoEffects(t, f, peer, before)
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	before := concreteCheckEffects(t, f, peer)
+	for _, invalid := range []context.Context{nil, ctx} {
+		if err := f.owner.CheckNewResourceForSessionV1(invalid, f.session, f.lifecycle, f.baseline, f.resource(1)); err != ErrDenied {
+			t.Errorf("invalid context produced a nongrant success: %v", err)
+		}
+	}
+	var absent *OwnerV1
+	if err := absent.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, f.baseline, f.resource(1)); err != ErrDenied {
+		t.Errorf("nil owner accepted: %v", err)
+	}
+	requireConcreteCheckNoEffects(t, f, peer, before)
+}
+
+func rebindConcreteCheckBaseline(t *testing.T, b *domain.AttachedResourceGenerationBaselineV1) {
+	t.Helper()
+	for _, scope := range []*domain.ProviderEvidenceScopeV1{&b.Evidence.Catalog.Scope, &b.Evidence.Route.Scope, &b.Evidence.Capability.Scope, &b.Evidence.Privacy.Scope, &b.Evidence.Price.Scope, &b.Evidence.Policy.Scope} {
+		*scope = domain.ProviderEvidenceScopeV1{TenantID: b.Binding.TenantID, OwnerUserID: b.Binding.OwnerUserID, Resource: b.Binding.Resource, Backend: b.Binding.Backend}
+	}
+	for _, item := range []struct {
+		digest func() (domain.ProviderEvidenceDigestV1, error)
+		fields []*string
+	}{
+		{b.Evidence.Catalog.Digest, []*string{&b.Binding.ProviderCatalogDigest}},
+		{b.Evidence.Route.Digest, []*string{&b.Binding.ProviderRouteDigest, &b.Evidence.Policy.RoutePolicyDigest}},
+		{b.Evidence.Capability.Digest, []*string{&b.Binding.CapabilityEvidenceDigest, &b.Evidence.Policy.CapabilityEvidenceDigest}},
+		{b.Evidence.Privacy.Digest, []*string{&b.Binding.PrivacyPolicyDigest, &b.Evidence.Policy.PrivacyEvidenceDigest}},
+		{b.Evidence.Price.Digest, []*string{&b.Evidence.Policy.PriceObservationDigest}},
+		{func() (domain.ProviderEvidenceDigestV1, error) { return b.Evidence.Policy.Digest() }, []*string{&b.Binding.EffectivePolicyDigest}},
+	} {
+		digest, err := item.digest()
+		if err != nil {
+			t.Fatal("test metadata rehash failed", err)
+		}
+		for _, field := range item.fields {
+			*field = string(digest)
+		}
+	}
+}
+
+func TestOwnerConcreteCheckRequiresExactCompleteImmutableBaseline(t *testing.T) {
+	f := newOwnerFixture(t, true)
+	peer := &metadataPeer{}
+	f.connect(t, peer.roundTrip)
+	if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*domain.AttachedResourceGenerationBaselineV1)
+	}{
+		{name: "body", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.Evidence.Catalog.CatalogRevision = "different-catalog"
+		}},
+		{name: "tenant", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.TenantID, b.Binding.TenantID = "foreign-tenant", "foreign-tenant"
+		}},
+		{name: "owner", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.OwnerUserID, b.Binding.OwnerUserID, b.Binding.Resource.OwnerUserID = "foreign-owner", "foreign-owner", "foreign-owner"
+		}},
+		{name: "resource", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.SubscriptionConnectionID, b.Binding.Resource.ResourceID = "foreign-resource", "foreign-resource"
+		}},
+		{name: "worker", change: func(b *domain.AttachedResourceGenerationBaselineV1) { b.WorkerID = "foreign-worker" }},
+		{name: "enrollment", change: func(b *domain.AttachedResourceGenerationBaselineV1) { b.EnrollmentGeneration++ }},
+		{name: "revision", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.BaselineRevision++
+			b.Binding.Resource.Revision++
+		}},
+		{name: "nil versus empty", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.Evidence.Route.Routes = []domain.ProviderRouteV1{}
+		}},
+		{name: "observation timestamp", change: func(b *domain.AttachedResourceGenerationBaselineV1) {
+			b.Evidence.Catalog.ObservedAt = b.Evidence.Catalog.ObservedAt.Add(time.Nanosecond)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installed := f.baseline.Clone()
+			test.change(&installed)
+			rebindConcreteCheckBaseline(t, &installed)
+			if err := installed.Validate(); err != nil || reflect.DeepEqual(installed, f.baseline) {
+				t.Fatalf("negative must be a different but VALID complete baseline: %v", err)
+			}
+			before := concreteCheckEffects(t, f, peer)
+			if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, installed, f.resource(1)); err != ErrDenied {
+				t.Errorf("rehash/structural validity replaced original complete %s baseline: %v", test.name, err)
+			}
+			requireConcreteCheckNoEffects(t, f, peer, before)
+		})
+	}
+	bad := f.baseline.Clone()
+	bad.Evidence.Catalog.CatalogRevision = strings.Repeat("x", domain.AttachedResourceGenerationBaselineMaxBytesV1+1)
+	before := concreteCheckEffects(t, f, peer)
+	if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, bad, f.resource(1)); err != ErrDenied {
+		t.Errorf("unbounded/invalid baseline accepted: %v", err)
+	}
+	bad = f.baseline.Clone()
+	bad.Evidence.Catalog.ObservedAt = bad.Evidence.Catalog.ObservedAt.In(time.FixedZone("same-instant-non-UTC", 0))
+	if err := bad.Validate(); err == nil {
+		t.Fatal("fixture must preserve existing UTC-only baseline time validation")
+	}
+	if err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, bad, f.resource(1)); err != ErrDenied {
+		t.Errorf("equal-instant noncanonical time bypassed installed baseline validation: %v", err)
+	}
+	requireConcreteCheckNoEffects(t, f, peer, before)
+}
+
+func TestOwnerConcreteCheckStillRequiresCurrentActiveACKAndConnection(t *testing.T) {
+	for _, name := range []string{"stale generation", "unacknowledged successor", "revoked", "baseline expiry", "Session close", "Owner close", "currentness changes after metadata"} {
+		t.Run(name, func(t *testing.T) {
+			f := newOwnerFixture(t, true)
+			peer := &metadataPeer{}
+			checking, checks := false, 0
+			if name == "currentness changes after metadata" {
+				f.config.Now = func() time.Time {
+					if checking {
+						checks++
+						if checks == 2 {
+							return *f.baseline.Binding.EvidenceExpiresAt
+						}
+					}
+					return f.clock.Now()
+				}
+			}
+			f.connect(t, peer.roundTrip)
+			if err := f.owner.SynchronizeV1(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			generation := uint64(1)
+			switch name {
+			case "stale generation", "unacknowledged successor":
+				f.writeback(t, 1, true)
+				if name == "unacknowledged successor" {
+					generation = 2
+				}
+			case "revoked":
+				f.revoke(t)
+			case "baseline expiry":
+				f.clock.Advance(30 * time.Minute)
+			case "Session close":
+				if err := f.session.Close(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			case "Owner close":
+				if err := f.owner.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := concreteCheckEffects(t, f, peer)
+			checking = true
+			err := f.owner.CheckNewResourceForSessionV1(t.Context(), f.session, f.lifecycle, f.baseline.Clone(), f.resource(generation))
+			checking = false
+			if err != ErrDenied {
+				t.Errorf("%s passed concrete check: %v", name, err)
+			}
+			if name == "currentness changes after metadata" && checks != 2 {
+				t.Errorf("expected original connection checks before AND after metadata, got %d", checks)
+			}
+			requireConcreteCheckNoEffects(t, f, peer, before)
+		})
 	}
 }

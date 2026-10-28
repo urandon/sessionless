@@ -538,10 +538,10 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerRoot := filepath.Join(t.TempDir(), "owner")
+	ownerRoot := joinedGenerationCredentialRoot(t)
 	credentialStore, err := ownerlocalcredential.New(ctx, ownerlocalcredential.Config{Root: ownerRoot, Scope: ownerlocalcredential.Scope{TenantID: tenant, OwnerUserID: owner, SubscriptionConnectionID: resource}, KeyEpoch: "synthetic-joined-only"}, bytes.Repeat([]byte{0x63}, 32))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("joined owner-local credential store constructor", err)
 	}
 	t.Cleanup(func() {
 		if err := credentialStore.Close(); err != nil {
@@ -549,11 +549,11 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 		}
 	})
 	if err := credentialStore.Initialize(ctx, ownerlocalcredential.Registration{Provider: "openai", AuthMode: "chatgpt", Entitlement: domain.EntitlementActive, At: at}, []byte(`{"synthetic_generation_joined":"original"}`)); err != nil {
-		t.Fatal(err)
+		t.Fatal("joined synthetic owner-local credential initialization", err)
 	}
 	lifecycle, err := ownerlocalcredential.NewLifecycle(credentialStore, credentiallifecycle.Config{ScratchRoot: settings.CredentialScratchRoot, Clock: installation, IDs: testkit.NewSequenceIDGenerator("joined-credential-"), MaxAuthBytes: 1024})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("joined concrete owner-local credential lifecycle", err)
 	}
 	t.Cleanup(func() {
 		if err := lifecycle.Close(); err != nil {

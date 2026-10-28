@@ -1544,9 +1544,10 @@
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
@@ -1591,9 +1592,10 @@
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
@@ -2209,16 +2211,18 @@
         "readers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
-            "internal/ydbstore/web_identity_operation_v2.go"
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go"
           ],
-          "total": 2
+          "total": 3
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
-            "internal/ydbstore/web_identity_operation_v2.go"
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go"
           ],
-          "total": 2
+          "total": 3
         }
       },
       "entityGroup": "identity-web",
@@ -3963,9 +3967,10 @@
             "internal/ydbstore/run_explanation.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 9
+          "total": 10
         },
         "writers": {
           "paths": [
@@ -4154,12 +4159,13 @@
             "internal/ydbstore/run_explanation.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
             "internal/ydbstore/web_search_consent_store.go"
           ],
-          "total": 8
+          "total": 9
         },
         "writers": {
           "paths": [

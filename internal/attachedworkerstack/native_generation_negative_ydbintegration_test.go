@@ -4,6 +4,7 @@ package attachedworkerstack_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -82,7 +83,7 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 			}
 			// This is the actual binder/ingress-created NEW outbox, not an
 			// authored placement/job or replay of the original admission.
-			outbox := f.canonicalOutbox(2)
+			outbox := f.canonicalOutbox(2, "generation-2")
 			if outbox.RunID == first.Job.RunID || outbox.AttemptID == first.Job.AttemptID {
 				t.Fatal("negative reused the original job")
 			}
@@ -136,6 +137,182 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 			t.Fatalf("original daemon stopped before accepted custody completed: %v", runErr)
 		case <-ctx.Done():
 			t.Fatal("withdrawn generation custody deadline", ctx.Err())
+		}
+	}
+}
+
+// A canonical outbox is immutable intent, not a pinned exemption from the
+// current generation check in actual allocating admission. Advance the head
+// through the original worker's real writeback, not an authored DB mutation.
+func TestAttachedResourceGenerationYDBJoinedQueuedStaleOutboxDenied(t *testing.T) {
+	f := newJoinedGenerationScenario(t)
+	baseline := f.baseline.Clone()
+	first := f.ingest(1)
+	queued := f.canonicalOutbox(1, "queued-stale-generation-1")
+	if queued.RunID == first.Job.RunID || queued.AttemptID == first.Job.AttemptID || queued.Status != domain.DispatchPending {
+		t.Fatal("distinct pending canonical N1 intent required")
+	}
+	readQueued := func() (domain.Run, domain.Attempt, domain.DispatchOutbox) {
+		t.Helper()
+		var run domain.Run
+		var attempt domain.Attempt
+		if err := f.store.Transact(f.ctx, f.worker.TenantID, func(state ports.StateTx) error {
+			var found bool
+			var err error
+			run, found, err = state.GetRun(f.ctx, queued.RunID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("queued canonical run missing")
+			}
+			attempt, found, err = state.GetAttempt(f.ctx, queued.AttemptID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("queued canonical attempt missing")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var raw string
+		if err := f.db.QueryRowContext(f.ctx, `SELECT payload FROM dispatch_outbox WHERE tenant_id=$1 AND dispatch_outbox_id=$2`, f.worker.TenantID, queued.ID).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var outbox domain.DispatchOutbox
+		if err := json.Unmarshal([]byte(raw), &outbox); err != nil {
+			t.Fatal(err)
+		}
+		return run, attempt, outbox
+	}
+	assertUnallocated := func() {
+		t.Helper()
+		for _, query := range []string{
+			`SELECT COUNT(*) FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`,
+			`SELECT COUNT(*) FROM leases WHERE tenant_id=$1 AND run_id=$2`,
+			`SELECT COUNT(*) FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`,
+		} {
+			var count uint64
+			if err := f.db.QueryRowContext(f.ctx, query, f.worker.TenantID, queued.RunID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("queued intent allocated: count=%d err=%v", count, err)
+			}
+		}
+		for _, query := range []string{
+			`SELECT COUNT(*) FROM attached_worker_attempt_heads WHERE tenant_id=$1 AND attempt_id=$2`,
+			`SELECT COUNT(*) FROM attached_worker_attempt_messages WHERE tenant_id=$1 AND attempt_id=$2`,
+			`SELECT COUNT(*) FROM attached_worker_attempt_deadlines_v1 WHERE tenant_id=$1 AND attempt_id=$2`,
+		} {
+			var count uint64
+			if err := f.db.QueryRowContext(f.ctx, query, f.worker.TenantID, queued.AttemptID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("queued intent offered: count=%d err=%v", count, err)
+			}
+		}
+		var count uint64
+		if err := f.db.QueryRowContext(f.ctx, `SELECT COUNT(*) FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2`, f.worker.TenantID, "joined-reservation-2").Scan(&count); err != nil || count != 0 {
+			t.Fatalf("queued intent reserved quota: count=%d err=%v", count, err)
+		}
+	}
+	beforeRun, beforeAttempt, beforeOutbox := readQueued()
+	if beforeRun.Status != domain.RunCreated || !reflect.DeepEqual(beforeOutbox, queued) {
+		t.Fatal("queued intent was not original pending DATA")
+	}
+	assertUnallocated()
+	head, found, err := f.store.LoadAttachedResourceGenerationHeadV1(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
+	if err != nil || !found || head.CredentialGeneration != 1 || head.Revoked {
+		t.Fatalf("queued intent did not originate under active N1: found=%t err=%v", found, err)
+	}
+	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, f.adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+	done := make(chan struct{})
+	var runErr error
+	go func() { defer close(done); runErr = daemon.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				t.Errorf("original stale-queue daemon: %v", runErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("original stale-queue daemon did not stop")
+		}
+	})
+	for {
+		select {
+		case status := <-daemon.Updates():
+			if status.Failed != 0 {
+				t.Fatalf("original N failed: %s", status.LastFailureCode)
+			}
+			if status.Committed != 1 {
+				continue
+			}
+			f.waitRetired(first, done)
+			f.assertCanonicalResult(first, 1, 1)
+			drainCtx, drainCancel := context.WithTimeout(f.ctx, 5*time.Second)
+			drainErr := daemon.Drain(drainCtx)
+			drainCancel()
+			if drainErr != nil {
+				t.Fatal(drainErr)
+			}
+			if err := f.stack.SynchronizePreparedGenerationV3(f.ctx, f.session); err != nil {
+				t.Fatal("actual successor ACK", err)
+			}
+			head, found, err := f.store.LoadAttachedResourceGenerationHeadV1(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
+			if err != nil || !found || head.CredentialGeneration != 2 || head.Revoked {
+				t.Fatalf("active acknowledged N2 required: found=%t err=%v", found, err)
+			}
+			if err := queued.HarnessBinding.ValidateAt(f.installation.Now()); err != nil {
+				t.Fatal("expired queued binding cannot qualify stale denial", err)
+			}
+			if err := queued.HarnessBinding.ValidateForScope(f.worker.TenantID, f.worker.OwnerUserID, queued.RunID, queued.AttemptID, queued.ExecutionPlacementV2); err != nil {
+				t.Fatal(err)
+			}
+			retiredBefore, found, err := f.store.LoadAttachedWorkerAttempt(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.worker.ID)
+			if err != nil || !found || retiredBefore.State != domain.AttachedWorkerAttemptRetired {
+				t.Fatalf("original retired head required: found=%t err=%v", found, err)
+			}
+			seen := f.wire.committedSnapshot()
+			// Generation remains N1; 2 is only the fresh reservation ordinal.
+			admitted, err := f.admitOutbox(f.store, queued, 2)
+			if !errors.Is(err, domain.ErrMembershipDenied) || admitted.Admitted {
+				t.Fatalf("stale canonical intent was not denied: admitted=%t err=%v", admitted.Admitted, err)
+			}
+			assertUnallocated()
+			afterRun, afterAttempt, afterOutbox := readQueued()
+			if !reflect.DeepEqual(beforeRun, afterRun) || !reflect.DeepEqual(beforeAttempt, afterAttempt) || !reflect.DeepEqual(beforeOutbox, afterOutbox) {
+				t.Fatal("denial rewrote canonical queued intent")
+			}
+			retiredAfter, found, err := f.store.LoadAttachedWorkerAttempt(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.worker.ID)
+			if err != nil || !found || !reflect.DeepEqual(retiredBefore, retiredAfter) {
+				t.Fatalf("denied intent changed original retired head: found=%t err=%v", found, err)
+			}
+			headAfter, found, err := f.store.LoadAttachedResourceGenerationHeadV1(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
+			if err != nil || !found || !reflect.DeepEqual(head, headAfter) {
+				t.Fatalf("denied intent changed acknowledged successor: found=%t err=%v", found, err)
+			}
+			metadata, err := joinedGenerationReadResourceMetadata(f.ctx, f.db, f.worker.TenantID, f.resource)
+			if err != nil || metadata != f.metadataBefore {
+				t.Fatalf("stale denial changed independent observations: %v", err)
+			}
+			local, found, err := f.credentialStore.LoadCredentialBinding(f.ctx, f.worker.TenantID, f.resource)
+			if err != nil || !found || local.Generation != 2 {
+				t.Fatalf("own successor changed: found=%t err=%v", found, err)
+			}
+			f.assertCanonicalResult(first, 1, 1)
+			if !reflect.DeepEqual(seen, f.wire.committedSnapshot()) || !reflect.DeepEqual(baseline, f.baseline) || f.installation.LaunchCount() != 1 {
+				t.Fatal("stale intent repeated original effects or changed commitments")
+			}
+			return
+		case <-done:
+			t.Fatalf("original daemon stopped before retired custody: %v", runErr)
+		case <-ctx.Done():
+			t.Fatal("stale queued intent deadline", ctx.Err())
 		}
 	}
 }

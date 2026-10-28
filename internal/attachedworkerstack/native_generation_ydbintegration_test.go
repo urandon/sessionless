@@ -672,7 +672,7 @@ func joinedGenerationBaseline(t *testing.T, worker domain.AttachedWorker, resour
 	return baseline
 }
 
-func (f *joinedGenerationScenario) canonicalOutbox(generation uint64) domain.DispatchOutbox {
+func (f *joinedGenerationScenario) canonicalOutbox(generation uint64, externalEventID string) domain.DispatchOutbox {
 	f.t.Helper()
 	if err := f.wire.sample(f.ctx); err != nil {
 		f.t.Fatal(err)
@@ -684,7 +684,7 @@ func (f *joinedGenerationScenario) canonicalOutbox(generation uint64) domain.Dis
 	if err := jpeg.Encode(&jpegBody, image.NewRGBA(image.Rect(0, 0, 1, 1)), &jpeg.Options{Quality: 80}); err != nil {
 		f.t.Fatal(err)
 	}
-	result, err := f.ingress.Ingest(f.ctx, sessioningress.UserInput{Actor: sessioningress.Actor{TenantID: f.worker.TenantID, UserID: f.worker.OwnerUserID, Frontend: domain.FrontendWeb, ExternalConversationID: "joined-owned-conversation"}, ExternalEventID: fmt.Sprintf("generation-%d", generation), ReceivedAt: f.installation.Now(), Text: "Return the two original requested files", Attachments: []sessioningress.Attachment{
+	result, err := f.ingress.Ingest(f.ctx, sessioningress.UserInput{Actor: sessioningress.Actor{TenantID: f.worker.TenantID, UserID: f.worker.OwnerUserID, Frontend: domain.FrontendWeb, ExternalConversationID: "joined-owned-conversation"}, ExternalEventID: externalEventID, ReceivedAt: f.installation.Now(), Text: "Return the two original requested files", Attachments: []sessioningress.Attachment{
 		{Name: "request.txt", MediaType: "text/plain", Body: strings.NewReader("original bounded request")},
 		{Name: "request.json", MediaType: "application/json", Body: strings.NewReader(` { "n": 9007199254740993123456789 } `)},
 		{Name: "request.png", MediaType: "image/png", Body: bytes.NewReader(pngBody.Bytes())},
@@ -708,18 +708,18 @@ func (f *joinedGenerationScenario) canonicalOutbox(generation uint64) domain.Dis
 	return outbox
 }
 
-func (f *joinedGenerationScenario) admitOutbox(store *ydbstore.Store, outbox domain.DispatchOutbox, generation uint64) (ports.DispatchAdmissionResult, error) {
+func (f *joinedGenerationScenario) admitOutbox(store *ydbstore.Store, outbox domain.DispatchOutbox, reservationOrdinal uint64) (ports.DispatchAdmissionResult, error) {
 	f.t.Helper()
 	if err := f.wire.sample(f.ctx); err != nil {
 		f.t.Fatal(err)
 	}
 	at := f.installation.Now()
-	return store.AdmitDispatch(f.ctx, ports.DispatchAdmissionRequest{TenantID: f.worker.TenantID, OutboxID: outbox.ID, RunID: outbox.RunID, AttemptID: outbox.AttemptID, ReservationID: domain.QuotaReservationID(fmt.Sprintf("joined-reservation-%d", generation)), Now: at, HoldUntil: at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 16, MaxActiveRuns: 2, MaxRuntime: 30 * time.Second, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 16, MaxArtifacts: 16, MaxToolEvents: 1, MaxToolEventBytes: 1024}, Workload: domain.WorkloadShape{Runtime: 30 * time.Second, Turns: 1, InputBytes: 4096, ContextBytes: 4096, Artifacts: 5}})
+	return store.AdmitDispatch(f.ctx, ports.DispatchAdmissionRequest{TenantID: f.worker.TenantID, OutboxID: outbox.ID, RunID: outbox.RunID, AttemptID: outbox.AttemptID, ReservationID: domain.QuotaReservationID(fmt.Sprintf("joined-reservation-%d", reservationOrdinal)), Now: at, HoldUntil: at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 16, MaxActiveRuns: 2, MaxRuntime: 30 * time.Second, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 16, MaxArtifacts: 16, MaxToolEvents: 1, MaxToolEventBytes: 1024}, Workload: domain.WorkloadShape{Runtime: 30 * time.Second, Turns: 1, InputBytes: 4096, ContextBytes: 4096, Artifacts: 5}})
 }
 
 func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobState {
 	f.t.Helper()
-	outbox := f.canonicalOutbox(generation)
+	outbox := f.canonicalOutbox(generation, fmt.Sprintf("generation-%d", generation))
 	admitted, err := f.admitOutbox(f.store, outbox, generation)
 	if err != nil || !admitted.Admitted || admitted.Delivery != ports.DispatchDeliveryAttachedOffer {
 		f.t.Fatalf("actual same-Tx admission generation%d: admitted=%t code=%s err=%v", generation, admitted.Admitted, admitted.Code, err)

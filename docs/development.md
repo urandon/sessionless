@@ -210,6 +210,28 @@ finalizer, journal, exact terminal ACK or retirement. Failed N+1 synchronization
 fences new work, not retained result ownership. No additional lifecycle, ACK
 table, timer, provider retry or credential store is introduced.
 
+The existing `attached-resource-generation-ydb-gate` runs two sequential checks:
+the original generation SQL/CAS and uint64 suite, then the explicitly selected
+`ydbintegration`-tagged Stack joined test. The latter is not selected by the
+general `./test/ydbintegration/...` package pattern. Both require the existing
+disposable GitHub CI database; the joined test checks the CI/disposable/loopback
+and true-data-transaction guards before opening any dependency. Do not run it
+against a developer's local or shared database or use scripting/fake transactions.
+
+The joined fixture uses a closed installation-only test export, the original
+Connector/Session, normal native sealed source, canonical ingress and allocating
+Store transaction, original Stack/Supervisor/concrete credential lifecycle, and
+real inline receipt/terminal storage. Only its fixed shell workload, object-body
+peer and in-process HTTP wire are synthetic. Losing a response happens after
+the actual handler has committed publication or READY; reconciliation must not
+repeat that mutation/body. Local completion is not durable retirement: the next
+original poll must convey its ACK and retire the exact server attempt before a
+successor is admitted or the daemon is drained. Text, JSON, PNG and JPEG inputs,
+typed output bytes and original-N custody are checked independently of counters.
+A local tagged compile/skip is not a successful YDB run. A successful disposable
+run qualifies this source composition only, not physical HTTP-stream deadlines,
+real-engine isolation, native media/model behavior, OAuth or a WebUI/cloud demo.
+
 Owned synthetic-process/transport tests qualify source composition only.
 Joined durable receipt proof, platform/profile qualification, real credentials
 and a useful WebUI turn remain separate gates; no engine, native workload,

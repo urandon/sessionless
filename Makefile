@@ -387,6 +387,9 @@ attached-resource-generation-ydb-gate: prepare
 	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \
 		go test -race -count=3 -shuffle=on -timeout=5m \
 		-run '^TestAttachedResourceGenerationYDB' ./internal/ydbstore
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \
+		go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
+		-run '^TestAttachedResourceGenerationYDBJoined' ./internal/attachedworkerstack
 
 admission-cost-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \

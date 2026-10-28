@@ -659,6 +659,21 @@ private row helpers are groundwork only: they do not install a serving V2
 reader, expose linking routes, migrate existing records or change the current
 single-provider configuration. Do not write V2 rows into a serving V1 deployment.
 
+Ordinary V2 identity resolution and Web-session create/authorize/tenant-switch/
+logout source is exercised through the existing store ports under a private
+test installation. There is deliberately no public option, environment setting
+or command that installs this partial serving mode. Unsupported V1 challenge,
+enrollment, bootstrap and Telegram writers fail closed in that mode; they are
+not implemented V2 flows. All direct/transitive protected consumers and the
+bounded retained-data cutover remain required before installation is exposed.
+The ordinary resolver receives a fresh server-generated candidate UserID,
+never a browser-selected existing user; it checks both reverse-identity and
+membership prefixes in its owning transaction before initializing revision 1.
+These bounded checks do not prove global user nonexistence under arbitrary
+orphan/corrupt rows. The mandatory cutover inventory must establish canonical/
+reverse correspondence and retain ownership tombstones; inconsistencies are
+maintenance failures, not an automatic login repair or account-link grant.
+
 `make web-identity-v2-ydb-gate` is restricted to the existing disposable GitHub
 CI database, with real data transactions and no `go_fake_tx`. It checks actual
 JsonDocument decimal-string revision roundtrips at 2^53−1, 2^53, 2^53+1 and

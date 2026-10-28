@@ -156,6 +156,29 @@ type joinedGenerationWire struct {
 	reconciles   []attachedworkeroutput.AttachedWorkerInlineReconcileV2
 	lostMetadata uint64
 	traffic      chan struct{}
+	fault        joinedGenerationFault
+	gateRemoved  bool
+	gateInline   http.Handler
+	gateCalls    uint64
+}
+
+// A closed peer selector, never a production flag or supplied callback. The
+// replacement handler is preconstructed from the SAME core/DB/body peer.
+type joinedGenerationFault uint8
+
+const (
+	joinedGenerationNoFault joinedGenerationFault = iota
+	joinedGenerationRemoveGateAfterAcceptedInput
+)
+
+func (w *joinedGenerationWire) removeGateAfterAcceptedInput() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.fault != joinedGenerationNoFault || w.gateRemoved || len(w.sealed) != 0 || len(w.prepares) != 0 || w.gateInline == nil {
+		return errors.New("joined gate fault cannot be armed")
+	}
+	w.fault = joinedGenerationRemoveGateAfterAcceptedInput
+	return nil
 }
 
 func (w *joinedGenerationWire) sample(ctx context.Context) error {
@@ -202,7 +225,15 @@ func (w *joinedGenerationWire) RoundTrip(r *http.Request) (*http.Response, error
 	}
 	w.paths = append(w.paths, r.URL.Path)
 	response := &joinedGenerationWriter{ResponseRecorder: httptest.NewRecorder(), ctx: r.Context()}
-	w.handler.ServeHTTP(response, copy)
+	handler := w.handler
+	if w.gateRemoved && (r.URL.Path == attachedworkerreceipt.PathInlinePrepareV2 || r.URL.Path == attachedworkerreceipt.PathInlineBodyV2 || r.URL.Path == attachedworkerreceipt.PathInlineReconcileV2) {
+		if w.gateInline == nil {
+			return nil, errors.New("withdrawn gate has no actual inline handler")
+		}
+		handler = w.gateInline
+		w.gateCalls++
+	}
+	handler.ServeHTTP(response, copy)
 	if r.Body != nil {
 		_ = r.Body.Close()
 	}
@@ -243,6 +274,12 @@ func (w *joinedGenerationWire) RoundTrip(r *http.Request) (*http.Response, error
 				return nil, err
 			}
 			w.sealed = append(w.sealed, input)
+			if w.fault == joinedGenerationRemoveGateAfterAcceptedInput {
+				if len(w.sealed) != 1 || input.AcceptedAttempt.RunID != input.Job.RunID || input.AcceptedAttempt.AttemptID != input.Job.AttemptID || input.AcceptedAttempt.State != domain.AttachedWorkerAttemptClaimed || input.Credential == nil {
+					return nil, errors.New("gate cutover preceded genuine accepted input")
+				}
+				w.gateRemoved = true
+			}
 		case attachedworkerhttp.ExchangePathV1:
 			var batch attachedworkerprotocol.BatchV1
 			if err := json.Unmarshal(response.Body.Bytes(), &batch); err != nil {
@@ -288,12 +325,14 @@ type joinedGenerationObservation struct {
 	bodies                   []attachedworkeroutput.AttachedWorkerInlineBodyV2
 	reconciles               []attachedworkeroutput.AttachedWorkerInlineReconcileV2
 	paths                    []string
+	gateRemoved              bool
+	gateCalls                uint64
 }
 
 func (w *joinedGenerationWire) committedSnapshot() joinedGenerationObservation {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return joinedGenerationObservation{lostBodies: w.lostBodies, lostMetadata: w.lostMetadata, inputs: append([]transport.SealedInputV1(nil), w.sealed...), ready: append([]attachedworkeroutput.AttachedWorkerInlineResultV2(nil), w.ready...), acks: append([]attachedworkerprotocol.TerminalAckV1(nil), w.acks...), prepares: append([]attachedworkeroutput.AttachedWorkerInlinePrepareV2(nil), w.prepares...), bodies: append([]attachedworkeroutput.AttachedWorkerInlineBodyV2(nil), w.bodies...), reconciles: append([]attachedworkeroutput.AttachedWorkerInlineReconcileV2(nil), w.reconciles...), paths: append([]string(nil), w.paths...)}
+	return joinedGenerationObservation{lostBodies: w.lostBodies, lostMetadata: w.lostMetadata, inputs: append([]transport.SealedInputV1(nil), w.sealed...), ready: append([]attachedworkeroutput.AttachedWorkerInlineResultV2(nil), w.ready...), acks: append([]attachedworkerprotocol.TerminalAckV1(nil), w.acks...), prepares: append([]attachedworkeroutput.AttachedWorkerInlinePrepareV2(nil), w.prepares...), bodies: append([]attachedworkeroutput.AttachedWorkerInlineBodyV2(nil), w.bodies...), reconciles: append([]attachedworkeroutput.AttachedWorkerInlineReconcileV2(nil), w.reconciles...), paths: append([]string(nil), w.paths...), gateRemoved: w.gateRemoved, gateCalls: w.gateCalls}
 }
 
 // The factory only constructs the original public exchange client from the
@@ -305,23 +344,24 @@ func (f joinedGenerationExchange) Open(_ attachedworkersession.ConnectionBinding
 }
 
 type joinedGenerationScenario struct {
-	t               *testing.T
-	ctx             context.Context
-	db              *sql.DB
-	store           *ydbstore.Store
-	worker          domain.AttachedWorker
-	resource        domain.SubscriptionConnectionID
-	baseline        domain.AttachedResourceGenerationBaselineV1
-	installation    *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
-	wire            *joinedGenerationWire
-	session         *attachedworkersession.Session
-	stack           *attachedworkerstack.Stack
-	adapter         *transport.Adapter
-	localRoot       string
-	ingress         *sessioningress.Service
-	blobs           *joinedGenerationBlobs
-	credentialStore *ownerlocalcredential.Store
-	metadataBefore  joinedGenerationResourceMetadata
+	t                *testing.T
+	ctx              context.Context
+	db               *sql.DB
+	store            *ydbstore.Store
+	worker           domain.AttachedWorker
+	resource         domain.SubscriptionConnectionID
+	baseline         domain.AttachedResourceGenerationBaselineV1
+	installation     *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
+	wire             *joinedGenerationWire
+	session          *attachedworkersession.Session
+	stack            *attachedworkerstack.Stack
+	adapter          *transport.Adapter
+	localRoot        string
+	ingress          *sessioningress.Service
+	blobs            *joinedGenerationBlobs
+	credentialStore  *ownerlocalcredential.Store
+	metadataBefore   joinedGenerationResourceMetadata
+	gateRemovedStore *ydbstore.Store
 }
 
 type joinedGenerationResourceMetadata struct {
@@ -472,6 +512,14 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gateRemovedStore, err := ydbstore.New(client.DB, ydbstore.Options{})
+	if err != nil || gateRemovedStore.AttachedResourceGenerationEnabledV1() {
+		t.Fatalf("withdrawn gate construction: %v", err)
+	}
+	gateRemovedInline, err := attachedworkerreceipt.NewInlineServiceV2(core, gateRemovedStore, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
@@ -484,7 +532,7 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 	for _, path := range []string{attachedworkerreceipt.PathInlinePrepareV2, attachedworkerreceipt.PathInlineBodyV2, attachedworkerreceipt.PathInlineReconcileV2} {
 		mux.Handle(path, attachedworkerreceipt.HandlerInlineV2(inline))
 	}
-	wire := &joinedGenerationWire{handler: mux, db: client.DB, installation: installation, traffic: make(chan struct{}, 1)}
+	wire := &joinedGenerationWire{handler: mux, db: client.DB, installation: installation, traffic: make(chan struct{}, 1), gateInline: attachedworkerreceipt.HandlerInlineV2(gateRemovedInline)}
 	httpClient := &http.Client{Transport: wire}
 	source, err := attachedworkersealedinput.NewInlineSessionSourceFactoryV2("https://generation-joined.invalid", httpClient, joinedGenerationExchange{client: httpClient})
 	if err != nil {
@@ -575,7 +623,7 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 	if err != nil || metadataAfter != metadataBefore {
 		t.Fatalf("initial publication changed independent operational observation: %v", err)
 	}
-	return &joinedGenerationScenario{t: t, ctx: ctx, db: client.DB, store: store, worker: worker, resource: resource, baseline: baseline, installation: installation, wire: wire, session: session, stack: stack, adapter: adapter, localRoot: localRoot, ingress: ingress, blobs: blobs, credentialStore: credentialStore, metadataBefore: metadataBefore}
+	return &joinedGenerationScenario{t: t, ctx: ctx, db: client.DB, store: store, worker: worker, resource: resource, baseline: baseline, installation: installation, wire: wire, session: session, stack: stack, adapter: adapter, localRoot: localRoot, ingress: ingress, blobs: blobs, credentialStore: credentialStore, metadataBefore: metadataBefore, gateRemovedStore: gateRemovedStore}
 }
 
 func joinedGenerationBaseline(t *testing.T, worker domain.AttachedWorker, resource domain.SubscriptionConnectionID, capability attachedworkerprotocol.CapabilityManifestV1, profile codexexec.NativeProfileV3, at time.Time) domain.AttachedResourceGenerationBaselineV1 {
@@ -624,7 +672,7 @@ func joinedGenerationBaseline(t *testing.T, worker domain.AttachedWorker, resour
 	return baseline
 }
 
-func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobState {
+func (f *joinedGenerationScenario) canonicalOutbox(generation uint64) domain.DispatchOutbox {
 	f.t.Helper()
 	if err := f.wire.sample(f.ctx); err != nil {
 		f.t.Fatal(err)
@@ -657,15 +705,26 @@ func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobStat
 	if staticErr != nil || outbox.HarnessBinding.Resource.CredentialGeneration != generation || outbox.HarnessBinding.EffectivePolicyDigest == string(static) {
 		f.t.Fatal("canonical binder substituted generation or static policy")
 	}
+	return outbox
+}
+
+func (f *joinedGenerationScenario) admitOutbox(store *ydbstore.Store, outbox domain.DispatchOutbox, generation uint64) (ports.DispatchAdmissionResult, error) {
+	f.t.Helper()
 	if err := f.wire.sample(f.ctx); err != nil {
 		f.t.Fatal(err)
 	}
 	at := f.installation.Now()
-	admitted, err := f.store.AdmitDispatch(f.ctx, ports.DispatchAdmissionRequest{TenantID: f.worker.TenantID, OutboxID: outbox.ID, RunID: outbox.RunID, AttemptID: outbox.AttemptID, ReservationID: domain.QuotaReservationID(fmt.Sprintf("joined-reservation-%d", generation)), Now: at, HoldUntil: at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 16, MaxActiveRuns: 2, MaxRuntime: 30 * time.Second, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 16, MaxArtifacts: 16, MaxToolEvents: 1, MaxToolEventBytes: 1024}, Workload: domain.WorkloadShape{Runtime: 30 * time.Second, Turns: 1, InputBytes: 4096, ContextBytes: 4096, Artifacts: 5}})
+	return store.AdmitDispatch(f.ctx, ports.DispatchAdmissionRequest{TenantID: f.worker.TenantID, OutboxID: outbox.ID, RunID: outbox.RunID, AttemptID: outbox.AttemptID, ReservationID: domain.QuotaReservationID(fmt.Sprintf("joined-reservation-%d", generation)), Now: at, HoldUntil: at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 16, MaxActiveRuns: 2, MaxRuntime: 30 * time.Second, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 16, MaxArtifacts: 16, MaxToolEvents: 1, MaxToolEventBytes: 1024}, Workload: domain.WorkloadShape{Runtime: 30 * time.Second, Turns: 1, InputBytes: 4096, ContextBytes: 4096, Artifacts: 5}})
+}
+
+func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobState {
+	f.t.Helper()
+	outbox := f.canonicalOutbox(generation)
+	admitted, err := f.admitOutbox(f.store, outbox, generation)
 	if err != nil || !admitted.Admitted || admitted.Delivery != ports.DispatchDeliveryAttachedOffer {
 		f.t.Fatalf("actual same-Tx admission generation%d: admitted=%t code=%s err=%v", generation, admitted.Admitted, admitted.Code, err)
 	}
-	loaded, found, err := f.store.LoadWorkerJob(f.ctx, f.worker.TenantID, result.RunID)
+	loaded, found, err := f.store.LoadWorkerJob(f.ctx, f.worker.TenantID, outbox.RunID)
 	if err != nil || !found {
 		f.t.Fatalf("actual generated job found=%t err=%v", found, err)
 	}

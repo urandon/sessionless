@@ -55,6 +55,9 @@ type Options struct {
 }
 
 type Store struct {
+	// Private until the complete V2 writer/consumer cutover is implemented.
+	// No public option or serving configuration can activate a partial rollout.
+	webIdentityV2                      *identityConfigurationV2
 	sessionDeletionBlobReader          SessionDeletionBlobReader
 	localBootstrap                     *LocalOwnedStoreBootstrapV1
 	db                                 *sql.DB

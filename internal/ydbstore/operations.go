@@ -374,6 +374,11 @@ func (store *Store) EnsureTelegramIdentity(
 	ctx context.Context,
 	request ports.TelegramIdentityRequest,
 ) (result ports.TelegramIdentityState, err error) {
+	if store.webIdentityV2 != nil {
+		// The V1 ingress writer must not create actors/history or downgrade a
+		// canonical V2 mapping. V2 ingress integration precedes activation.
+		return result, domain.ErrMembershipDenied
+	}
 	if err := validateTelegramIdentity(request); err != nil {
 		return result, err
 	}

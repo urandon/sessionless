@@ -1165,9 +1165,10 @@
             "internal/ydbstore/scheduler.go",
             "internal/ydbstore/session_lifecycle.go",
             "internal/ydbstore/web_auth.go",
-            "internal/ydbstore/web_identity_operation_v2.go"
+            "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "audit-evidence",
@@ -1545,18 +1546,21 @@
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
-            "internal/ydbstore/web_identity_rows_v2.go"
+            "internal/ydbstore/web_identity_resolver_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 5
+          "total": 7
         },
         "writers": {
           "paths": [
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "canonical-operational",
@@ -1593,18 +1597,21 @@
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
-            "internal/ydbstore/web_identity_rows_v2.go"
+            "internal/ydbstore/web_identity_resolver_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 5
+          "total": 7
         },
         "writers": {
           "paths": [
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "access-projection",
@@ -3968,9 +3975,11 @@
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
-            "internal/ydbstore/web_identity_rows_v2.go"
+            "internal/ydbstore/web_identity_resolver_v2.go",
+            "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 10
+          "total": 12
         },
         "writers": {
           "paths": [
@@ -4163,17 +4172,19 @@
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
-            "internal/ydbstore/web_search_consent_store.go"
+            "internal/ydbstore/web_search_consent_store.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 9
+          "total": 10
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
-            "internal/ydbstore/web_identity_rows_v2.go"
+            "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 3
+          "total": 4
         }
       },
       "entityGroup": "identity-web",

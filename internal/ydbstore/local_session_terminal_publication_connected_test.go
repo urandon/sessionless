@@ -171,6 +171,8 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 					kinds, sizes, failure := append([]string(nil), peer.kinds...), append([]int(nil), peer.sizes...), peer.failure
 					peer.mu.Unlock()
 					w, c, r := seed.TerminalPublicationCounts()
+					t.Logf("original step%d err=%v attempted=%t", i, err, result.Model.SendAttempted)
+					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original step%d err=%v attempted=%t compaction=%t stats=%+v kinds=%v sizes=%v publication=%d/%d/%d peer=%s", i, err, result.Model.SendAttempted, result.Compaction != nil, seed.Stats(), kinds, sizes, w, c, r, failure)
 				}
 			}

@@ -38,6 +38,8 @@ func TestLocalSessionTerminalOutputConnected(t *testing.T) {
 						}
 					}
 					blobs.mu.Unlock()
+					t.Logf("original step%d err=%v attempted=%t", i, err, result.Model.SendAttempted)
+					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed))
 					t.Fatalf("original step%d err=%v attempted=%t compaction=%t stats=%+v kinds=%v sizes=%v objects=%d retained=%d peer=%s", i, err, result.Model.SendAttempted, result.Compaction != nil, seed.Stats(), kinds, sizes, objects, retained, failure)
 				}
 			}

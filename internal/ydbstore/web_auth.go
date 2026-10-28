@@ -51,6 +51,11 @@ func (store *Store) RecordWebSecurityEvent(ctx context.Context, event domain.Web
 }
 
 func (store *Store) CreateLoginChallenge(ctx context.Context, challenge domain.OIDCLoginChallenge) error {
+	if store.webIdentityV2 != nil {
+		// Purpose-tagged V2 login persistence must replace this writer before
+		// serving V2 can be installed. Never create a mixed V1 challenge.
+		return domain.ErrMembershipDenied
+	}
 	if err := challenge.Validate(); err != nil {
 		return err
 	}
@@ -83,6 +88,9 @@ func (store *Store) ConsumeLoginChallenge(
 	browserBindingSecret string,
 	at time.Time,
 ) (result domain.OIDCLoginChallenge, err error) {
+	if store.webIdentityV2 != nil {
+		return result, domain.ErrMembershipDenied
+	}
 	if err := stateDigest.Validate("oidc_challenge.state_digest"); err != nil {
 		return result, err
 	}
@@ -120,6 +128,9 @@ func (store *Store) ResolveOrCreateExternalIdentity(
 	candidateUserID domain.UserID,
 	at time.Time,
 ) (identity domain.ExternalIdentity, created bool, err error) {
+	if store.webIdentityV2 != nil {
+		return store.resolveExternalIdentityServingV2(ctx, subject, candidateUserID)
+	}
 	if err := subject.Validate(); err != nil {
 		return identity, false, err
 	}
@@ -182,6 +193,11 @@ func (store *Store) ListTenantMemberships(
 }
 
 func (store *Store) Enroll(ctx context.Context, request ports.EnrollmentRequest) (result domain.TenantMembership, err error) {
+	if store.webIdentityV2 != nil {
+		// No V1 identity observation may create a V2 membership. Full V2
+		// enrollment/cutover is a separate remaining integration requirement.
+		return result, domain.ErrMembershipDenied
+	}
 	if err := validateEnrollmentRequest(request); err != nil {
 		return result, err
 	}
@@ -323,6 +339,9 @@ func (store *Store) bootstrapDevelopmentMembership(
 	grant domain.DevelopmentBootstrapGrant,
 	subject *domain.ExternalSubject,
 ) (result domain.TenantMembership, err error) {
+	if store.webIdentityV2 != nil {
+		return result, domain.ErrMembershipDenied
+	}
 	if err := grant.Validate(); err != nil {
 		return result, err
 	}
@@ -433,6 +452,9 @@ func (store *Store) bootstrapDevelopmentMembership(
 }
 
 func (store *Store) CreateWebSession(ctx context.Context, session domain.WebSession) error {
+	if store.webIdentityV2 != nil {
+		return store.createWebSessionV2(ctx, session)
+	}
 	if err := session.Validate(); err != nil {
 		return err
 	}
@@ -477,6 +499,9 @@ func (store *Store) AuthorizeWebSession(
 	permission domain.TenantPermission,
 	at time.Time,
 ) (result ports.WebAuthorization, err error) {
+	if store.webIdentityV2 != nil {
+		return store.authorizeWebSessionServingV2(ctx, sessionDigest, permission, at)
+	}
 	if err := sessionDigest.Validate("web_session.session_digest"); err != nil {
 		return result, err
 	}
@@ -525,6 +550,9 @@ func (store *Store) SwitchTenant(
 	selectedTenantID domain.TenantID,
 	at time.Time,
 ) (result ports.WebAuthorization, err error) {
+	if store.webIdentityV2 != nil {
+		return store.switchTenantV2(ctx, currentDigest, next, selectedTenantID, at)
+	}
 	if err := currentDigest.Validate("web_session.current_digest"); err != nil {
 		return result, err
 	}
@@ -596,6 +624,9 @@ func (store *Store) SwitchTenant(
 }
 
 func (store *Store) RevokeWebSession(ctx context.Context, sessionDigest domain.SecretDigest, at time.Time) error {
+	if store.webIdentityV2 != nil {
+		return store.revokeWebSessionV2(ctx, sessionDigest, at)
+	}
 	if err := sessionDigest.Validate("web_session.session_digest"); err != nil {
 		return err
 	}

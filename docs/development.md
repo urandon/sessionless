@@ -98,6 +98,25 @@ This delivers the first-install handoff only. Worker/Web startup wiring,
 genuine no-subscription canonical queued admission and the separately authorized
 real-model demo remain under #218. Defaults and schema are unchanged.
 
+### Local per-delivery worker ownership (library, default off)
+
+`worker.NewLocalRuntime` accepts the original opened operator `Source`, its
+accepted profile receipt, borrowed DB/blob clients and ordinary worker
+configuration. Construction performs no SQL, socket or invocation effects.
+Each `RunOnce(ctx, queue)` creates fresh preparation/operation issuers, the
+original `providerloopsession.LocalV1` factory and `WorkerState()` facade, then
+one ordinary Manager. The entered worker uses the shared finite agent engine;
+Runtime does not start or reserve a second invocation. Every return attempts
+bounded close/join of that delivery's session, including empty and duplicate
+deliveries. Cleanup failure remains an error, not evidence of completed joining
+or permission to replay work. It never closes the borrowed Source or DB. Do not open a fresh
+installation or retain one session/Manager across queue deliveries.
+
+This is library composition, not a command/configuration switch or an enabled
+profile. Command receipt loading/installation, genuine no-subscription queued
+admission and separately authorized real-model/Web proof remain under #218.
+Controlled running-lease fixtures do not establish those product outcomes.
+
 ### Attached execution composition (default off)
 
 The normal Web BFF can use the existing attached scheduler admission path with

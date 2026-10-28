@@ -43,6 +43,14 @@ type LocalSessionConnectedSeed struct {
 	receipt                      ports.OwnedProfilePublicationReceiptV1
 }
 
+// OriginalProfileReceipt returns only the original synthetic installation's
+// cloned historical DATA. It creates no Source, grant or invocation owner.
+func (s *LocalSessionConnectedSeed) OriginalProfileReceipt() ports.OwnedProfilePublicationReceiptV1 {
+	r := s.receipt
+	r.Profile = r.Profile.Clone()
+	return r
+}
+
 func NewLocalSessionConnectedSeed(t *testing.T, endpoint string) *LocalSessionConnectedSeed {
 	return newLocalSessionConnectedSeed(t, endpoint, false, LocalCompactionConnectedLimits{})
 }

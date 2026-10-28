@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -47,6 +48,22 @@ func NewLifecycle(store *Store, config credentiallifecycle.Config) (*Lifecycle, 
 	}
 	store.wrapper = true
 	return &Lifecycle{lifecycle: &lifecycle{store: store, service: service}}, nil
+}
+
+// LoadCredentialBinding reads metadata from this lifecycle's original Store.
+// It neither materializes a secret nor grants an invocation/refresh window.
+// Callers must not serialize the returned private reference/fingerprint into
+// generation publication; that protocol admits only its closed metadata DTO.
+func (v *Lifecycle) LoadCredentialBinding(ctx context.Context, tenant domain.TenantID, connection domain.SubscriptionConnectionID) (domain.CredentialBinding, bool, error) {
+	if v == nil || v.lifecycle == nil || v.store == nil || ctx == nil || ctx.Err() != nil {
+		return domain.CredentialBinding{}, false, ErrDenied
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed.Load() {
+		return domain.CredentialBinding{}, false, ErrDenied
+	}
+	return v.store.LoadCredentialBinding(ctx, tenant, connection)
 }
 
 func (v *Lifecycle) Issue(ctx context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {

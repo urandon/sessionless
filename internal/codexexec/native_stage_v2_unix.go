@@ -33,12 +33,10 @@ type nativeInputStagePlatformV2 struct {
 }
 
 func stageNativeInputV2(history *preparedHistory, media *mediaInput, profile *nativeFrozenProfileV2) (*nativeInputStageV2, error) {
-	if history == nil || history.self != history || history.nativeV2 != nil || history.root < 0 || history.work < 0 || history.context < 0 || media == nil || profile == nil || history.verifyImages(media) != nil {
+	if profile == nil {
 		return nil, ErrContract
 	}
-	s := &nativeInputStageV2{history: history, media: media, profile: profile, frozen: *profile,
-		platform: nativeInputStagePlatformV2{root: history.root, work: history.work, context: history.context, path: history.path, name: history.name}}
-	s.self = s
+	s := &nativeInputStageV2{history: history, media: media, profile: profile, frozen: *profile}
 	s.frozen.profile = profile.profile.Clone()
 	s.frozen.launch = profile.launch.Clone()
 	s.frozen.generated.configuration = slices.Clone(profile.generated.configuration)
@@ -48,16 +46,50 @@ func stageNativeInputV2(history *preparedHistory, media *mediaInput, profile *na
 	for i := range s.frozen.generated.arguments {
 		s.frozen.generated.arguments[i] = slices.Clone(profile.generated.arguments[i])
 	}
+	return stageNativeProfileInput(s)
+}
+
+func stageNativeGenerationInputV3(history *preparedHistory, media *mediaInput, profile *nativeFrozenProfileV3) (*nativeInputStageV2, error) {
+	if profile == nil {
+		return nil, ErrContract
+	}
+	s := &nativeInputStageV2{history: history, media: media, profileV3: profile, frozenV3: *profile}
+	s.frozenV3.profile = profile.profile.Clone()
+	s.frozenV3.launch = profile.launch.Clone()
+	s.frozenV3.generated.configuration = slices.Clone(profile.generated.configuration)
+	s.frozenV3.generated.catalog = slices.Clone(profile.generated.catalog)
+	s.frozenV3.generated.schema = slices.Clone(profile.generated.schema)
+	s.frozenV3.generated.environment = slices.Clone(profile.generated.environment)
+	for i := range s.frozenV3.generated.arguments {
+		s.frozenV3.generated.arguments[i] = slices.Clone(profile.generated.arguments[i])
+	}
+	return stageNativeProfileInput(s)
+}
+
+// File/readset custody is unchanged. The two explicit callers retain distinct
+// profile types and frozen identities; staging is not profile qualification.
+func stageNativeProfileInput(s *nativeInputStageV2) (*nativeInputStageV2, error) {
+	history, media := s.history, s.media
+	if history == nil || history.self != history || history.nativeV2 != nil || history.root < 0 || history.work < 0 || history.context < 0 || media == nil || history.verifyImages(media) != nil || (s.profile == nil) == (s.profileV3 == nil) {
+		return nil, ErrContract
+	}
+	s.platform = nativeInputStagePlatformV2{root: history.root, work: history.work, context: history.context, path: history.path, name: history.name}
+	s.self = s
+	launch := s.frozenLaunch()
+	catalog, schema := s.frozen.generated.catalog, s.frozen.generated.schema
+	if s.profileV3 != nil {
+		catalog, schema = s.frozenV3.generated.catalog, s.frozenV3.generated.schema
+	}
 	history.nativeV2 = s // cleanup ownership precedes any new filesystem object
 	for i, fd := range []int{history.root, history.work, history.context} {
 		if unix.Fstat(fd, &s.platform.directories[i]) != nil {
 			return nil, ErrContract
 		}
 	}
-	for i, body := range [][]byte{profile.generated.catalog, profile.generated.schema} {
-		name, spec := "models.json", profile.launch.Catalog
+	for i, body := range [][]byte{catalog, schema} {
+		name, spec := "models.json", launch.Catalog
 		if i == 1 {
-			name, spec = "output.schema.json", profile.launch.Schema
+			name, spec = "output.schema.json", launch.Schema
 		}
 		hash := sha256.Sum256(body)
 		if len(body) == 0 || uint64(len(body)) > nativeharnessinput.MaxFileBytes || spec.Size != uint64(len(body)) || spec.SHA256 != hex.EncodeToString(hash[:]) {
@@ -86,7 +118,7 @@ func stageNativeInputV2(history *preparedHistory, media *mediaInput, profile *na
 		}
 		owned.file = os.NewFile(uintptr(fd), name)
 	}
-	if s.verify(context.Background(), profile, media) != nil {
+	if s.verifyOwned(context.Background()) != nil {
 		return nil, ErrContract
 	}
 	return s, nil
@@ -171,9 +203,17 @@ func (s *nativeInputStageV2) verifyPlatform(ctx context.Context) error {
 	// immutable profile identity. Go functions never DeepEqual when non-nil.
 	// Clear only the copied clock fields: never invoke or mutate the originals,
 	// and retain exact comparison of every other frozen profile member.
-	actual, frozen := *s.profile, s.frozen
-	actual.profile.Backend.Now, frozen.profile.Backend.Now = nil, nil
-	if !reflect.DeepEqual(actual, frozen) || s.verifyDirectories() != nil || s.history.verifyImages(s.media) != nil || len(s.platform.files) < 2 || len(s.platform.files) > 4 {
+	profileMatches := false
+	if s.profile != nil && s.profileV3 == nil {
+		actual, frozen := *s.profile, s.frozen
+		actual.profile.Backend.Now, frozen.profile.Backend.Now = nil, nil
+		profileMatches = reflect.DeepEqual(actual, frozen)
+	} else if s.profileV3 != nil && s.profile == nil {
+		actual, frozen := *s.profileV3, s.frozenV3
+		actual.profile.Backend.Now, frozen.profile.Backend.Now = nil, nil
+		profileMatches = reflect.DeepEqual(actual, frozen)
+	}
+	if !profileMatches || s.verifyDirectories() != nil || s.history.verifyImages(s.media) != nil || len(s.platform.files) < 2 || len(s.platform.files) > 4 {
 		return ErrContract
 	}
 	for i := range s.platform.files {
@@ -188,7 +228,7 @@ func (s *nativeInputStageV2) verifyPlatform(ctx context.Context) error {
 }
 
 func (s *nativeInputStageV2) executionPlatform(ctx context.Context, bundle attachedworkerdaemon.NativeLaunchV3) (*attachedworkerdaemon.NativeExecutionV3, error) {
-	expected := s.frozen.launch.Clone()
+	expected := s.frozenLaunch().Clone()
 	expected.ScopeDigest = bundle.ScopeDigest
 	if !reflect.DeepEqual(expected, bundle) {
 		return nil, ErrContract
@@ -250,7 +290,7 @@ func (s *nativeInputStageV2) executionPlatform(ctx context.Context, bundle attac
 	default:
 		return nil, ErrContract
 	}
-	if s.verify(ctx, s.profile, s.media) != nil {
+	if s.verifyOwned(ctx) != nil {
 		return nil, ErrContract
 	}
 	files := make([]attachedworkerdaemon.NativeInputFileV3, 0, len(s.platform.files))

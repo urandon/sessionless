@@ -49,9 +49,9 @@ func (f *nativeStructuredFinalV2) clear() {
 }
 
 func (boundary *PreparedProcessBoundaryV1) structuredNativeFinalV2(original *preparedObservation, raw []byte) (*nativeStructuredFinalV2, error) {
-	if boundary == nil || boundary.nativeIdentity != boundary || boundary.native == nil || boundary.native.profileV2 == nil ||
+	if boundary == nil || boundary.nativeIdentity != boundary || boundary.native == nil || !boundary.native.fullNativeProfile() ||
 		original == nil || original.self != original || original.boundary != boundary || original.native != boundary.native || original.authority != boundary.authority ||
-		original.binding.Backend != boundary.native.profileV2.descriptor || original.runErr != nil || original.process.ExitCode != 0 || original.process.FailureCode != "" ||
+		original.binding.Backend != boundary.native.nativeDescriptor() || original.runErr != nil || original.process.ExitCode != 0 || original.process.FailureCode != "" ||
 		original.process.Cancelled || original.process.Deadline || !original.process.DescendantsReaped || !original.process.BoundaryReleased || !original.process.CleanupSucceeded ||
 		!original.protocol.terminal || original.protocol.protocolDrift || original.protocol.terminalDrift || original.protocol.failedTerminal ||
 		len(raw) == 0 || len(raw) > nativeFinalBytesV2 || !utf8.Valid(raw) || original.rawFinalDigestV2 != sha256.Sum256(raw) ||
@@ -71,8 +71,8 @@ func (boundary *PreparedProcessBoundaryV1) structuredNativeFinalV2(original *pre
 	if json.Unmarshal(fields["answer"], &answer) != nil || len(answer) > nativeAnswerBytesV2 || !validMediaText([]byte(answer)) || strings.TrimSpace(answer) == "" || utf8.RuneCountInString(answer) > 32_000 {
 		return nil, ErrContract
 	}
-	f := &nativeStructuredFinalV2{original: original, profileDigest: boundary.native.profileV2.descriptor.BackendProfileDigest,
-		schema: boundary.native.profileV2.launch.Schema, rawDigest: original.rawFinalDigestV2, answer: answer}
+	f := &nativeStructuredFinalV2{original: original, profileDigest: boundary.native.nativeDescriptor().BackendProfileDigest,
+		schema: boundary.native.nativeLaunch().Schema, rawDigest: original.rawFinalDigestV2, answer: answer}
 	f.self = f
 	if artifacts, exists := fields["artifacts"]; exists {
 		total := 0

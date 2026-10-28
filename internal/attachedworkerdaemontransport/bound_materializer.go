@@ -66,7 +66,8 @@ type BoundMaterializer struct {
 	maxBytes int
 	now      func() time.Time
 	// Only the ydbintegration-tagged test constructor can enable this path.
-	allowTestProvider bool
+	allowTestProvider  bool
+	nativeSubscription bool
 }
 
 func NewBoundMaterializer(source SealedInputSource, maxBytes int, now func() time.Time) (*BoundMaterializer, error) {
@@ -161,9 +162,7 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	provider := job.HarnessBinding.Backend.ProviderContractKind == domain.ProviderContractInvocationV1
-	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
-		provider && !materializer.allowTestProvider ||
-		!provider && job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
+	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil || !materializer.supportsProvider(job) {
 		return MaterializedInputV1{}, ErrSealedInputUnsupported
 	}
 	if provider {

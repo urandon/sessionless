@@ -7,6 +7,15 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+// ValidateResourceGenerationBearerV1 checks metadata shape and its exact bearer
+// scope without exporting the parsed secret or derived digest. Enrollment,
+// baseline and connection generations remain current Store facts, not grants
+// authenticated by the bearer itself. This performs no Store operation.
+func ValidateResourceGenerationBearerV1(raw []byte, auth ports.AttachedResourceGenerationAuthorizationV1) error {
+	_, err := bindResourceGenerationBearer(raw, auth)
+	return err
+}
+
 // PublishResourceGenerationBearer binds untrusted metadata to the ORIGINAL
 // connected worker. Parsing is not write authority: the existing Store still
 // rechecks every current identity/resource fact inside its mutation transaction.

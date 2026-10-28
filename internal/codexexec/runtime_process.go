@@ -280,10 +280,10 @@ func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess)
 func (boundary *PreparedProcessBoundaryV1) validateInvocation(ctx context.Context, invocation ProcessInvocationV1) error {
 	if boundary.native != nil && boundary.native.bundleV3 != nil {
 		native := boundary.native
-		if boundary.mediaConfig != nil || native.profileV2 == nil || invocation.Identity.HarnessBinding.Backend != native.profileV2.descriptor ||
+		if boundary.mediaConfig != nil || !native.fullNativeProfile() || invocation.Identity.HarnessBinding.Backend != native.nativeDescriptor() ||
 			invocation.media == nil || invocation.mediaStage == nil || invocation.nativeStageV2 == nil || native.stageV2 != invocation.nativeStageV2 ||
 			invocation.mediaStage.nativeV2 != invocation.nativeStageV2 || invocation.mediaStage.path != invocation.WorkDir ||
-			!bytes.Equal(invocation.Stdin, invocation.media.prompt) || invocation.nativeStageV2.verify(ctx, native.profileV2, invocation.media) != nil ||
+			!bytes.Equal(invocation.Stdin, invocation.media.prompt) || native.verifyNativeStage(ctx, invocation.nativeStageV2, invocation.media) != nil ||
 			native.currentEnvelopeV2(ctx, boundary.now().UTC()) != nil {
 			return ErrContract
 		}

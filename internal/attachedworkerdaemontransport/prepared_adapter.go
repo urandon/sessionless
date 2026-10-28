@@ -18,6 +18,19 @@ import (
 // Configuration is checked before the original one-shot bind. A failed bind
 // is not permission to replace either original owner or infer replay safety.
 func NewPreparedAdapter(session *attachedworkersession.Session, materializer Materializer, config Config, stack *attachedworkerstack.Stack) (*Adapter, error) {
+	adapter, err := preparePreparedAdapter(session, materializer, config, stack)
+	if err != nil {
+		return nil, err
+	}
+	if err := stack.BindPreparedConnection(session); err != nil {
+		return nil, errors.Join(ErrReconciliationRequired, err)
+	}
+	return adapter, nil
+}
+
+// Shared only by the two closed prepared constructors. This performs local
+// validation without binding a Session or invoking a caller-supplied hook.
+func preparePreparedAdapter(session *attachedworkersession.Session, materializer Materializer, config Config, stack *attachedworkerstack.Stack) (*Adapter, error) {
 	if session == nil || stack == nil || materializer == nil || config.CapabilityManifest == nil ||
 		config.ReceiptCandidate != nil || config.preparedReceipt != nil || config.preparedInlineV2 {
 		return nil, ErrInvalidConfiguration
@@ -37,9 +50,6 @@ func NewPreparedAdapter(session *attachedworkersession.Session, materializer Mat
 	}
 	if _, err := adapter.readySnapshot(); err != nil {
 		return nil, err
-	}
-	if err := stack.BindPreparedConnection(session); err != nil {
-		return nil, errors.Join(ErrReconciliationRequired, err)
 	}
 	return adapter, nil
 }

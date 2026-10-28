@@ -36,6 +36,7 @@ type Driver struct {
 	media                *mediaInput
 	mediaStage           *preparedHistory
 	nativeProfileV2      *nativeFrozenProfileV2
+	nativeProfileV3      *nativeFrozenProfileV3
 	nativeInlineOutputV2 bool
 }
 
@@ -128,8 +129,8 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		invocation.media = driver.media
 		invocation.mediaStage = driver.mediaStage
 	}
-	if driver.nativeProfileV2 != nil {
-		invocation.Arguments = append([]string(nil), driver.nativeProfileV2.launch.NativeArguments[0]...)
+	if driver.nativeSelected() {
+		invocation.Arguments = append([]string(nil), driver.nativeLaunch().NativeArguments[0]...)
 		if driver.mediaStage != nil {
 			invocation.nativeStageV2 = driver.mediaStage.nativeV2
 		}
@@ -154,9 +155,9 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 	var evidence domain.ProviderExecutionEvidenceV1
 	var terminalErr error
 	var nativeFinal *nativeStructuredFinalV2
-	if driver.nativeProfileV2 != nil {
+	if driver.nativeSelected() {
 		boundary, concrete := driver.boundary.(*PreparedProcessBoundaryV1)
-		if !concrete || boundary.native == nil || boundary.native.profileV2 != driver.nativeProfileV2 {
+		if !concrete || boundary.native == nil || !driver.sameNativeProfile(boundary.native) {
 			return ports.ExecutionResult{}, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
 		}
 		var reduced nativeReduction
@@ -203,9 +204,9 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 }
 
 func (driver *Driver) compilePrompt(request ports.ExecutionRequest) ([]byte, error) {
-	if driver.nativeProfileV2 != nil {
+	if driver.nativeSelected() {
 		if driver.media == nil || driver.mediaStage == nil || driver.mediaStage.path != request.WorkDir || driver.mediaStage.nativeV2 == nil ||
-			driver.mediaStage.nativeV2.verify(context.Background(), driver.nativeProfileV2, driver.media) != nil {
+			driver.verifyNativeStage(context.Background(), driver.mediaStage.nativeV2) != nil {
 			return nil, ErrContract
 		}
 		return append([]byte(nil), driver.media.prompt...), nil

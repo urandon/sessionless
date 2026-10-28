@@ -180,6 +180,13 @@ func (factory *SessionSourceFactory) Publish(ctx context.Context, submission att
 // without waiting for the transport delegate's Close. This lets a bounded
 // caller revoke fetch authority before a late session/lease finalizer waits
 // for an injected exchange implementation that ignores its close contract.
+// RetireConnectionSourcesV1 exposes only this nonblocking revocation phase to
+// the generation Session wrapper. The original outer Close still owns the
+// acquired exchange's potentially blocking cleanup.
+func (factory *SessionSourceFactory) RetireConnectionSourcesV1() error {
+	return factory.revokeSource()
+}
+
 func (factory *SessionSourceFactory) revokeSource() error {
 	if factory == nil {
 		return nil

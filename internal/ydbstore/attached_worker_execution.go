@@ -248,6 +248,10 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 		result.Status = ports.AttachedWorkerExecutionDenied
 		return nil
 	}
+	if err := store.validateAttachedResourceGenerationAdmissionTx(ctx, tx, request.OwnerUserID,
+		loaded.Run.SubscriptionConnectionID, placement, loaded.Job.HarnessBinding); err != nil {
+		return err
+	}
 
 	lease, replayedLease, err := allocateAttachedWorkerLeaseTx(ctx, tx, request.RunID, request.AttemptID,
 		request.LeaseID, request.WorkerID, at, expiresAt)

@@ -89,6 +89,69 @@ Telegram token or webhook secret. With both Telegram and attached control off,
 the control API remains health-only. Both flags default to false; malformed or
 partial enabled configuration fails startup.
 
+#### Generation-enabled subscription resources (default off)
+
+For the server-side generation path, set
+`ATTACHED_RESOURCE_GENERATION_ENABLED=true` and
+`ATTACHED_RESOURCE_GENERATION_CONFIG_FILE` to an absolute, clean path to a
+trusted operator metadata file. The file contains exactly
+`{"version":1,"baselines":[...]}`; each entry is the complete
+[`AttachedResourceGenerationBaselineV1`](../internal/domain/attached_resource_generation.go),
+including the approved scope-free binding, all six evidence bodies and explicit
+generation-only delegation. Digests alone, worker reports and an OAuth file
+cannot supply this baseline. It contains no provider credentials.
+
+The loader permits at most 64 entries, 64 KiB per baseline and 1 MiB for the
+whole configuration. It rejects symlinks, non-regular or group/world-writable
+files and invalid/unknown fields; root-owned read-only metadata is allowed.
+Each Web BFF, control API and reconciler loads its own identical approved
+configuration once at startup, not per request. Within a process the Store
+and binder use the same immutable registry instance. There is no live reload
+or remote baseline-install endpoint.
+
+The Web BFF still requires `WEB_ATTACHED_EXECUTION_ENABLED=true`; with a
+nonempty generation registry, `WEB_ATTACHED_RESOURCE_PINS` may be absent.
+Fixed pins may coexist only for different resource **and** worker identities
+within the exact tenant/owner scope. A collision or configured registry with
+Web attached execution disabled fails startup instead of selecting a fixture.
+The control API also requires its existing attached-control flag and audience.
+Only an installed nonempty registry mounts the metadata-only POST routes
+`/attached-worker/v1/resource-generation/publish` and
+`/attached-worker/v1/resource-generation/read`.
+
+These routes use the existing current worker connection bearer, not provider
+credentials or a remotely supplied secret digest. The closed versioned DTOs
+are defined in
+[`resource_generation.go`](../internal/attachedworkerhttp/resource_generation.go).
+Requests and successful responses are at most 4 KiB. The normal server bounds
+request reads to 15 seconds without adding a response write timeout to long
+polling. The service performs one transaction, without automatic mutation
+retry or hidden readback; the original Session client must keep publication
+and its one optional exact readback inside the same original 15-second window.
+An unknown result is not an ACK or permission to repeat credential/provider
+effects. Native Session/client integration remains #234.
+
+Fresh admission rechecks the current metadata and full projected binding in
+the allocating transaction. It never upgrades an old outbox/job to a later
+generation. Historical exact reservation/job/attempt reconciliation keeps its
+original authority. Removing a registry does not make a resource with published
+metadata fall back to an unchecked fixed pin. The original fixed-resource path
+is preserved for resources with no generation metadata.
+
+Migration `00132_add_attached_resource_generation.sql` adds one nullable column
+to the existing subscription row; source changes do not authorize applying it.
+Generation publication does not activate entitlement, extend evidence expiry
+or enable native execution. Full native consumption, joined proof and live
+resource activation retain their #234/#235/#133 owners.
+
+The three generation-head counters use strict canonical decimal JSON strings,
+not JsonDocument numbers, across storage and nested metadata HTTP heads. The
+internal counters and checked CAS arithmetic remain uint64; existing unrelated
+baseline/evidence/authentication encodings do not change. Zero-head internal
+denial carriers may serialize but are never valid heads or success responses.
+This source-only correction precedes initial generation-head deployment; it
+does not authorize converting retained data or applying the additive migration.
+
 Canonical context windows are retained and sealed using the same event/snapshot
 codecs as the managed worker. Materialization verifies the exact session,
 snapshot, event window, trigger, immutable references and size limits. Terminal

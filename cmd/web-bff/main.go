@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/attachedworker"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
@@ -92,6 +93,12 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	if err != nil {
 		return nil, func() {}, err
 	}
+	// Install one immutable operator registry before opening dependencies; the
+	// same pointer must reach both preflight binding and allocating Store.
+	generations, err := attachedresourcegeneration.LoadRegistryFromEnv(os.Getenv)
+	if err != nil {
+		return nil, func() {}, err
+	}
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("open YDB: %w", err)
@@ -103,7 +110,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			logger.Error("close web BFF YDB", "component", component, "error", err)
 		}
 	}
-	store, err := ydbstore.New(ydb.DB, ydbstore.Options{})
+	store, err := ydbstore.New(ydb.DB, ydbstore.Options{AttachedResourceGenerations: generations})
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -178,7 +185,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
-	harnessBinder, err := webHarnessBinderFromEnv(os.Getenv, store)
+	harnessBinder, err := webHarnessBinderFromEnv(os.Getenv, store, generations)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err

@@ -380,6 +380,14 @@ attached-inline-output-ydb-gate: prepare
 		go test -race -count=3 -shuffle=on -timeout=5m \
 		-run '^TestAttachedInlineOutputYDB' ./internal/ydbstore
 
+.PHONY: attached-resource-generation-ydb-gate
+# Existing disposable CI database only; real generation SQL/CAS, no provider.
+attached-resource-generation-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \
+		go test -race -count=3 -shuffle=on -timeout=5m \
+		-run '^TestAttachedResourceGenerationYDB' ./internal/ydbstore
+
 admission-cost-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
 		-run '^(TestAdmissionCostV2YDB|TestAdmissionCostV2ServingGate)' ./test/ydbintegration

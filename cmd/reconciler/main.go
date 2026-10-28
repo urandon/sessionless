@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/portlog"
@@ -35,13 +36,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	generations, err := attachedresourcegeneration.LoadRegistryFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("configure attached resource generations", "error", err)
+		os.Exit(1)
+	}
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
 		logger.Error("open YDB", "error", err)
 		os.Exit(1)
 	}
 	defer ydb.Close(context.Background())
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{})
+	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttachedResourceGenerations: generations})
 	if err != nil {
 		logger.Error("create state store", "error", err)
 		os.Exit(1)

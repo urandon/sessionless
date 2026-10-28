@@ -124,8 +124,8 @@ func TestControlHTTPServerHasFiniteHeaderParserBounds(t *testing.T) {
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	server := newHTTPServer("127.0.0.1:0", handler)
 	if server.Addr != "127.0.0.1:0" || server.Handler == nil || server.ReadHeaderTimeout != 5*time.Second ||
-		server.MaxHeaderBytes != controlapi.MaxRequestHeaderBytes {
-		t.Fatalf("control server parser bounds: timeout=%v bytes=%d addr=%s", server.ReadHeaderTimeout, server.MaxHeaderBytes, server.Addr)
+		server.ReadTimeout != 15*time.Second || server.WriteTimeout != 0 || server.MaxHeaderBytes != controlapi.MaxRequestHeaderBytes {
+		t.Fatalf("control server parser bounds: header=%v read=%v write=%v bytes=%d addr=%s", server.ReadHeaderTimeout, server.ReadTimeout, server.WriteTimeout, server.MaxHeaderBytes, server.Addr)
 	}
 	if controlapi.MaxRequestHeaderBytes != 8<<10 {
 		t.Fatal("control header policy changed from eight KiB")

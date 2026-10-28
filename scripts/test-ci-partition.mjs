@@ -54,6 +54,11 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
 ];
+const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
+const generationGateRecipe = [
+  '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
+  'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\\n\t\tgo test -race -count=3 -shuffle=on -timeout=5m \\\n\t\t-run \'^TestAttachedResourceGenerationYDB\' ./internal/ydbstore',
+].join('\n\t');
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
   assert.equal(matches.length, 1, `unique ${name} recipe`);
@@ -159,6 +164,14 @@ function verify({ make, ci, release }) {
     assert.ok(text.indexOf('Wait for YDB Local') < text.indexOf('Apply schema twice'));
     assert.equal(step(text, 'Apply schema twice'), 'run: |\n          make migrate-local\n          make migrate-local', `${name} no migration retry`);
   }
+  const ydb = job(ci, 'ydb');
+  assert.match(ydb, /^    timeout-minutes: 25$/m, 'generation proof preserves existing YDB job bound');
+  assert.deepEqual(target(make, 'attached-resource-generation-ydb-gate'), ['prepare']);
+  assert.equal(recipe(make, 'attached-resource-generation-ydb-gate'), generationGateRecipe, 'bounded disposable exact generation test selector');
+  assert.equal(step(ydb, generationStepName),
+    'env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric\n        run: make attached-resource-generation-ydb-gate', 'genuine data transactions, no fake transaction DSN');
+  assert.ok(ydb.indexOf(generationStepName) > ydb.indexOf('Prove inline-output transactional claim and write custody'));
+  assert.ok(ydb.indexOf(generationStepName) < ydb.indexOf('Capture failed YDB Local state'));
   assert.equal(step(core, 'Run repository CI contract'), 'run: make ci-core-base', 'complete CI base invocation');
   const offlineName = 'Run offline worker and egress security contracts';
   assert.equal(step(security, offlineName),
@@ -179,6 +192,17 @@ function verify({ make, ci, release }) {
 }
 
 test('local, release and mirrored CI retain the complete partition', () => verify(original));
+
+test('generation SQL qualification cannot lose its guards, coverage or real transaction mode', () => {
+  for (const make of [
+    original.make.replace(generationGateRecipe, generationGateRecipe.replace('@test "$(GITHUB_ACTIONS)" = true', '@true')),
+    original.make.replace(generationGateRecipe, generationGateRecipe.replace('SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 ', '')),
+    original.make.replace(generationGateRecipe, generationGateRecipe.replace('-count=3', '-count=1')),
+    original.make.replace(generationGateRecipe, generationGateRecipe.replace('^TestAttachedResourceGenerationYDB', '^TestOther')),
+  ]) assert.throws(() => verify({ ...original, make }));
+  const nativeStep = step(job(original.ci, 'ydb'), generationStepName);
+  assert.throws(() => verify({ ...original, ci: original.ci.replace(nativeStep, nativeStep.replace('go_query_mode=data&', 'go_query_mode=scripting&go_fake_tx=scripting&')) }));
+});
 
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {
   const local = assignment(original.make, 'CI_CORE_CHECKS');

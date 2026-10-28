@@ -381,8 +381,8 @@ incident procedure.
 
 ## Legacy ready/expiry retirement
 
-The complete ordered source has 131 SQL operations: 105 historical CREATEs,
-22 ALTERs and four retirement DROPs. Its intended effective application layout
+The complete ordered source has 132 SQL operations: 105 historical CREATEs,
+23 ALTERs and four retirement DROPs. Its intended effective application layout
 has 101 tables. Migration-runner bookkeeping is not an application entity, and
 source counts are not a census of a retained environment.
 

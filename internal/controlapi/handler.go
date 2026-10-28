@@ -23,6 +23,7 @@ type Options struct {
 	AttachedWorkerSealedInput    http.Handler
 	AttachedWorkerOutputReceipt  http.Handler
 	AttachedWorkerInlineOutputV2 http.Handler
+	AttachedResourceGeneration   http.Handler
 }
 
 // NewHandler builds the control API routing tree without optional frontend
@@ -58,6 +59,10 @@ func NewHandlerWithOptions(logger *slog.Logger, info buildinfo.Info, options Opt
 		for _, path := range []string{attachedworkerreceipt.PathInlinePrepareV2, attachedworkerreceipt.PathInlineBodyV2, attachedworkerreceipt.PathInlineReconcileV2} {
 			mux.Handle("POST "+path, options.AttachedWorkerInlineOutputV2)
 		}
+	}
+	if options.AttachedResourceGeneration != nil {
+		mux.Handle("POST "+attachedworkerhttp.ResourceGenerationPublishPathV1, options.AttachedResourceGeneration)
+		mux.Handle("POST "+attachedworkerhttp.ResourceGenerationReadPathV1, options.AttachedResourceGeneration)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logger.Info("route not found", "method", r.Method, "path", r.URL.Path)

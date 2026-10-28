@@ -3549,7 +3549,7 @@
     {
       "table": "subscription_connections",
       "migration": "00006_create_subscription_connections.sql",
-      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "role": "Existing subscription resource and independent entitlement/quota observations. Additive migration 00132 stores one bounded attached_resource_generation_v1 metadata head on this same row: owner/worker, canonical decimal-string enrollment/baseline/generation counters and revocation only, with no credential material, entitlement activation, ACK journal or new lifecycle.",
       "primaryKey": [
         "tenant_id",
         "subscription_connection_id"
@@ -3568,20 +3568,23 @@
       "knownRefs": {
         "readers": {
           "paths": [
+            "internal/ydbstore/attached_resource_generation.go",
+            "internal/ydbstore/attached_resource_generation_admission.go",
             "internal/ydbstore/attached_worker_onboarding.go",
             "internal/ydbstore/compute_choice_attached.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/scheduler.go",
             "internal/ydbstore/session_api.go"
           ],
-          "total": 7
+          "total": 9
         },
         "writers": {
           "paths": [
+            "internal/ydbstore/attached_resource_generation.go",
             "internal/ydbstore/attached_worker_onboarding.go",
             "internal/ydbstore/operations.go"
           ],
-          "total": 2
+          "total": 3
         }
       },
       "entityGroup": "canonical-operational",

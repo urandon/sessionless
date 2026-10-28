@@ -68,10 +68,18 @@ func AttachedWorkerOptionsWithSignals(audience string, state *ydbstore.Store, bl
 	if err != nil {
 		return Options{}, err
 	}
-	return Options{
+	options := Options{
 		AttachedWorkerBootstrap: bootstrap, AttachedWorkerExchange: exchange,
 		AttachedWorkerSealedInput:    attachedworkersealedinput.Handler(sealed),
 		AttachedWorkerOutputReceipt:  attachedworkerreceipt.Handler(receipt),
 		AttachedWorkerInlineOutputV2: attachedworkerreceipt.HandlerInlineV2(inline),
-	}, nil
+	}
+	if state.AttachedResourceGenerationEnabledV1() {
+		generation, err := attachedworkerhttp.NewResourceGenerationHandlerV1(service)
+		if err != nil {
+			return Options{}, err
+		}
+		options.AttachedResourceGeneration = generation
+	}
+	return options, nil
 }

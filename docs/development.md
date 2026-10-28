@@ -68,6 +68,36 @@ Reports and unresolved reduction decisions belong in
 [#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
 or the original task description.
 
+### Explicit local profile installation (operator tool)
+
+Build with `make local-profile-install-build`. This tool does not run as part
+of stand startup or deployment. It neither creates operator declarations/keys
+nor downloads a model, starts a daemon or probes the model endpoint.
+
+The operator must supply `SESSIONLESS_ENVIRONMENT=local`,
+`YDB_CONNECTION_STRING`, and three canonical absolute paths:
+`WEB_LOCAL_INSTALLATION_ROOT` (existing private source installation),
+`WEB_LOCAL_WORKER_EXECUTABLE` (the declared installed worker), and
+`WEB_LOCAL_PROFILE_RECEIPT_FILE` (an unused destination in a private directory).
+Attached mode must be disabled in this invocation. Run
+`.build/bin/local-profile-install` and enter the exact confirmation
+`INSTALL LOCAL PROFILE`. This is an actual profile publication, not a dry run;
+source/fixture test permission does not authorize running it against a service.
+
+After database readiness, the tool durably reserves the unused receipt path,
+opens one fresh original Source, calls the existing Store publisher, accepts
+its exact receipt, and writes/syncs/closes that private receipt before reporting
+success. Existing, empty, partial or uncertain output is never overwritten or
+deleted. On failure, reconcile the original publication and retained slot;
+do not delete the file and reinstall with fresh IDs. The shared bounded reader
+returns historical DATA only. Normal startup must use that receipt with
+`OpenExisting` and retain current Source/Store checks, never reinstall per
+message or treat receipt text as execution permission.
+
+This delivers the first-install handoff only. Worker/Web startup wiring,
+genuine no-subscription canonical queued admission and the separately authorized
+real-model demo remain under #218. Defaults and schema are unchanged.
+
 ### Attached execution composition (default off)
 
 The normal Web BFF can use the existing attached scheduler admission path with

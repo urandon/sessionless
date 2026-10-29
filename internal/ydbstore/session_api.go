@@ -539,6 +539,14 @@ func readSessionRecordTx(ctx context.Context, tx *stateTx, session domain.Sessio
 }
 
 func readRunProviderTx(ctx context.Context, tx *stateTx, run domain.Run) (string, error) {
+	// History derives this label from the original closed local Run, not a
+	// subscription lookup or currently active funding/installation lifetime.
+	if run.LocalCapacityAssociation != nil {
+		if run.TenantID != tx.tenantID || run.SubscriptionConnectionID != "" || run.LocalCapacityAssociation.Validate() != nil || run.LocalCapacityAssociation.TenantID != run.TenantID {
+			return "", domain.ErrMembershipDenied
+		}
+		return "local_model", nil
+	}
 	var provider string
 	err := tx.sqlTx.QueryRowContext(ctx,
 		`SELECT provider FROM subscription_connections

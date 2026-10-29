@@ -712,11 +712,20 @@ export interface components {
             next_cursor?: string;
         };
         ComputeConnection: {
+            /** @enum {string} */
+            kind: "subscription";
             provider: string;
             /** @enum {string} */
             entitlement: "disconnected" | "unknown" | "active" | "inactive" | "reauthentication_required";
             /** @enum {string} */
             quota: "unknown" | "available" | "limited" | "exhausted";
+            /** Format: date-time */
+            observed_at: string;
+        } | {
+            /** @enum {string} */
+            kind: "local_development";
+            /** @enum {string} */
+            provider: "local_model";
             /** Format: date-time */
             observed_at: string;
         };

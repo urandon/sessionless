@@ -262,6 +262,7 @@ export class CanonicalApiFixture {
       return this.#json(route, {
         availability: 'ready',
         connection: {
+          kind: 'subscription',
           provider: 'fixture-ai',
           entitlement: 'active',
           quota: 'available',
@@ -308,6 +309,7 @@ export class CanonicalApiFixture {
         run_id: 'run-new',
         created: true,
         compute: {
+          kind: 'subscription',
           provider: 'fixture-ai',
           entitlement: 'active',
           quota: 'available',

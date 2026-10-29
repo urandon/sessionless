@@ -1374,18 +1374,42 @@
         }
       },
       "ComputeConnection": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["provider", "entitlement", "quota", "observed_at"],
-        "properties": {
-          "provider": { "type": "string" },
-          "entitlement": {
-            "type": "string",
-            "enum": ["disconnected", "unknown", "active", "inactive", "reauthentication_required"]
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "provider", "entitlement", "quota", "observed_at"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["subscription"] },
+              "provider": { "type": "string" },
+              "entitlement": {
+                "type": "string",
+                "enum": [
+                  "disconnected",
+                  "unknown",
+                  "active",
+                  "inactive",
+                  "reauthentication_required"
+                ]
+              },
+              "quota": {
+                "type": "string",
+                "enum": ["unknown", "available", "limited", "exhausted"]
+              },
+              "observed_at": { "type": "string", "format": "date-time" }
+            }
           },
-          "quota": { "type": "string", "enum": ["unknown", "available", "limited", "exhausted"] },
-          "observed_at": { "type": "string", "format": "date-time" }
-        }
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "provider", "observed_at"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["local_development"] },
+              "provider": { "type": "string", "enum": ["local_model"] },
+              "observed_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        ]
       },
       "ComputeStatus": {
         "type": "object",

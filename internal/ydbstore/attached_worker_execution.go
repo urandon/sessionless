@@ -19,6 +19,53 @@ import (
 var _ ports.AttachedWorkerUXReadStore = (*Store)(nil)
 var _ ports.AttachedWorkerSealedInputAuthorizer = (*Store)(nil)
 
+type attachedWorkerOfferConflictStage string
+
+const (
+	attachedWorkerOfferStageLeaseReplay     attachedWorkerOfferConflictStage = "lease_replay_without_attempt"
+	attachedWorkerOfferStageProtocolReducer attachedWorkerOfferConflictStage = "protocol_offer_reducer"
+	attachedWorkerOfferStageDerivedFence    attachedWorkerOfferConflictStage = "derived_fence_mismatch"
+	attachedWorkerOfferStageStatusDenied    attachedWorkerOfferConflictStage = "offer_status_denied"
+	attachedWorkerOfferStageStatusNotFound  attachedWorkerOfferConflictStage = "offer_status_not_found"
+	attachedWorkerOfferStageStatusConflict  attachedWorkerOfferConflictStage = "offer_status_conflict"
+	attachedWorkerOfferStageStatusExpired   attachedWorkerOfferConflictStage = "offer_status_expired"
+	attachedWorkerOfferStageStatusFenced    attachedWorkerOfferConflictStage = "offer_status_fenced"
+	attachedWorkerOfferStageStatusOther     attachedWorkerOfferConflictStage = "offer_status_other"
+)
+
+type attachedWorkerOfferConflictDiagnostic struct {
+	stage attachedWorkerOfferConflictStage
+}
+
+func (diagnostic attachedWorkerOfferConflictDiagnostic) Error() string {
+	return ErrAttachedWorkerAttemptConflict.Error() + ": stage=" + string(diagnostic.stage)
+}
+
+func (diagnostic attachedWorkerOfferConflictDiagnostic) Unwrap() error {
+	return ErrAttachedWorkerAttemptConflict
+}
+
+func attachedWorkerOfferConflictAt(stage attachedWorkerOfferConflictStage) error {
+	return attachedWorkerOfferConflictDiagnostic{stage: stage}
+}
+
+func attachedWorkerOfferStatusStage(status ports.AttachedWorkerExecutionStatus) attachedWorkerOfferConflictStage {
+	switch status {
+	case ports.AttachedWorkerExecutionDenied:
+		return attachedWorkerOfferStageStatusDenied
+	case ports.AttachedWorkerExecutionNotFound:
+		return attachedWorkerOfferStageStatusNotFound
+	case ports.AttachedWorkerExecutionConflict:
+		return attachedWorkerOfferStageStatusConflict
+	case ports.AttachedWorkerExecutionExpired:
+		return attachedWorkerOfferStageStatusExpired
+	case ports.AttachedWorkerExecutionFenced:
+		return attachedWorkerOfferStageStatusFenced
+	default:
+		return attachedWorkerOfferStageStatusOther
+	}
+}
+
 func (store *Store) LoadAttachedWorkerAttempt(
 	ctx context.Context,
 	tenantID domain.TenantID,
@@ -261,7 +308,7 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 	if replayedLease {
 		// A canonical lease without the matching durable attempt is an
 		// incomplete/divergent transaction and is never repaired silently.
-		return ErrAttachedWorkerAttemptConflict
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageLeaseReplay)
 	}
 	fenceToken, err := domain.NewAttachedWorkerFenceTokenV1(request.TenantID, request.OwnerUserID,
 		request.WorkerID, request.RunID, request.AttemptID, request.LeaseID, lease.FenceToken)
@@ -276,8 +323,11 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 			LeaseGeneration: lease.FenceToken, NowUnixMicro: at.UnixMicro(), ExpiresAtUnixMicro: expiresAt.UnixMicro(),
 			ContextDigest: contextDigest, PolicyDigest: policyDigest,
 		})
-	if err != nil || frame.LeaseOffer == nil || frame.LeaseOffer.Binding.FenceToken != string(fenceToken) {
-		return ErrAttachedWorkerAttemptConflict
+	if err != nil {
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageProtocolReducer)
+	}
+	if frame.LeaseOffer == nil || frame.LeaseOffer.Binding.FenceToken != string(fenceToken) {
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageDerivedFence)
 	}
 	framePayload, err := attachedworkerprotocol.EncodeBatchV1(attachedworkerprotocol.BatchV1{
 		Version: protocolConfig.Auth.Version, Frames: []attachedworkerprotocol.FrameV1{frame},

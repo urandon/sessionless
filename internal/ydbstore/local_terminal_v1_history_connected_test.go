@@ -24,6 +24,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 // This is a database/sql storage model, not native SQL/isolation evidence or a
@@ -32,16 +33,18 @@ import (
 // canonical mutation whitelist is shared with the local completion fixture.
 type managedV1HistorySQL struct {
 	*canonicalBudgetFixture
-	principal                *computeChoiceSourceFixture
-	job                      ports.WorkerJobState
-	lease                    domain.Lease
-	state                    LocalTerminalCompletionSnapshot
-	effect                   string
-	counters                 []driver.Value
-	headReads, evidenceReads int
-	historyOnly              bool
-	historicalTTLReads       int
-	lastSQL                  string
+	principal                    *computeChoiceSourceFixture
+	job                          ports.WorkerJobState
+	lease                        domain.Lease
+	state                        LocalTerminalCompletionSnapshot
+	effect                       string
+	counters                     []driver.Value
+	quotaRow, expiryRow, slotRow []driver.Value
+	candidateExpiry              *legacyProfileExpiryPoint
+	headReads, evidenceReads     int
+	historyOnly                  bool
+	historicalTTLReads           int
+	lastSQL                      string
 }
 
 func (f *managedV1HistorySQL) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -68,7 +71,7 @@ func (f *managedV1HistorySQL) BeginTx(ctx context.Context, options driver.TxOpti
 	for k, v := range f.state.eventRecords {
 		state.eventRecords[k] = v
 	}
-	return &managedV1HistoryTx{Tx: inner, f: f, rows: before, state: state, effect: f.effect, counters: append([]driver.Value(nil), f.counters...)}, nil
+	return &managedV1HistoryTx{Tx: inner, f: f, rows: before, state: state, effect: f.effect, counters: append([]driver.Value(nil), f.counters...), quota: append([]driver.Value(nil), f.quotaRow...), expiry: append([]driver.Value(nil), f.expiryRow...), slot: append([]driver.Value(nil), f.slotRow...)}, nil
 }
 
 func cloneManagedHistoryRows(v map[string][]driver.Value) map[string][]driver.Value {
@@ -81,16 +84,18 @@ func cloneManagedHistoryRows(v map[string][]driver.Value) map[string][]driver.Va
 
 type managedV1HistoryTx struct {
 	driver.Tx
-	f        *managedV1HistorySQL
-	rows     map[string][]driver.Value
-	state    LocalTerminalCompletionSnapshot
-	effect   string
-	counters []driver.Value
-	done     bool
+	f                   *managedV1HistorySQL
+	rows                map[string][]driver.Value
+	state               LocalTerminalCompletionSnapshot
+	effect              string
+	counters            []driver.Value
+	quota, expiry, slot []driver.Value
+	done                bool
 }
 
 func (tx *managedV1HistoryTx) restore() {
 	tx.f.rows, tx.f.state, tx.f.effect, tx.f.counters = tx.rows, tx.state, tx.effect, tx.counters
+	tx.f.quotaRow, tx.f.expiryRow, tx.f.slotRow = tx.quota, tx.expiry, tx.slot
 }
 func (tx *managedV1HistoryTx) Commit() error {
 	err := tx.Tx.Commit()
@@ -113,6 +118,8 @@ const managedHistoryEffectInsert = `INSERT INTO attempt_effect_reservations
  effect_sequence,invocation_authority_digest,reserved_at,record)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CAST($11 AS JsonDocument))`
 
+const managedHistoryLegacySlotWriteSQL = "UPSERT INTO subscription_scheduler_slots (tenant_id, subscription_connection_id, state, active_run_id, active_reservation_id, blocked_until, updated_at, local_capacity_association, local_capacity_digest) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+
 func (f *managedV1HistorySQL) ExecContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Result, error) {
 	f.lastSQL = completionSQL(statement)
 	if ctx.Err() != nil {
@@ -131,8 +138,49 @@ func (f *managedV1HistorySQL) ExecContext(ctx context.Context, statement string,
 		f.effect = raw
 		return driver.RowsAffected(1), nil
 	}
+	flat := completionSQL(statement)
+	var quota, slot []driver.Value
+	deleteExpiry := false
+	if flat == "UPSERT INTO quota_reservations (tenant_id, quota_reservation_id, run_id, subscription_connection_id, status, capacity_units, held_at, expires_at, retention_expire_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))" {
+		var r domain.QuotaReservation
+		if len(args) != 10 {
+			return nil, errors.New("managed legacy quota write arity")
+		}
+		raw, ok := args[9].Value.(string)
+		retained, rok := args[8].Value.(time.Time)
+		if !ok || !rok || json.Unmarshal([]byte(raw), &r) != nil || r.LocalCapacityAssociation != nil || r.SubscriptionConnectionID != f.job.Run.SubscriptionConnectionID || r.ValidateForRun(f.job.Run) != nil || r.ID != f.job.Reservation.ID || retained.Before(r.ExpiresAt) {
+			return nil, errors.New("managed legacy quota write identity")
+		}
+		want := []driver.Value{string(r.TenantID), string(r.ID), string(r.RunID), string(r.SubscriptionConnectionID), string(r.Status), int64(r.CapacityUnits), r.HeldAt, r.ExpiresAt}
+		if !reflect.DeepEqual(localInstallationNamedValues(args[:8]), want) {
+			return nil, errors.New("managed legacy quota write scalar/record mismatch")
+		}
+		quota = []driver.Value{raw, args[1].Value, args[0].Value, args[2].Value, args[3].Value, args[4].Value, args[5].Value, args[6].Value, args[7].Value, args[8].Value}
+	}
+	if flat == "DELETE FROM quota_expiry_v2 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND quota_reservation_id = $4" {
+		bucket, err := ydbpartition.BucketV1(string(f.job.Reservation.ID))
+		if err != nil || len(f.quotaRow) != 10 || !reflect.DeepEqual(localInstallationNamedValues(args), []driver.Value{int64(bucket), f.quotaRow[8], string(f.job.Run.TenantID), string(f.job.Reservation.ID)}) {
+			return nil, errors.New("managed legacy expiry delete exact retained key")
+		}
+		deleteExpiry = true
+	}
+	if flat == managedHistoryLegacySlotWriteSQL {
+		if len(args) != 9 || args[0].Value != string(f.job.Run.TenantID) || args[1].Value != string(f.job.Run.SubscriptionConnectionID) || args[7].Value != nil || args[8].Value != nil {
+			return nil, errors.New("managed legacy slot write requires original subscription and both NULL local columns")
+		}
+		slot = localInstallationNamedValues(args[2:])
+	}
 	if err := applyTerminalCompletionWrite(&f.state, f.rows, &f.counters, terminalCompletionManagedV1, statement, args); err != nil {
 		return nil, err
+	}
+	if quota != nil {
+		f.quotaRow = quota
+	}
+	if slot != nil {
+		f.slotRow = slot
+	}
+	if deleteExpiry {
+		f.expiryRow = nil
 	}
 	return driver.RowsAffected(1), nil
 }
@@ -172,6 +220,7 @@ func (f *managedV1HistorySQL) QueryContext(ctx context.Context, statement string
 			"runs": string(f.job.Run.ID), "attempts": string(f.job.Attempt.ID),
 			"worker_jobs": string(f.job.Run.ID), "quota_reservations": string(f.job.Reservation.ID),
 			"artifact_manifests": string(f.job.InputManifest.ID), "sessions": string(f.job.Run.SessionID),
+			"session_displays":  string(f.job.Run.SessionID),
 			"session_deletions": string(f.job.Run.SessionID), "session_legal_holds": string(f.job.Run.SessionID),
 		}[table]
 		if table != "artifact_manifests" && (key == "" || args[1].Value != key) {
@@ -196,13 +245,12 @@ func (f *managedV1HistorySQL) QueryContext(ctx context.Context, statement string
 		}
 		return row(f.rows[table]...)
 	}
-	for original, table := range legacyProfileWorkerReads {
-		if flat == original {
-			if len(args) != 2 || args[0].Value != string(f.job.Run.TenantID) {
-				return nil, errors.New("foreign worker read")
-			}
-			return row(f.rows[table]...)
-		}
+	var candidate []legacyProfileExpiryPoint
+	if f.candidateExpiry != nil {
+		candidate = []legacyProfileExpiryPoint{*f.candidateExpiry}
+	}
+	if values, matched, err := legacyProfileWorkerReadRow(statement, args, f.job, f.rows, f.quotaRow, f.expiryRow, candidate...); matched {
+		return &explanationFixtureRows{values: values}, err
 	}
 	if statement == localTerminalLegacyManifestsSQL(1) {
 		if len(args) != 3 || args[0].Value != string(f.job.Run.TenantID) || args[1].Value != string(f.state.Manifest.ID) || f.state.Manifest.ID == "" {
@@ -300,8 +348,11 @@ func (f *managedV1HistorySQL) QueryContext(ctx context.Context, statement string
 		return row(string(raw))
 	case "SELECT entitlement_state FROM subscription_connections WHERE tenant_id = $1 AND subscription_connection_id = $2":
 		return row(string(domain.EntitlementActive))
-	case "SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at FROM subscription_scheduler_slots WHERE tenant_id = $1 AND subscription_connection_id = $2":
-		return row(string(domain.SchedulerReady), string(f.job.Run.ID), string(f.job.Reservation.ID), time.Time{}, f.at)
+	case "SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at, SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65) FROM subscription_scheduler_slots WHERE tenant_id = $1 AND subscription_connection_id = $2":
+		if !reflect.DeepEqual(localInstallationNamedValues(args), []driver.Value{string(f.job.Run.TenantID), string(f.job.Run.SubscriptionConnectionID)}) || len(f.slotRow) != 7 {
+			return nil, errors.New("managed legacy slot exact key and seven-column projection")
+		}
+		return row(f.slotRow...)
 	case "SELECT queue_depth, active_runs FROM tenant_scheduler_counters WHERE tenant_id = $1":
 		return row(f.counters...)
 	case completionSQL(sessionMaterialCurrentSQL):
@@ -475,6 +526,8 @@ func produceManagedV1History(t *testing.T, name string, blobs ports.BlobStore) *
 		material: map[string][]driver.Value{}, eventIndex: map[string][]driver.Value{}, eventRecords: map[string]string{},
 	}}
 	f.at = principal.at
+	f.quotaRow = legacyProfileQuotaRow(t, job, job.Reservation.ExpiresAt.Add(time.Hour))
+	f.slotRow = []driver.Value{string(domain.SchedulerReady), string(job.Run.ID), string(job.Reservation.ID), time.Time{}, f.at, nil, nil}
 	f.lease = domain.Lease{ID: domain.LeaseID(name + "-lease"), TenantID: job.Run.TenantID, RunID: job.Run.ID, AttemptID: job.Attempt.ID, WorkerID: job.Attempt.WorkerID, FenceToken: 1, AcquiredAt: job.Run.CreatedAt, ExpiresAt: f.at.Add(time.Minute)}
 	if err := f.lease.ValidateForAttempt(job.Run, job.Attempt); err != nil {
 		t.Fatal(err)
@@ -721,6 +774,84 @@ func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
 			}
 			if f.state.Mutations != beforeWrites || blobs.calls != beforeBlobs {
 				t.Fatal("historical validation repaired or replayed output")
+			}
+		})
+	}
+}
+
+func TestManagedV1HistoryCapacityPhysicalPostimageAndRollback(t *testing.T) {
+	produced := produceManagedV1History(t, "managed-v1-capacity-postimage", &localEntryBlobs{})
+	store, f, ctx := produced.store, produced.sql, produced.ctx
+	var original domain.QuotaReservation
+	if err := store.Transact(ctx, produced.terminal.TenantID, func(state ports.StateTx) error {
+		var found bool
+		var err error
+		original, found, err = readWorkerQuotaReservationStorageV1(ctx, state.(*stateTx), produced.terminal, f.job.Reservation.ID)
+		if err == nil && !found {
+			return errors.New("retained managed legacy quota missing")
+		}
+		return err
+	}); err != nil {
+		t.Fatal("actual committed legacy quota readback", err, f.lastSQL)
+	}
+	if original.Status != domain.ReservationCommitted || original.LocalCapacityAssociation != nil || original.SubscriptionConnectionID != f.job.Run.SubscriptionConnectionID || len(f.quotaRow) != 10 || f.quotaRow[5] != string(domain.ReservationCommitted) || len(f.expiryRow) != 0 || len(f.slotRow) != 7 || f.slotRow[1] != "" || f.slotRow[2] != "" || f.slotRow[5] != nil || f.slotRow[6] != nil {
+		t.Fatal("finalizer did not retain exact legacy capacity postimage")
+	}
+	beforeQuota, beforeExpiry, beforeSlot := append([]driver.Value(nil), f.quotaRow...), append([]driver.Value(nil), f.expiryRow...), append([]driver.Value(nil), f.slotRow...)
+	beforePayload := append([]driver.Value(nil), f.rows["quota_reservations"]...)
+	beforeMutations := f.state.Mutations
+	updated := original.Clone()
+	updated.ExpiresAt = updated.ExpiresAt.Add(time.Second)
+	updated.UpdatedAt = updated.UpdatedAt.Add(time.Microsecond)
+	bucket, err := ydbpartition.BucketV1(string(original.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The writer intentionally checks this exact new expiry PK as well as the
+	// retained old key. Declare its separate absence before the transaction;
+	// no arbitrary future timestamp or unknown query receives an empty row.
+	f.candidateExpiry = &legacyProfileExpiryPoint{key: []driver.Value{int64(bucket), updated.ExpiresAt, string(original.TenantID), string(original.ID)}}
+	sqlTx, err := store.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlTx.Rollback() })
+	tx := &stateTx{store: store, sqlTx: sqlTx, tenantID: original.TenantID}
+	if err := tx.PutQuotaReservation(ctx, updated); err != nil {
+		t.Fatal("original legacy extension writer", err, f.lastSQL)
+	}
+	if f.quotaRow[8] != updated.ExpiresAt || f.quotaRow[9] != updated.ExpiresAt.Add(store.operationalRetention) || f.rows["quota_reservations"][0] != f.quotaRow[0] {
+		t.Fatal("physical quota postimage ignored actual writer scalars")
+	}
+	slot := domain.SubscriptionSchedulerSlot{TenantID: original.TenantID, SubscriptionConnectionID: original.SubscriptionConnectionID, State: domain.SchedulerReady, UpdatedAt: f.at.Add(time.Microsecond)}
+	if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+		t.Fatal("original nine-column legacy slot writer", err)
+	}
+	if len(f.slotRow) != 7 || f.slotRow[4] != slot.UpdatedAt || f.slotRow[5] != nil || f.slotRow[6] != nil {
+		t.Fatal("physical slot postimage ignored actual nine-column write")
+	}
+	if err := sqlTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeQuota, f.quotaRow) || !reflect.DeepEqual(beforeExpiry, f.expiryRow) || !reflect.DeepEqual(beforeSlot, f.slotRow) || !reflect.DeepEqual(beforePayload, f.rows["quota_reservations"]) || f.state.Mutations != beforeMutations {
+		t.Fatal("rollback retained an uncommitted physical capacity postimage")
+	}
+	for _, fault := range []string{"foreign subscription", "association only", "digest only"} {
+		t.Run(fault, func(t *testing.T) {
+			args := []driver.NamedValue{{Ordinal: 1, Value: string(original.TenantID)}, {Ordinal: 2, Value: string(original.SubscriptionConnectionID)}, {Ordinal: 3, Value: string(domain.SchedulerReady)}, {Ordinal: 4, Value: ""}, {Ordinal: 5, Value: ""}, {Ordinal: 6, Value: time.Unix(0, 0).UTC()}, {Ordinal: 7, Value: f.at}, {Ordinal: 8}, {Ordinal: 9}}
+			switch fault {
+			case "foreign subscription":
+				args[1].Value = "foreign-subscription"
+			case "association only":
+				args[7].Value = ""
+			case "digest only":
+				args[8].Value = ""
+			}
+			if _, err := f.ExecContext(ctx, managedHistoryLegacySlotWriteSQL, args); err == nil {
+				t.Fatal("malformed legacy slot write accepted")
+			}
+			if !reflect.DeepEqual(beforeSlot, f.slotRow) || f.state.Mutations != beforeMutations {
+				t.Fatal("rejected slot write changed physical state")
 			}
 		})
 	}

@@ -166,9 +166,17 @@ func (f *localCanonicalJoinSQL) ExecContext(ctx context.Context, s string, args 
 	return result, nil
 }
 
-func newLocalCanonicalJoin(t *testing.T) (*Store, *localCanonicalJoinSQL, *originalLocalRecoveryFixture, ports.CanonicalUserEventCommit) {
+func newLocalCanonicalJoin(t *testing.T, installed ...*originalLocalRecoveryFixture) (*Store, *localCanonicalJoinSQL, *originalLocalRecoveryFixture, ports.CanonicalUserEventCommit) {
 	t.Helper()
-	original := newOriginalLocalRecoveryFixture(t, 4)
+	if len(installed) > 1 || len(installed) == 1 && installed[0] == nil {
+		t.Fatal("canonical join accepts one original installed Source fixture")
+	}
+	var original *originalLocalRecoveryFixture
+	if len(installed) == 1 {
+		original = installed[0]
+	} else {
+		original = newOriginalLocalRecoveryFixture(t, 4)
+	}
 	binder, err := NewLocalHarnessBinder(original.store, original.source, original.receipt)
 	if err != nil {
 		t.Fatal("same-Source binder constructor", err)

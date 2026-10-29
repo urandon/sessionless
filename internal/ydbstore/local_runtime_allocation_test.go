@@ -49,6 +49,8 @@ func (b *localRuntimeActualBurn) count() int {
 }
 
 type localRuntimeActualFixture struct {
+	installationStore            *Store
+	installationSQL              *localInstallationSQLFixture
 	installationRoot, executable string
 	receipt                      ports.OwnedProfilePublicationReceiptV1
 	source                       *localoperator.Source
@@ -107,6 +109,7 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
+	sourceOnly                                              bool                             // genuine installation/funding only; no synthetic lease/parent/grant
 	authenticFunding                                        bool                             // genuine Source + Store four-component publication, never live service evidence
 	auth                                                    domain.ConfiguredInferenceAuthV1 // optional private pre-intake auth mode; empty preserves the no-auth fixture
 	scope                                                   domain.AttemptExecutionSourceScopeV1
@@ -129,6 +132,9 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	t.Helper()
 	if len(prebuild) > 1 {
 		t.Fatal("actual runtime fixture accepts at most one pre-seal canonical scope")
+	}
+	if len(prebuild) == 1 && prebuild[0].sourceOnly && (!acceptReceipt || !prebuild[0].authenticFunding || prebuild[0].scope.Validate() != nil) {
+		t.Fatal("source-only setup requires original receipt, genuine funding and explicit valid scope")
 	}
 	root, executable, manifest := localOperatorFiles(t)
 	if len(prebuild) == 1 {
@@ -440,9 +446,21 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		}
 	}
 	at := time.Now().UTC().Truncate(time.Microsecond)
+	if len(prebuild) == 1 && prebuild[0].sourceOnly {
+		at = profile.Window.PublishedAt
+		for _, row := range spending {
+			if row.Window.PublishedAt.After(at) {
+				at = row.Window.PublishedAt
+			}
+		}
+	}
 	pkg, err := domain.BuildOwnedAgentExecutionPackageV1(scope, profile, spending, at)
 	if err != nil {
 		t.Fatalf("canonical package (external funding declarations remain synthetic): %v", err)
+	}
+	if len(prebuild) == 1 && prebuild[0].sourceOnly {
+		store.ownedAttemptEffectSourceVerifier = source
+		return localRuntimeActualFixture{installationRoot: root, executable: executable, receipt: receipt, source: source, profile: profile, config: config, execution: pkg.Source, at: at, installationStore: store, installationSQL: sqlFixture}
 	}
 	authority := domain.ServerlessInvocationAuthorityV1{Version: 1, HarnessBinding: pkg.Binding, ExecutionPlacementV2: pkg.Placement, SubstrateBinding: pkg.Substrate, AdmissionCostCeiling: pkg.Cost,
 		Lease:                 domain.Lease{ID: "actual-runtime-lease", TenantID: scope.TenantID, RunID: scope.RunID, AttemptID: scope.AttemptID, WorkerID: "actual-runtime-worker", FenceToken: 4, AcquiredAt: at, ExpiresAt: at.Add(5 * time.Minute)},

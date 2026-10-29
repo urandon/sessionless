@@ -95,7 +95,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) GoString() string { return owner.St
 
 func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
 	if owner == nil || owner.nativeSelected() && owner.nativeIdentityV2 != owner || ctx == nil || ctx.Err() != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageIdentity)
 	}
 	var nativeSession *attachedworkersession.Session
 	if owner.mediaConfig != nil || owner.nativeSelected() {
@@ -120,17 +120,20 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	}
 	if invocation.Validate() != nil || invocation.Credential == nil ||
 		invocation.VerifiedInput.ValidateFor(invocation.Identity) != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageVerifiedInput)
 	}
 	input, err := invocation.VerifiedInput.Clone()
 	if err != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageVerifiedInput)
 	}
 	defer input.Clear()
 	job := input.Job
 	if owner.nativeSelected() {
 		deadline, err := acceptedNativeRuntimeDeadlineV2(input, owner.nativeNowV2())
 		if err != nil {
+			if errors.Is(err, ErrContract) {
+				return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeFixed)
+			}
 			return attachedworkerdaemon.InvocationResult{}, err
 		}
 		var stopRuntime context.CancelFunc
@@ -145,19 +148,25 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		if owner.nativeConfigV3 != nil {
 			bundle, qualifyErr := owner.qualifyNativeGenerationV3(ctx, input, nativeSession)
 			if qualifyErr != nil {
+				if errors.Is(qualifyErr, ErrContract) {
+					return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeGeneration)
+				}
 				return attachedworkerdaemon.InvocationResult{}, qualifyErr
 			}
 			generationEvidence, descriptor = &bundle, owner.nativeProfileV3.descriptor
 		} else if owner.nativeConfigV2 != nil {
 			descriptor = owner.nativeProfileV2.descriptor
 			if validateNativeEnvelopeEvidenceV2(owner.nativeProfileV2, owner.nativeConfigV2.Evidence, job.HarnessBinding, owner.nativeNowV2()) != nil || verifyNativeArtifactsV2(ctx, owner.nativeProfileV2) != nil {
-				return attachedworkerdaemon.InvocationResult{}, ErrContract
+				return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeFixed)
 			}
 		} else {
 			descriptor, descriptorErr = owner.mediaConfig.DescriptorV1()
 		}
-		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend || !preparedIngressEnvelope(input) {
-			return attachedworkerdaemon.InvocationResult{}, ErrContract
+		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDescriptor)
+		}
+		if !preparedIngressEnvelope(input) {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageIngress)
 		}
 		media, err = prepareMediaInput(input)
 		if err != nil {
@@ -180,7 +189,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		job.WorkspaceSnapshot != nil || job.SkillBundle != nil || len(job.AllowedMCPServers) != 0 ||
 		invocation.Process.Executable != owner.config.Executable || invocation.Process.ExecutableDigest != owner.config.ExecutableDigest ||
 		!sameStrings(invocation.Process.Arguments, arguments) {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageUnsupportedInput)
 	}
 	var driver *Driver
 	if owner.nativeConfigV3 != nil {
@@ -191,6 +200,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		driver, err = NewPreparedAttachedWorkerDriverV1(owner.config, input.AcceptedAttempt, job.HarnessBinding.Resource, owner.supervisor)
 	}
 	if err != nil {
+		if errors.Is(err, ErrContract) {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDriver)
+		}
 		return attachedworkerdaemon.InvocationResult{}, err
 	}
 	if media != nil && owner.mediaConfig != nil {
@@ -201,7 +213,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		}
 		boundary, ok := driver.boundary.(*PreparedProcessBoundaryV1)
 		if !ok {
-			return attachedworkerdaemon.InvocationResult{}, ErrContract
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDriver)
 		}
 		boundary.mediaConfig = owner.mediaConfig
 	}
@@ -210,7 +222,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		ContextSnapshot: job.ContextSnapshot, ContextWindow: job.ContextWindow, ExecutionPlacementV2: job.ExecutionPlacementV2,
 		HarnessBinding: job.HarnessBinding.Clone(), SubstrateBinding: job.SubstrateBinding, AdmissionCostCeiling: job.AdmissionCostCeiling}
 	if driver.Preflight(ctx, executionIdentity(request)) != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStagePreflight)
 	}
 	stage, err := stagePreparedHistory(owner.scratch, input.Context)
 	if err != nil {
@@ -264,6 +276,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	var runErr error
 	if owner.nativeConfigV3 != nil {
 		runErr = owner.checkNativeGenerationV3(runCtx, nativeSession, job.HarnessBinding.Resource)
+		if errors.Is(runErr, ErrContract) {
+			runErr = preparedContractFailure(preparedContractStageNativeGeneration)
+		}
 	}
 	if runErr == nil {
 		result, runErr = owner.outer.Run(runCtx, invocation)

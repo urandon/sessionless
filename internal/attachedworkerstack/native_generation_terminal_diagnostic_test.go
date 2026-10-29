@@ -38,6 +38,7 @@ type joinedGenerationTerminalFlags struct {
 	RunInvocationInvalid, RunCredentialUnavailable                  bool
 	RunCredentialFinalization, RunCanceled, RunDeadline, RunUnknown bool
 	RunStackMismatch, RunStackReconciliation                        bool
+	PreparedContractStage                                           string
 	ReportError, ReportTerminalInvalid, ReportReconciliation        bool
 	ReportAuthority                                                 bool
 	Succeeded, CleanupComplete                                      bool
@@ -63,6 +64,7 @@ func classifyJoinedGenerationTerminal(result attachedworkerdaemon.InvocationResu
 		RunCanceled:               errors.Is(runErr, context.Canceled), RunDeadline: errors.Is(runErr, context.DeadlineExceeded),
 		RunStackMismatch:       errors.Is(runErr, attachedworkerstack.ErrInvocationMismatch),
 		RunStackReconciliation: errors.Is(runErr, attachedworkerstack.ErrReconciliationRequired),
+		PreparedContractStage:  codexexec.PreparedContractStageV1(runErr),
 		ReportError:            reportErr != nil, ReportTerminalInvalid: errors.Is(reportErr, transport.ErrTerminalEvidenceInvalid),
 		ReportReconciliation: errors.Is(reportErr, transport.ErrReconciliationRequired), ReportAuthority: errors.Is(reportErr, transport.ErrInvalidAuthority),
 		Succeeded: result.Succeeded(runErr), CleanupComplete: result.CleanupComplete(),

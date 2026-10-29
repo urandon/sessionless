@@ -46,7 +46,19 @@ func newLocalRuntimeConnectedStore(t *testing.T, sourceParents ...context.Contex
 	// so the existing one-minute worker envelope contains a longer active phase.
 	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, setupDuration: 10 * time.Second, sourceParent: sourceParent})
 	inputs := &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}
-	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: inputs})
+	// The genuine installed local Source must seal the local retained arm,
+	// not the legacy subscription from the generic running-state DATA.
+	association := domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1,
+		TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: actual.profile.Locator.ResourceID}
+	if association.ValidateForScope(actual.profile.Locator.TenantID, actual.profile.Locator.OwnerUserID, actual.profile.Resource.ResourceID) != nil || actual.profile.Locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		t.Fatal("runtime allocation fixture requires its original exact local Source resource")
+	}
+	canonical.Run.SubscriptionConnectionID, canonical.Reservation.SubscriptionConnectionID = "", ""
+	canonical.Run.LocalCapacityAssociation = &association
+	canonical.Job.LocalCapacityAssociation = canonical.Run.Clone().LocalCapacityAssociation
+	canonical.Reservation.LocalCapacityAssociation = canonical.Run.Clone().LocalCapacityAssociation
+	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, state: &canonical, sources: inputs})
+	declareLocalSessionCapacityRows(t, parent)
 	if !reflect.DeepEqual(parent.base.reader.profile, actual.profile) || !reflect.DeepEqual(parent.source, actual.execution) {
 		t.Fatal("canonical graph changed the genuine original installed profile/spending/source")
 	}

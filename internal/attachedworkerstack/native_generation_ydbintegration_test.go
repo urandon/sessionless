@@ -142,26 +142,25 @@ func (w *joinedGenerationWriter) FlushError() error {
 }
 
 type joinedGenerationWire struct {
-	mu                        sync.Mutex
-	handler                   http.Handler
-	db                        *sql.DB
-	installation              *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
-	paths                     []string
-	lastGenerationPublishPath int
-	exchangesAfterPublication uint64
-	lostBodies                uint64
-	sealed                    []transport.SealedInputV1
-	ready                     []attachedworkeroutput.AttachedWorkerInlineResultV2
-	acks                      []attachedworkerprotocol.TerminalAckV1
-	prepares                  []attachedworkeroutput.AttachedWorkerInlinePrepareV2
-	bodies                    []attachedworkeroutput.AttachedWorkerInlineBodyV2
-	reconciles                []attachedworkeroutput.AttachedWorkerInlineReconcileV2
-	lostMetadata              uint64
-	traffic                   chan struct{}
-	fault                     joinedGenerationFault
-	gateRemoved               bool
-	gateInline                http.Handler
-	gateCalls                 uint64
+	joinedGenerationPollObservation
+	mu           sync.Mutex
+	handler      http.Handler
+	db           *sql.DB
+	installation *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
+	paths        []string
+	lostBodies   uint64
+	sealed       []transport.SealedInputV1
+	ready        []attachedworkeroutput.AttachedWorkerInlineResultV2
+	acks         []attachedworkerprotocol.TerminalAckV1
+	prepares     []attachedworkeroutput.AttachedWorkerInlinePrepareV2
+	bodies       []attachedworkeroutput.AttachedWorkerInlineBodyV2
+	reconciles   []attachedworkeroutput.AttachedWorkerInlineReconcileV2
+	lostMetadata uint64
+	traffic      chan struct{}
+	fault        joinedGenerationFault
+	gateRemoved  bool
+	gateInline   http.Handler
+	gateCalls    uint64
 }
 
 // A closed peer selector, never a production flag or supplied callback. The
@@ -315,17 +314,7 @@ func (w *joinedGenerationWire) RoundTrip(r *http.Request) (*http.Response, error
 		_ = actual.Body.Close()
 		return nil, errors.New("controlled READY response loss after actual commit")
 	}
-	if actual.StatusCode == http.StatusOK {
-		switch r.URL.Path {
-		case attachedworkerhttp.ResourceGenerationPublishPathV1:
-			w.lastGenerationPublishPath = len(w.paths)
-			w.exchangesAfterPublication = 0
-		case attachedworkerhttp.ExchangePathV1:
-			if w.lastGenerationPublishPath > 0 && len(w.paths) > w.lastGenerationPublishPath {
-				w.exchangesAfterPublication++
-			}
-		}
-	}
+	w.observePollResponse(len(w.paths), r.URL.Path, actual.StatusCode)
 	return actual, nil
 }
 

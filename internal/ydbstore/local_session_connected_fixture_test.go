@@ -86,6 +86,7 @@ func newLocalSessionConnectedSeedWithAuth(t *testing.T, endpoint string, compile
 	state.Reservation.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, state: &state,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
+	declareLocalSessionCapacityRows(t, parent)
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
 	if err != nil {
 		t.Fatal(err)

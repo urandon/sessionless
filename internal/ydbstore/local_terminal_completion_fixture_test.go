@@ -733,31 +733,32 @@ func (c *terminalCompletionConn) QueryContext(ctx context.Context, statement str
 // Exact mutation statements accepted by this model. An unrecognized statement
 // never succeeds merely because a table name or verb happens to match.
 var terminalCompletionWrites = map[string]int{
-	completionSQL(`INSERT INTO substrate_execution_evidence (tenant_id,attempt_id,run_id,physical_invocation_claim_id,evidence_digest,recorded_at,record) VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS JsonDocument))`):                                                             7,
-	completionSQL(`UPSERT INTO runs (tenant_id, run_id, session_id, trigger_event_id, subscription_connection_id, status, created_at, updated_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`):                                              9,
-	completionSQL(`UPSERT INTO runs_by_session (tenant_id, session_id, created_at, run_id, trigger_event_id, status) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                                      6,
-	completionSQL(`UPSERT INTO run_idempotency (tenant_id, idempotency_key, run_id, created_at, expire_at) VALUES ($1, $2, $3, $4, $5)`):                                                                                                                                    5,
-	completionSQL(`UPSERT INTO attempts (tenant_id, attempt_id, run_id, attempt_number, status, worker_id, created_at, updated_at, retention_expire_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))`):                                   10,
-	completionSQL(`DELETE FROM quota_expiry_v2 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND quota_reservation_id = $4`):                                                                                                                               4,
-	completionSQL(`UPSERT INTO quota_reservations (tenant_id, quota_reservation_id, run_id, subscription_connection_id, status, capacity_units, held_at, expires_at, retention_expire_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))`): 10,
-	completionSQL(`UPSERT INTO artifact_manifests (tenant_id, artifact_manifest_id, run_id, created_at, payload) VALUES ($1, $2, $3, $4, CAST($5 AS JsonDocument))`):                                                                                                        5,
-	completionSQL(`UPSERT INTO artifact_manifests_by_run (tenant_id, run_id, artifact_manifest_id) VALUES ($1, $2, $3)`):                                                                                                                                                    3,
-	completionSQL(`INSERT INTO session_events (tenant_id, session_id, sequence, event_id, kind, author_user_id, run_id, idempotency_key, blob_key, created_at, record) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CAST($11 AS JsonDocument))`):                        11,
-	completionSQL(`INSERT INTO session_event_idempotency (tenant_id, session_id, idempotency_key, sequence, event_id, created_at) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                         6,
-	completionSQL(`INSERT INTO session_material_boundaries_v1 (tenant_id,session_id,sequence,version,through_sequence,last_event_id,prefix_digest,record) VALUES ($1,$2,$3,$4,$5,$6,$7,CAST($8 AS String))`):                                                                8,
-	completionSQL(`UPSERT INTO session_material_current_v1 (tenant_id,session_id,version,through_sequence,last_event_id,prefix_digest,record) VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS String))`):                                                                               7,
-	completionSQL(`UPDATE sessions SET status = $1, last_event_sequence = $2, updated_at = $3, archived_at = $4, record = CAST($5 AS JsonDocument) WHERE tenant_id = $6 AND session_id = $7`):                                                                               7,
-	completionSQL(`DELETE FROM session_activity WHERE tenant_id = $1 AND user_id = $2 AND status = $3 AND activity_bucket = $4 AND updated_at = $5 AND session_id = $6`):                                                                                                    6,
-	completionSQL(`UPSERT INTO session_activity (tenant_id, user_id, status, activity_bucket, updated_at, session_id) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                                     6,
-	completionSQL(`UPSERT INTO session_displays (tenant_id, session_id, updated_at, record) VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`):                                                                                                                                 4,
-	completionSQL(`INSERT INTO run_finalizations (tenant_id, run_id, terminal_status, content_digest, created_at) VALUES ($1, $2, $3, $4, $5)`):                                                                                                                             5,
-	completionSQL(`UPSERT INTO subscription_scheduler_slots (tenant_id, subscription_connection_id, state, active_run_id, active_reservation_id, blocked_until, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`):                                                           7,
-	completionSQL(`UPDATE tenant_scheduler_counters SET queue_depth = $1, active_runs = $2, updated_at = $3 WHERE tenant_id = $4`):                                                                                                                                          4,
-	completionSQL(`INSERT INTO tenant_scheduler_counters (tenant_id, queue_depth, active_runs, updated_at) VALUES ($1, $2, $3, $4)`):                                                                                                                                        4,
-	completionSQL(`DELETE FROM lease_expiry_v2 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND run_id = $4`):                                                                                                                                             4,
-	completionSQL(`DELETE FROM lease_heads WHERE tenant_id = $1 AND run_id = $2`):                                                                                                                                                                                           2,
-	completionSQL(`UPSERT INTO audit_events (tenant_id, occurred_at, audit_event_id, actor_id, action, subject_kind, subject_id, outcome, metadata, expire_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument), $10)`):                                     10,
-	completionSQL(`UPSERT INTO run_explanation_heads_v1 (tenant_id,run_id,revision,record) VALUES ($1,$2,$3,CAST($4 AS JsonDocument))`):                                                                                                                                     4,
+	completionSQL(`INSERT INTO substrate_execution_evidence (tenant_id,attempt_id,run_id,physical_invocation_claim_id,evidence_digest,recorded_at,record) VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS JsonDocument))`):                                                              7,
+	completionSQL(`UPSERT INTO runs (tenant_id, run_id, session_id, trigger_event_id, subscription_connection_id, status, created_at, updated_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`):                                               9,
+	completionSQL(`UPSERT INTO runs_by_session (tenant_id, session_id, created_at, run_id, trigger_event_id, status) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                                       6,
+	completionSQL(`UPSERT INTO run_idempotency (tenant_id, idempotency_key, run_id, created_at, expire_at) VALUES ($1, $2, $3, $4, $5)`):                                                                                                                                     5,
+	completionSQL(`UPSERT INTO attempts (tenant_id, attempt_id, run_id, attempt_number, status, worker_id, created_at, updated_at, retention_expire_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))`):                                    10,
+	completionSQL(`DELETE FROM quota_expiry_v2 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND quota_reservation_id = $4`):                                                                                                                                4,
+	completionSQL(`UPSERT INTO quota_reservations (tenant_id, quota_reservation_id, run_id, subscription_connection_id, status, capacity_units, held_at, expires_at, retention_expire_at, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CAST($10 AS JsonDocument))`):  10,
+	completionSQL(`UPSERT INTO artifact_manifests (tenant_id, artifact_manifest_id, run_id, created_at, payload) VALUES ($1, $2, $3, $4, CAST($5 AS JsonDocument))`):                                                                                                         5,
+	completionSQL(`UPSERT INTO artifact_manifests_by_run (tenant_id, run_id, artifact_manifest_id) VALUES ($1, $2, $3)`):                                                                                                                                                     3,
+	completionSQL(`INSERT INTO session_events (tenant_id, session_id, sequence, event_id, kind, author_user_id, run_id, idempotency_key, blob_key, created_at, record) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CAST($11 AS JsonDocument))`):                         11,
+	completionSQL(`INSERT INTO session_event_idempotency (tenant_id, session_id, idempotency_key, sequence, event_id, created_at) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                          6,
+	completionSQL(`INSERT INTO session_material_boundaries_v1 (tenant_id,session_id,sequence,version,through_sequence,last_event_id,prefix_digest,record) VALUES ($1,$2,$3,$4,$5,$6,$7,CAST($8 AS String))`):                                                                 8,
+	completionSQL(`UPSERT INTO session_material_current_v1 (tenant_id,session_id,version,through_sequence,last_event_id,prefix_digest,record) VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS String))`):                                                                                7,
+	completionSQL(`UPDATE sessions SET status = $1, last_event_sequence = $2, updated_at = $3, archived_at = $4, record = CAST($5 AS JsonDocument) WHERE tenant_id = $6 AND session_id = $7`):                                                                                7,
+	completionSQL(`DELETE FROM session_activity WHERE tenant_id = $1 AND user_id = $2 AND status = $3 AND activity_bucket = $4 AND updated_at = $5 AND session_id = $6`):                                                                                                     6,
+	completionSQL(`UPSERT INTO session_activity (tenant_id, user_id, status, activity_bucket, updated_at, session_id) VALUES ($1, $2, $3, $4, $5, $6)`):                                                                                                                      6,
+	completionSQL(`UPSERT INTO session_displays (tenant_id, session_id, updated_at, record) VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`):                                                                                                                                  4,
+	completionSQL(`INSERT INTO run_finalizations (tenant_id, run_id, terminal_status, content_digest, created_at) VALUES ($1, $2, $3, $4, $5)`):                                                                                                                              5,
+	completionSQL(`UPSERT INTO subscription_scheduler_slots (tenant_id, subscription_connection_id, state, active_run_id, active_reservation_id, blocked_until, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`):                                                            7,
+	completionSQL(`UPSERT INTO subscription_scheduler_slots (tenant_id, subscription_connection_id, state, active_run_id, active_reservation_id, blocked_until, updated_at, local_capacity_association, local_capacity_digest) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`): 9,
+	completionSQL(`UPDATE tenant_scheduler_counters SET queue_depth = $1, active_runs = $2, updated_at = $3 WHERE tenant_id = $4`):                                                                                                                                           4,
+	completionSQL(`INSERT INTO tenant_scheduler_counters (tenant_id, queue_depth, active_runs, updated_at) VALUES ($1, $2, $3, $4)`):                                                                                                                                         4,
+	completionSQL(`DELETE FROM lease_expiry_v2 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND run_id = $4`):                                                                                                                                              4,
+	completionSQL(`DELETE FROM lease_heads WHERE tenant_id = $1 AND run_id = $2`):                                                                                                                                                                                            2,
+	completionSQL(`UPSERT INTO audit_events (tenant_id, occurred_at, audit_event_id, actor_id, action, subject_kind, subject_id, outcome, metadata, expire_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument), $10)`):                                      10,
+	completionSQL(`UPSERT INTO run_explanation_heads_v1 (tenant_id,run_id,revision,record) VALUES ($1,$2,$3,CAST($4 AS JsonDocument))`):                                                                                                                                      4,
 }
 
 func (c *terminalCompletionConn) ExecContext(ctx context.Context, statement string, args []driver.NamedValue) (_ driver.Result, err error) {
@@ -899,6 +900,25 @@ func applyTerminalCompletionWrite(state *LocalTerminalCompletionSnapshot, rows m
 		f.state.CountersPresent, f.state.ActiveRuns = true, uint32(val(2).(int64))
 		*counters = []driver.Value{val(1), val(2)}
 	case strings.HasPrefix(flat, "UPSERT INTO subscription_scheduler_slots "):
+		var run domain.Run
+		if json.Unmarshal([]byte(rows["runs"][0].(string)), &run) != nil {
+			return errors.New("terminal slot owning Run missing")
+		}
+		if len(args) == 9 {
+			stored := capacityStorageV1{key: val(1).(string)}
+			if val(7) != nil {
+				stored.association = sql.NullString{String: val(7).(string), Valid: true}
+			}
+			if val(8) != nil {
+				stored.digest = sql.NullString{String: val(8).(string), Valid: true}
+			}
+			sub, local, err := decodeCapacityStorageV1(run.TenantID, stored)
+			if err != nil || val(0) != string(run.TenantID) || sub != run.SubscriptionConnectionID || !equalLocalCapacityV1(local, run.LocalCapacityAssociation) {
+				return errors.New("terminal slot physical arm differs from original Run")
+			}
+		} else if run.LocalCapacityAssociation != nil {
+			return errors.New("local terminal slot lost its physical association")
+		}
 		f.state.ActiveRun = val(3).(string)
 		f.state.ActiveReservation = val(4).(string)
 	}

@@ -49,7 +49,10 @@ func Evaluate(
 		if snapshot.Entitlement != "" || snapshot.Quota != "" {
 			return Decision{}, domain.ValidationError{Field: "scheduler.local_source", Reason: "local capacity excludes subscription entitlement and quota observations"}
 		}
-		if !snapshot.LocalSourceReady || snapshot.Slot.State != domain.SchedulerReady {
+		// Pressure is a current capacity/workload observation, not a disabled
+		// resource. Reevaluate its limits below, without relaxing source,
+		// draining, reauthentication or provider-blocked state fences.
+		if !snapshot.LocalSourceReady || snapshot.Slot.State != domain.SchedulerReady && snapshot.Slot.State != domain.SchedulerPressured {
 			state := snapshot.Slot.State
 			if !snapshot.LocalSourceReady && state != domain.SchedulerDraining {
 				state = domain.SchedulerReauthRequired

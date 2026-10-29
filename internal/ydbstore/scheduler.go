@@ -296,11 +296,20 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	}
 	if slot.ActiveRunID == request.RunID &&
 		slot.ActiveReservationID == request.ReservationID {
-		reservation, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-			`SELECT payload FROM quota_reservations
-				 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-			request.TenantID, request.ReservationID,
-		)
+		var reservation domain.QuotaReservation
+		var found bool
+		var err error
+		if local {
+			// Replaying a held local admission requires its original physical
+			// quota scalars AND exact expiry projection, not payload alone.
+			reservation, found, err = readWorkerQuotaReservationStorageV1(ctx, tx, run, request.ReservationID)
+		} else {
+			reservation, found, err = readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
+				`SELECT payload FROM quota_reservations
+					 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
+				request.TenantID, request.ReservationID,
+			)
+		}
 		if err != nil {
 			return err
 		}

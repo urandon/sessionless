@@ -3,6 +3,7 @@ package ydbstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 	"unicode/utf8"
 
@@ -106,6 +107,23 @@ func loadOwnedProfileProjection(ctx context.Context, q *ownedAuthorityQuery, l d
 	if l.Validate() != nil {
 		return denied()
 	}
+	key, err := ownedProfileProjectionCacheKey(l)
+	if err != nil {
+		return denied()
+	}
+	if cached, ok := q.metadataCache[key]; ok {
+		// Only a complete, physically correlated and already charged original
+		// source join can seed this exact profile projection. The enclosing
+		// reader still checks the requested digest/generation and current DB time.
+		q.budget.mu.Lock()
+		valid := ctx.Err() == nil && !q.budget.failed && q.budget.active && q.callback == q.budget.callbacks
+		q.budget.mu.Unlock()
+		p, err := domain.DecodeOwnedAgentProfileCurrentV1([]byte(cached.raw))
+		if !valid || cached.table != "owned_agent_profile_current_v1" || cached.err != nil || len(cached.raw) > ownedAuthorityHeadBytes || err != nil || p.Locator != l {
+			return denied()
+		}
+		return p, true, nil
+	}
 	var raw, state, digest, installation string
 	var version, revision, generation, installationRevision uint64
 	var published, expires, updated time.Time
@@ -128,6 +146,11 @@ func loadOwnedProfileProjection(ctx context.Context, q *ownedAuthorityQuery, l d
 		return denied()
 	}
 	return p, true, nil
+}
+
+func ownedProfileProjectionCacheKey(l domain.OwnedAgentProfileLocatorV1) (string, error) {
+	args, err := json.Marshal([]any{l.TenantID, l.OwnerUserID, l.Profile, l.BackendProfileDigest, l.ResourceKind, l.ResourceID, l.ModelVendorID, l.ModelID, l.InputDataClass})
+	return ownedProfileCurrentSQL + "\n" + string(args), err
 }
 
 func readOwnedSpendingCurrent(ctx context.Context, q *ownedAuthorityQuery, ref ownedSpendingReference) (domain.AttemptSpendingAuthorizationCurrentV1, error) {

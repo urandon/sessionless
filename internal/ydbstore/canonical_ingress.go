@@ -244,13 +244,8 @@ func (store *Store) CommitCanonicalUserEvent(
 		var existingSequence uint64
 		var existingEventID, existingRunID string
 		var existingMutationDigest sql.NullString
-		lookupErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT session_id, sequence, event_id, run_id, mutation_digest
-			 FROM frontend_ingress_idempotency
-			 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
-			 AND expire_at > CurrentUtcTimestamp()`,
-			request.TenantID, request.BindingID, request.IdempotencyKey,
-		).Scan(&existingSessionID, &existingSequence, &existingEventID, &existingRunID, &existingMutationDigest)
+		lookupErr := scanCanonicalIngressIdempotencyTx(ctx, tx, request.BindingID, request.IdempotencyKey,
+			&existingSessionID, &existingSequence, &existingEventID, &existingRunID, &existingMutationDigest)
 		switch {
 		case lookupErr == nil:
 			if request.MutationDigest != "" && existingMutationDigest.String != request.MutationDigest {
@@ -455,6 +450,35 @@ func (store *Store) CommitCanonicalUserEvent(
 		return ports.CanonicalUserEventResult{}, err
 	}
 	return result, err
+}
+
+const ownedCanonicalIngressIdempotencySQL = `SELECT SUBSTRING(CAST(session_id AS String),0,161), sequence,
+ SUBSTRING(CAST(event_id AS String),0,161), SUBSTRING(CAST(run_id AS String),0,161),
+ SUBSTRING(CAST(mutation_digest AS String),0,65)
+ FROM frontend_ingress_idempotency
+ WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
+ AND expire_at > CurrentUtcTimestamp()`
+
+func scanCanonicalIngressIdempotencyTx(ctx context.Context, tx *stateTx, binding domain.FrontendBindingID, key domain.IdempotencyKey,
+	session *string, sequence *uint64, event, run *string, mutation *sql.NullString,
+) error {
+	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
+		err := q.scanMetadata(ctx, ownedCanonicalIngressIdempotencySQL, []any{tx.tenantID, binding, key}, session, sequence, event, run, mutation)
+		if err != nil {
+			return err
+		}
+		if len(*session) > 160 || len(*event) > 160 || len(*run) > 160 || len(mutation.String) > 64 ||
+			domain.SessionID(*session).Validate() != nil || domain.SessionEventID(*event).Validate() != nil || domain.RunID(*run).Validate() != nil || *sequence == 0 || validateMutationDigest(mutation.String) != nil {
+			return q.budget.deny()
+		}
+		return nil
+	}
+	return tx.sqlTx.QueryRowContext(ctx,
+		`SELECT session_id, sequence, event_id, run_id, mutation_digest
+		 FROM frontend_ingress_idempotency
+		 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
+		 AND expire_at > CurrentUtcTimestamp()`, tx.tenantID, binding, key,
+	).Scan(session, sequence, event, run, mutation)
 }
 
 func authorizeTenantWriteTx(ctx context.Context, tx *stateTx, userID domain.UserID) error {

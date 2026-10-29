@@ -718,11 +718,27 @@ func (store *Store) ExpireQuotaReservation(
 	}
 	err = store.Transact(ctx, candidate.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
-		reservation, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-			`SELECT payload FROM quota_reservations
-			 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-			candidate.TenantID, candidate.ReservationID,
-		)
+		run, runFound, err := state.GetRun(ctx, candidate.RunID)
+		if err != nil {
+			return err
+		}
+		var reservation domain.QuotaReservation
+		var found bool
+		if runFound {
+			if run.TenantID != candidate.TenantID || run.ID != candidate.RunID {
+				return domain.ErrMembershipDenied
+			}
+			reservation, found, err = readWorkerQuotaReservationStorageV1(ctx, tx, run, candidate.ReservationID)
+		} else {
+			// Preserve the original absent-reservation and terminal/nonexpired
+			// no-op dispositions when the Run is absent. This fallback can never
+			// reach a write, slot release, counter update or execution grant.
+			reservation, found, err = readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
+				`SELECT payload FROM quota_reservations
+				 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
+				candidate.TenantID, candidate.ReservationID,
+			)
+		}
 		if err != nil || !found {
 			return err
 		}
@@ -736,11 +752,7 @@ func (store *Store) ExpireQuotaReservation(
 		if reservation.Status != domain.ReservationHeld || reservation.ExpiresAt.After(at) {
 			return nil
 		}
-		run, found, err := state.GetRun(ctx, reservation.RunID)
-		if err != nil {
-			return err
-		}
-		if !found {
+		if !runFound {
 			return fmt.Errorf("run %q not found", reservation.RunID)
 		}
 		if run.Status == domain.RunRunning || run.LocalCapacityAssociation != nil && run.Status != domain.RunQueued {
@@ -752,7 +764,7 @@ func (store *Store) ExpireQuotaReservation(
 		if run.LocalCapacityAssociation != nil {
 			// A queued status cannot erase possibly-active lease custody.
 			var lease string
-			leaseErr := tx.sqlTx.QueryRowContext(ctx, `SELECT lease_id FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`, run.TenantID, run.ID).Scan(&lease)
+			leaseErr := tx.sqlTx.QueryRowContext(ctx, `SELECT SUBSTRING(CAST(lease_id AS String),0,161) FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`, run.TenantID, run.ID).Scan(&lease)
 			if leaseErr == nil {
 				return nil
 			}

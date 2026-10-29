@@ -564,20 +564,44 @@ func (tx *stateTx) PutQuotaReservation(
 	if err != nil {
 		return err
 	}
-	previous, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-		`SELECT payload FROM quota_reservations
-		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-		reservation.TenantID, reservation.ID,
-	)
+	previous, found, err := readQuotaReservationStorageV1(ctx, tx, run, reservation.ID)
 	if err != nil {
 		return err
 	}
 	if found {
-		if previous.ID != reservation.ID || previous.ValidateForRun(run) != nil ||
-			previous.CapacityUnits != reservation.CapacityUnits || !previous.HeldAt.Equal(reservation.HeldAt) ||
-			!equalLocalCapacityV1(previous.LocalCapacityAssociation, reservation.LocalCapacityAssociation) {
+		if err := validateQuotaReservationUpdateV1(previous, reservation); err != nil {
+			return err
+		}
+		present, err := readQuotaExpiryStorageV1(ctx, tx, previous)
+		if err != nil {
+			return err
+		}
+		if previous.LocalCapacityAssociation != nil {
+			// Local held history must retain its original exact projection; a
+			// terminal history must not have one. Neither absence nor collision
+			// can authorize rebuilding/deleting a different hold on a replay.
+			if present != (previous.Status == domain.ReservationHeld) {
+				return domain.ErrMembershipDenied
+			}
+			if previous.Status == reservation.Status {
+				return nil // exact local replay is read-only, including terminal
+			}
+		} else if present && previous.Status != domain.ReservationHeld {
 			return domain.ErrMembershipDenied
 		}
+	} else if reservation.LocalCapacityAssociation != nil && reservation.Status != domain.ReservationHeld {
+		return domain.ErrMembershipDenied
+	}
+	if !found || !previous.ExpiresAt.Equal(reservation.ExpiresAt) {
+		present, err := readQuotaExpiryStorageV1(ctx, tx, reservation)
+		if err != nil {
+			return err
+		}
+		if present {
+			return domain.ErrMembershipDenied // orphan/new-key collision, never repair
+		}
+	}
+	if found {
 		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
 		if err != nil {
 			return err

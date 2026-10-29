@@ -525,6 +525,9 @@ func loadWorkerJobStateTx(ctx context.Context, tx *stateTx, runID domain.RunID) 
 		}
 		return result, found, err
 	}
+	if result.Run.TenantID != tx.tenantID || result.Run.ID != runID {
+		return ports.WorkerJobState{}, false, domain.ErrMembershipDenied
+	}
 	result.Job, found, err = readJSON[domain.WorkerJob](ctx, tx.sqlTx,
 		`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, runID)
 	if err != nil || !found {
@@ -534,9 +537,7 @@ func loadWorkerJobStateTx(ctx context.Context, tx *stateTx, runID domain.RunID) 
 	if err != nil || !found {
 		return result, found, err
 	}
-	result.Reservation, found, err = readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-		`SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2`,
-		tx.tenantID, result.Job.ReservationID)
+	result.Reservation, found, err = readWorkerQuotaReservationStorageV1(ctx, tx, result.Run, result.Job.ReservationID)
 	if err != nil || !found {
 		return result, found, err
 	}

@@ -60,8 +60,26 @@ func (f *readyExpirySQLFixture) QueryContext(ctx context.Context, query string, 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	flat := strings.Join(strings.Fields(query), " ")
+	if flat == strings.Join(strings.Fields(quotaExpiryStorageSQLV1), " ") {
+		bucket, _ := ydbpartition.BucketV1("reservation-v2")
+		if len(args) != 4 || args[0].Value != int64(bucket) || args[2].Value != string(f.tenant) || args[3].Value != "reservation-v2" {
+			return nil, errors.New("quota expiry requires its exact four-part key")
+		}
+		row := f.rows["quota_expiry_v2"]
+		if len(row) == 0 || row[1] != args[1].Value {
+			return &explanationFixtureRows{}, nil
+		}
+		return &explanationFixtureRows{values: row}, nil
+	}
 	if len(args) < 2 || args[0].Value != string(f.tenant) {
 		return nil, errors.New("fixture requires exact tenant point read")
+	}
+	if flat == strings.Join(strings.Fields(quotaReservationStorageSQLV1), " ") {
+		if len(args) != 2 || args[1].Value != "reservation-v2" {
+			return nil, errors.New("quota requires its original exact reservation key")
+		}
+		return &explanationFixtureRows{values: f.rows["quota_reservations"]}, nil
 	}
 	fields := strings.Fields(query)
 	for i, field := range fields {
@@ -70,7 +88,7 @@ func (f *readyExpirySQLFixture) QueryContext(ctx context.Context, query string, 
 		}
 		table := fields[i+1]
 		switch table {
-		case "runs", "attempts", "leases", "quota_reservations", "telegram_delivery_outbox", "session_deletions", "run_explanation_heads_v1":
+		case "runs", "attempts", "leases", "telegram_delivery_outbox", "session_deletions", "run_explanation_heads_v1":
 			return &explanationFixtureRows{values: f.rows[table]}, nil
 		}
 	}
@@ -131,6 +149,28 @@ func readyExpiryPut(t *testing.T, f *readyExpirySQLFixture, table string, value 
 		t.Fatal(err)
 	}
 	f.rows[table] = []driver.Value{string(b)}
+	if table == "quota_reservations" {
+		reservation, ok := value.(domain.QuotaReservation)
+		if !ok {
+			t.Fatal("quota fixture requires an actual typed reservation")
+		}
+		f.rows[table] = []driver.Value{string(b), string(reservation.ID), string(reservation.TenantID), string(reservation.RunID), string(reservation.SubscriptionConnectionID), string(reservation.Status), int64(reservation.CapacityUnits), reservation.HeldAt, reservation.ExpiresAt, reservation.ExpiresAt.Add(time.Hour)}
+		if reservation.Status == domain.ReservationHeld {
+			physical, err := encodeCapacityStorageV1(reservation.TenantID, reservation.SubscriptionConnectionID, reservation.LocalCapacityAssociation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bucket, _ := ydbpartition.BucketV1(string(reservation.ID))
+			var association, digest driver.Value
+			if physical.association.Valid {
+				association = physical.association.String
+			}
+			if physical.digest.Valid {
+				digest = physical.digest.String
+			}
+			f.rows["quota_expiry_v2"] = []driver.Value{int64(bucket), reservation.ExpiresAt, string(reservation.TenantID), string(reservation.ID), string(reservation.RunID), physical.key, association, digest}
+		}
+	}
 }
 func readyExpiryWriteTables(f *readyExpirySQLFixture) []string {
 	result := make([]string, len(f.writes))

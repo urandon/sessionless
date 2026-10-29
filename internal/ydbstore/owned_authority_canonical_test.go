@@ -60,6 +60,25 @@ func (f *canonicalBudgetFixture) QueryContext(ctx context.Context, statement str
 	if statement == `SELECT CurrentUtcTimestamp()` {
 		return &explanationFixtureRows{values: []driver.Value{f.at}}, nil
 	}
+	if statement == quotaReservationStorageSQLV1 {
+		stored := f.rows["quota_reservations"]
+		if len(stored) == 0 {
+			return &explanationFixtureRows{}, nil
+		}
+		var r domain.QuotaReservation
+		if len(args) != 2 || json.Unmarshal([]byte(stored[0].(string)), &r) != nil || args[0].Value != string(r.TenantID) || args[1].Value != string(r.ID) {
+			return nil, errors.New("canonical quota fixture requires exact physical key")
+		}
+		return &explanationFixtureRows{values: []driver.Value{stored[0], string(r.ID), string(r.TenantID), string(r.RunID), string(r.SubscriptionConnectionID), string(r.Status), int64(r.CapacityUnits), r.HeldAt, r.ExpiresAt, r.ExpiresAt}}, nil
+	}
+	if statement == quotaExpiryStorageSQLV1 {
+		if len(args) != 4 {
+			return nil, errors.New("canonical expiry fixture requires complete physical key")
+		}
+		// This legacy history predates the optional expiry projection. Local
+		// presence/collision behavior has its separate complete physical peer.
+		return &explanationFixtureRows{}, nil
+	}
 	if statement == admittedSnapshotMetadataSQL {
 		if len(args) != 4 || args[3].Value != int64(16) {
 			return nil, errors.New("snapshot must use explicit row bound")
@@ -168,10 +187,13 @@ func TestOwnedCanonicalExecutorActualWritersShareBudgetAndClock(t *testing.T) {
 		return tx.PutWorkerJob(ctx, s.Job)
 	})
 	wantBytes := uint64(8 + 3*len(f.rows["runs"][0].(string)) + 2*len(f.rows["quota_reservations"][0].(string)) + len(f.rows["attempts"][0].(string)) + len(f.rows["artifact_manifests"][0].(string)) + len(s.Run.ID))
+	// The complete physical quota read also charges five identity/status
+	// strings, capacity units and all three returned timestamps (8 bytes each).
+	wantBytes += uint64(len(s.Reservation.ID) + len(s.Reservation.TenantID) + len(s.Reservation.RunID) + len(s.Reservation.SubscriptionConnectionID) + len(s.Reservation.Status) + 4*8)
 	// The replacement reservation retains its v2 DELETE/UPSERT but no longer
 	// pays for the duplicate legacy DELETE/UPSERT. Read/copy/clock bounds remain.
 	readyExpiryNoLegacy(t, f.statements)
-	if err != nil || budget == nil || budget.statements != 20 || budget.bytes != wantBytes || f.commits != 1 || f.writes != 7 || f.persistedWrites != 7 || len(f.isolations) != 1 || f.isolations[0] != driver.IsolationLevel(sql.LevelSerializable) || f.deadlineMissing {
+	if err != nil || budget == nil || budget.statements != 21 || budget.bytes != wantBytes || f.commits != 1 || f.writes != 7 || f.persistedWrites != 7 || len(f.isolations) != 1 || f.isolations[0] != driver.IsolationLevel(sql.LevelSerializable) || f.deadlineMissing {
 		t.Fatalf("err=%v statements=%d bytes=%d wantBytes=%d commits=%d writes=%d persisted=%d isolation=%v deadlineMissing=%t", err, budget.statements, budget.bytes, wantBytes, f.commits, f.writes, f.persistedWrites, f.isolations, f.deadlineMissing)
 	}
 }

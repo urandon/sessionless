@@ -69,6 +69,25 @@ func (f *managedAdmissionGraphFixture) Connect(context.Context) (driver.Conn, er
 func (f *managedAdmissionGraphFixture) QueryContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
 	var row []driver.Value
 	switch {
+	case statement == quotaReservationStorageSQLV1:
+		stored := f.rows["quota_reservations"]
+		if len(stored) != 0 {
+			var r domain.QuotaReservation
+			if len(args) != 2 || json.Unmarshal([]byte(stored[0].(string)), &r) != nil {
+				return nil, errors.New("fixture physical quota requires exact key and record")
+			}
+			if args[0].Value == string(r.TenantID) && args[1].Value == string(r.ID) {
+				row = []driver.Value{stored[0], string(r.ID), string(r.TenantID), string(r.RunID), string(r.SubscriptionConnectionID), string(r.Status), int64(r.CapacityUnits), r.HeldAt, r.ExpiresAt, r.ExpiresAt.Add(time.Hour)}
+			}
+		}
+	case statement == quotaExpiryStorageSQLV1:
+		stored := f.rows["quota_expiry_v2"]
+		if len(args) != 4 || len(stored) != 0 && len(stored) != 8 {
+			return nil, errors.New("fixture physical expiry requires complete key and eight columns")
+		}
+		if len(stored) != 0 && args[0].Value == stored[0] && args[1].Value == stored[1] && args[2].Value == stored[2] && args[3].Value == stored[3] {
+			row = stored
+		}
 	case strings.Contains(statement, "FROM subscription_connections"):
 		row = []driver.Value{f.entitlement, f.quota}
 	case strings.Contains(statement, "FROM subscription_scheduler_slots"):
@@ -121,6 +140,24 @@ func (f *managedAdmissionGraphFixture) ExecContext(ctx context.Context, statemen
 			// Return the complete new physical projection, including real NULLs
 			// on legacy rows. Omission is not equivalent to the legacy arm.
 			f.slot = []driver.Value{args[2].Value, args[3].Value, args[4].Value, args[5].Value, args[6].Value, args[7].Value, args[8].Value}
+		}
+		if table == "quota_expiry_v2" {
+			if len(args) != 8 {
+				return nil, errors.New("fixture expiry write requires complete physical row")
+			}
+			f.rows[table] = make([]driver.Value, len(args))
+			for i := range args {
+				f.rows[table][i] = args[i].Value
+			}
+		}
+	}
+	if fields[0] == "DELETE" && fields[2] == "quota_expiry_v2" {
+		stored := f.rows["quota_expiry_v2"]
+		if len(args) != 4 {
+			return nil, errors.New("fixture expiry delete requires exact key")
+		}
+		if len(stored) != 0 && args[0].Value == stored[0] && args[1].Value == stored[1] && args[2].Value == stored[2] && args[3].Value == stored[3] {
+			f.rows["quota_expiry_v2"] = nil
 		}
 	}
 	return driver.RowsAffected(1), nil
@@ -333,10 +370,11 @@ func TestBoundedManagedAdmissionThreeCompleteCallbacksUseFreshCache(t *testing.T
 	store, f, request := managedGraphFixture(t)
 	f.commitModes = []string{"rollback", "rollback", ""}
 	result, err := store.admitBoundedManagedDispatch(t.Context(), request)
-	// Each fresh callback loses one duplicate legacy quota UPSERT. The final
-	// committed callback likewise persists one fewer write; retries stay exact.
+	// Each fresh callback performs two added physical collision/index reads
+	// (29 statements, formerly 27). The original 32/callback and 96/logical
+	// ceilings remain unchanged; rollback retries must not share their cache.
 	readyExpiryNoLegacy(t, f.statements)
-	if err != nil || !result.Admitted || f.commits != 3 || len(f.statements) != 81 || f.persistedWrites != 12 {
+	if err != nil || !result.Admitted || f.commits != 3 || len(f.statements) != 87 || len(f.statements) > 96 || f.persistedWrites != 12 {
 		t.Fatalf("complete retries err=%v result=%+v commits=%d SQL=%d persisted=%d", err, result, f.commits, len(f.statements), f.persistedWrites)
 	}
 	queries := 0

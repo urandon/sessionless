@@ -70,6 +70,8 @@ func readOwnedSessionPrincipal(ctx context.Context, q *ownedAuthorityQuery, tena
 	}{
 		{"SELECT record FROM sessions WHERE tenant_id = $1 AND session_id = $2", sessionRaw, []any{tenantID, sessionID}, false},
 		{"SELECT record FROM session_deletions WHERE tenant_id = $1 AND session_id = $2", "", []any{tenantID, sessionID}, true},
+		{"SELECT record FROM tenant_memberships WHERE user_bucket = $1 AND user_id = $2 AND tenant_id = $3", memberRaw, []any{bucket, userID, tenantID}, false},
+		{"SELECT record FROM session_participants WHERE tenant_id = $1 AND session_id = $2 AND user_id = $3", participantRaw, []any{tenantID, sessionID, userID}, false},
 	} {
 		statement, limit, ok := ownedCanonicalJSONSelect(item.statement)
 		if !ok || len(item.raw) > limit {

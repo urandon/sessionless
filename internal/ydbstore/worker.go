@@ -31,6 +31,9 @@ func (store *Store) LoadWorkerJob(
 		if err != nil || !found {
 			return err
 		}
+		if result.Run.TenantID != tenantID || result.Run.ID != runID {
+			return domain.ErrMembershipDenied
+		}
 		result.Job, found, err = readJSON[domain.WorkerJob](
 			ctx, tx.sqlTx,
 			`SELECT payload FROM worker_jobs WHERE tenant_id = $1 AND run_id = $2`,
@@ -46,12 +49,7 @@ func (store *Store) LoadWorkerJob(
 		if err != nil || !found {
 			return err
 		}
-		result.Reservation, found, err = readJSON[domain.QuotaReservation](
-			ctx, tx.sqlTx,
-			`SELECT payload FROM quota_reservations
-			 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-			tenantID, result.Job.ReservationID,
-		)
+		result.Reservation, found, err = readWorkerQuotaReservationStorageV1(ctx, tx, result.Run, result.Job.ReservationID)
 		if err != nil || !found {
 			return err
 		}
@@ -302,29 +300,53 @@ func startWorkerJobTx(
 	}
 	run, found, err := state.GetRun(ctx, loaded.Run.ID)
 	if err != nil || !found {
+		if err == nil && loaded.Run.LocalCapacityAssociation != nil {
+			return domain.ErrMembershipDenied
+		}
 		return err
+	}
+	if run.TenantID != tx.tenantID || run.ID != loaded.Run.ID {
+		return domain.ErrMembershipDenied
+	}
+	if (run.LocalCapacityAssociation != nil || loaded.Run.LocalCapacityAssociation != nil) &&
+		!equalLocalCapacityV1(run.LocalCapacityAssociation, loaded.Run.LocalCapacityAssociation) {
+		return domain.ErrMembershipDenied
 	}
 	attempt, found, err := state.GetAttempt(ctx, loaded.Attempt.ID)
 	if err != nil || !found {
+		if err == nil && run.LocalCapacityAssociation != nil {
+			return domain.ErrMembershipDenied
+		}
 		return err
 	}
-	if run.Status == domain.RunRunning && attempt.Status == domain.AttemptRunning &&
-		attempt.WorkerID == lease.WorkerID {
+	replayed := run.Status == domain.RunRunning && attempt.Status == domain.AttemptRunning && attempt.WorkerID == lease.WorkerID
+	if replayed && run.LocalCapacityAssociation == nil {
+		// Keep the original subscription replay disposition. Local replay must
+		// still retain its exact original hold before fresh execution proceeds.
 		return nil
 	}
-	if run.Status != domain.RunQueued || attempt.Status != domain.AttemptCreated {
+	if !replayed && (run.Status != domain.RunQueued || attempt.Status != domain.AttemptCreated) {
 		return domain.ValidationError{Field: "worker start", Reason: "run and attempt are not claimable"}
 	}
-	reservation, found, err := readJSON[domain.QuotaReservation](
-		ctx, tx.sqlTx,
-		`SELECT payload FROM quota_reservations
-		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-		run.TenantID, loaded.Reservation.ID,
-	)
+	if run.LocalCapacityAssociation != nil && (loaded.Job.ValidateForRun(run) != nil || attempt.ValidateForRun(run) != nil ||
+		loaded.Reservation.ID != loaded.Job.ReservationID || attempt.ID != loaded.Job.AttemptID ||
+		lease.TenantID != run.TenantID || lease.RunID != run.ID || lease.AttemptID != attempt.ID) {
+		return domain.ErrMembershipDenied
+	}
+	reservation, found, err := readWorkerQuotaReservationStorageV1(ctx, tx, run, loaded.Reservation.ID)
 	if err != nil || !found {
+		if err == nil && run.LocalCapacityAssociation != nil {
+			return domain.ErrMembershipDenied
+		}
 		return err
 	}
-	if reservation.Status != domain.ReservationHeld || !reservation.ExpiresAt.After(at) {
+	if reservation.Status != domain.ReservationHeld {
+		return domain.ValidationError{Field: "worker reservation", Reason: "must be held and unexpired"}
+	}
+	if replayed {
+		return nil
+	}
+	if !reservation.ExpiresAt.After(at) {
 		return domain.ValidationError{Field: "worker reservation", Reason: "must be held and unexpired"}
 	}
 	if err := run.Transition(domain.RunRunning, at); err != nil {
@@ -752,6 +774,9 @@ func loadWorkerTerminalState(
 	if !found {
 		return run, domain.Attempt{}, domain.QuotaReservation{}, fmt.Errorf("run %q not found", runID)
 	}
+	if run.TenantID != tx.tenantID || run.ID != runID {
+		return domain.Run{}, domain.Attempt{}, domain.QuotaReservation{}, domain.ErrMembershipDenied
+	}
 	attempt, found, err := state.GetAttempt(ctx, attemptID)
 	if err != nil {
 		return run, attempt, domain.QuotaReservation{}, err
@@ -759,12 +784,7 @@ func loadWorkerTerminalState(
 	if !found {
 		return run, attempt, domain.QuotaReservation{}, fmt.Errorf("attempt %q not found", attemptID)
 	}
-	reservation, found, err := readJSON[domain.QuotaReservation](
-		ctx, tx.sqlTx,
-		`SELECT payload FROM quota_reservations
-		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-		tx.tenantID, reservationID,
-	)
+	reservation, found, err := readWorkerQuotaReservationStorageV1(ctx, tx, run, reservationID)
 	if err != nil {
 		return run, attempt, reservation, err
 	}
@@ -772,6 +792,26 @@ func loadWorkerTerminalState(
 		return run, attempt, reservation, fmt.Errorf("reservation %q not found", reservationID)
 	}
 	return run, attempt, reservation, nil
+}
+
+// Retained capacity correspondence is not a fresh Source/funding grant. A
+// local held reservation must still own its exact physical expiry projection;
+// a local terminal reservation must not retain that hold. Legacy expiry
+// absence keeps its delivered history semantics, but a present row in either
+// arm must match the full original reservation.
+func readWorkerQuotaReservationStorageV1(ctx context.Context, tx *stateTx, run domain.Run, id domain.QuotaReservationID) (domain.QuotaReservation, bool, error) {
+	reservation, found, err := readQuotaReservationStorageV1(ctx, tx, run, id)
+	if err != nil || !found {
+		return reservation, found, err
+	}
+	projected, err := readQuotaExpiryStorageV1(ctx, tx, reservation)
+	if err != nil {
+		return domain.QuotaReservation{}, false, err
+	}
+	if reservation.LocalCapacityAssociation != nil && projected != (reservation.Status == domain.ReservationHeld) {
+		return domain.QuotaReservation{}, false, domain.ErrMembershipDenied
+	}
+	return reservation, true, nil
 }
 
 func finishWorkerScheduling(

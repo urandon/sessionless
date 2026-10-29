@@ -80,10 +80,11 @@ func (store *Store) RequestManagedRunCancellationV1(ctx context.Context, request
 		if err != nil {
 			return err
 		}
+		noHold := !hasJob
 		if !hasJob {
 			// An unadmitted Run has no reservation to release. Still inspect its
 			// exact contention key so an inconsistent held slot cannot be hidden.
-			if final != nil || run.Status != domain.RunCreated || attempt.Status != domain.AttemptCreated || outbox.Status != domain.DispatchPending {
+			if final != nil || (run.Status != domain.RunCreated && run.Status != domain.RunQuotaBlocked) || attempt.Status != domain.AttemptCreated || outbox.Status != domain.DispatchPending {
 				return q.budget.deny()
 			}
 			slot, slotErr := capacitySchedulerSlot(ctx, tx, "", run.LocalCapacityAssociation, false, q.at, false)
@@ -91,28 +92,44 @@ func (store *Store) RequestManagedRunCancellationV1(ctx context.Context, request
 				return q.budget.deny()
 			}
 		} else {
-			if run.Status != domain.RunQueued || attempt.Status != domain.AttemptCreated || job.ValidateForRun(run) != nil || job.AttemptID != attempt.ID || job.OwnedExecutionSourceRecord != outbox.OwnedExecutionSourceRecord {
+			if (run.Status != domain.RunQueued && run.Status != domain.RunQuotaBlocked) || attempt.Status != domain.AttemptCreated || job.ValidateForRun(run) != nil || job.AttemptID != attempt.ID || job.OwnedExecutionSourceRecord != outbox.OwnedExecutionSourceRecord {
 				return q.budget.deny()
 			}
-			reservation, found, err := readQuotaReservationStorageV1(ctx, tx, run, job.ReservationID)
-			if err != nil || !found || reservation.Status != domain.ReservationHeld || !ownedAdmissionMatches(final, source, outbox.OwnedExecutionSourceRecord, reservation, job) {
+			reservation, found, err := readWorkerQuotaReservationStorageV1(ctx, tx, run, job.ReservationID)
+			if err != nil || !found || !ownedAdmissionMatches(final, source, outbox.OwnedExecutionSourceRecord, reservation, job) {
 				return q.budget.deny()
 			}
-			if err := reservation.Transition(domain.ReservationReleased, q.at); err != nil {
-				return err
-			}
-			if err := tx.PutQuotaReservation(ctx, reservation); err != nil {
-				return err
-			}
-			if err := releaseLocalCapacitySlotTx(ctx, tx, run, reservation, q.at); err != nil {
-				return err
-			}
-			depth, active, err := readSchedulerCounters(ctx, tx, q.at)
-			if err != nil || depth == 0 {
-				return q.budget.deny()
-			}
-			if _, err := q.ExecContext(ctx, `UPDATE tenant_scheduler_counters SET queue_depth=$1,active_runs=$2,updated_at=$3 WHERE tenant_id=$4`, depth-1, active, q.at, run.TenantID); err != nil {
-				return err
+			if run.Status == domain.RunQuotaBlocked {
+				// The queued TTL already expired/released this exact original
+				// hold. Retain Job/Final history; do not release or decrement again.
+				if reservation.Status != domain.ReservationExpired || reservation.ExpiresAt.After(q.at) || reservation.UpdatedAt.After(q.at) {
+					return q.budget.deny()
+				}
+				slot, slotErr := capacitySchedulerSlot(ctx, tx, "", run.LocalCapacityAssociation, false, q.at, false)
+				if slotErr != nil || slot.ActiveRunID == run.ID || slot.ActiveReservationID == reservation.ID {
+					return q.budget.deny()
+				}
+				noHold = true
+			} else {
+				if reservation.Status != domain.ReservationHeld {
+					return q.budget.deny()
+				}
+				if err := reservation.Transition(domain.ReservationReleased, q.at); err != nil {
+					return err
+				}
+				if err := tx.PutQuotaReservation(ctx, reservation); err != nil {
+					return err
+				}
+				if err := releaseLocalCapacitySlotTx(ctx, tx, run, reservation, q.at); err != nil {
+					return err
+				}
+				depth, active, err := readSchedulerCounters(ctx, tx, q.at)
+				if err != nil || depth == 0 {
+					return q.budget.deny()
+				}
+				if _, err := q.ExecContext(ctx, `UPDATE tenant_scheduler_counters SET queue_depth=$1,active_runs=$2,updated_at=$3 WHERE tenant_id=$4`, depth-1, active, q.at, run.TenantID); err != nil {
+					return err
+				}
 			}
 		}
 		if err := run.RequestCancellation(q.at); err != nil {
@@ -138,7 +155,7 @@ func (store *Store) RequestManagedRunCancellationV1(ctx context.Context, request
 				return err
 			}
 		}
-		result = ports.ManagedRunCancellationResultV1{RunID: run.ID, Status: run.Status, NoHold: !hasJob}
+		result = ports.ManagedRunCancellationResultV1{RunID: run.ID, Status: run.Status, NoHold: noHold}
 		return nil
 	})
 	if err != nil {

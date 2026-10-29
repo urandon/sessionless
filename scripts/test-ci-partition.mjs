@@ -58,7 +58,7 @@ const generationStepName = 'Prove attached resource generation CAS and exact uin
 const generationStoreGateCommand = 'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\\n\t\tgo test -race -count=3 -shuffle=on -timeout=5m \\\n\t\t-run \'^TestAttachedResourceGenerationYDB\' ./internal/ydbstore';
 const generationJoinedGateCommand = [
   'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\',
-  '\t\tgo test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \\',
+  '\t\tgo test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \\',
   "\t\t-run '^TestAttachedResourceGenerationYDBJoined' ./internal/attachedworkerstack",
 ].join('\n');
 const generationGateRecipe = [

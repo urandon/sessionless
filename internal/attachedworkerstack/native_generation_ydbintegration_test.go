@@ -142,24 +142,26 @@ func (w *joinedGenerationWriter) FlushError() error {
 }
 
 type joinedGenerationWire struct {
-	mu           sync.Mutex
-	handler      http.Handler
-	db           *sql.DB
-	installation *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
-	paths        []string
-	lostBodies   uint64
-	sealed       []transport.SealedInputV1
-	ready        []attachedworkeroutput.AttachedWorkerInlineResultV2
-	acks         []attachedworkerprotocol.TerminalAckV1
-	prepares     []attachedworkeroutput.AttachedWorkerInlinePrepareV2
-	bodies       []attachedworkeroutput.AttachedWorkerInlineBodyV2
-	reconciles   []attachedworkeroutput.AttachedWorkerInlineReconcileV2
-	lostMetadata uint64
-	traffic      chan struct{}
-	fault        joinedGenerationFault
-	gateRemoved  bool
-	gateInline   http.Handler
-	gateCalls    uint64
+	mu                        sync.Mutex
+	handler                   http.Handler
+	db                        *sql.DB
+	installation              *attachedworkerstack.NativeGenerationJoinedInstallationV3ForTest
+	paths                     []string
+	lastGenerationPublishPath int
+	exchangesAfterPublication uint64
+	lostBodies                uint64
+	sealed                    []transport.SealedInputV1
+	ready                     []attachedworkeroutput.AttachedWorkerInlineResultV2
+	acks                      []attachedworkerprotocol.TerminalAckV1
+	prepares                  []attachedworkeroutput.AttachedWorkerInlinePrepareV2
+	bodies                    []attachedworkeroutput.AttachedWorkerInlineBodyV2
+	reconciles                []attachedworkeroutput.AttachedWorkerInlineReconcileV2
+	lostMetadata              uint64
+	traffic                   chan struct{}
+	fault                     joinedGenerationFault
+	gateRemoved               bool
+	gateInline                http.Handler
+	gateCalls                 uint64
 }
 
 // A closed peer selector, never a production flag or supplied callback. The
@@ -313,6 +315,17 @@ func (w *joinedGenerationWire) RoundTrip(r *http.Request) (*http.Response, error
 		_ = actual.Body.Close()
 		return nil, errors.New("controlled READY response loss after actual commit")
 	}
+	if actual.StatusCode == http.StatusOK {
+		switch r.URL.Path {
+		case attachedworkerhttp.ResourceGenerationPublishPathV1:
+			w.lastGenerationPublishPath = len(w.paths)
+			w.exchangesAfterPublication = 0
+		case attachedworkerhttp.ExchangePathV1:
+			if w.lastGenerationPublishPath > 0 && len(w.paths) > w.lastGenerationPublishPath {
+				w.exchangesAfterPublication++
+			}
+		}
+	}
 	return actual, nil
 }
 
@@ -362,6 +375,71 @@ type joinedGenerationScenario struct {
 	credentialStore  *ownerlocalcredential.Store
 	metadataBefore   joinedGenerationResourceMetadata
 	gateRemovedStore *ydbstore.Store
+}
+
+// joinedGenerationPollCursor lets integration tests observe normal Adapter.Next
+// synchronization and exchange without invoking Stack synchronization
+// independently of the daemon.
+type joinedGenerationPollCursor struct {
+	pathCount int
+}
+
+func (w *joinedGenerationWire) pollCursor() joinedGenerationPollCursor {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return joinedGenerationPollCursor{pathCount: len(w.paths)}
+}
+
+func (w *joinedGenerationWire) observedFreshPollAfter(cursor joinedGenerationPollCursor) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if cursor.pathCount < 0 || cursor.pathCount > len(w.paths) || w.lastGenerationPublishPath <= cursor.pathCount || w.exchangesAfterPublication < 2 {
+		return false
+	}
+	return true
+}
+
+// waitFreshPollGeneration requires the exact durable target head and two
+// successful /exchange calls following its publication path. Adapter.Next
+// performs generation synchronization before its heartbeat, so this observes
+// the original fresh-poll path without claiming the metadata owner's private ACK.
+func (f *joinedGenerationScenario) waitFreshPollGeneration(generation uint64, cursor joinedGenerationPollCursor, done <-chan struct{}) {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(f.ctx, 15*time.Second)
+	defer cancel()
+	var head domain.AttachedResourceGenerationHeadV1
+	var found bool
+	ready := func() bool {
+		return found && head.CredentialGeneration == generation && !head.Revoked && f.wire.observedFreshPollAfter(cursor)
+	}
+	for {
+		current, present, err := f.store.LoadAttachedResourceGenerationHeadV1(ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
+		if err != nil {
+			// A deadline may race the final exchange after an earlier exact
+			// head read. Recheck observation without a new query or window.
+			if ctx.Err() != nil && ready() {
+				return
+			}
+			f.t.Fatalf("fresh-poll generation read failed: %v", err)
+		}
+		head, found = current, present
+		if ready() {
+			return
+		}
+		select {
+		case <-f.wire.traffic:
+		case <-done:
+			if ready() {
+				return
+			}
+			f.t.Fatal("daemon stopped before the original fresh poll observed the successor generation")
+		case <-ctx.Done():
+			if ready() {
+				return
+			}
+			f.t.Fatalf("original fresh-poll successor deadline: found=%t generation=%d revoked=%t", found, head.CredentialGeneration, head.Revoked)
+		}
+	}
 }
 
 type joinedGenerationResourceMetadata struct {
@@ -913,6 +991,7 @@ func TestAttachedResourceGenerationYDBJoinedTwoCanonicalJobs(t *testing.T) {
 	f := newJoinedGenerationScenario(t)
 	originalBaseline := f.baseline.Clone()
 	first := f.ingest(1)
+	pollCursor := f.wire.pollCursor()
 	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
@@ -943,11 +1022,10 @@ func TestAttachedResourceGenerationYDBJoinedTwoCanonicalJobs(t *testing.T) {
 			if status.Committed == 1 && second.Job.RunID == "" {
 				f.waitRetired(first, done)
 				f.assertCanonicalResult(first, 1, 1)
-				// The next original fresh poll synchronizes N+1 BEFORE the binder
-				// sees a new canonical job. Explicit sync uses the same owner.
-				if err := f.stack.SynchronizePreparedGenerationV3(f.ctx, f.session); err != nil {
-					t.Fatal(err)
-				}
+				// Require the original daemon poll to synchronize N+1, pass the
+				// Session readiness recheck, and complete its normal heartbeat
+				// before the canonical binder sees a new job.
+				f.waitFreshPollGeneration(2, pollCursor, done)
 				second = f.ingest(2)
 			}
 			if status.Committed == 2 {

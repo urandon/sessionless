@@ -25,6 +25,7 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 	if err := f.wire.removeGateAfterAcceptedInput(); err != nil {
 		t.Fatal(err)
 	}
+	pollCursor := f.wire.pollCursor()
 	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,9 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 			}
 			f.waitRetired(first, done)
 			f.assertCanonicalResult(first, 1, 1)
+			// Observe the successor through Adapter.Next's normal fresh poll
+			// before draining; a post-Drain sync would reuse a canceled Session.
+			f.waitFreshPollGeneration(2, pollCursor, done)
 			drainCtx, drainCancel := context.WithTimeout(f.ctx, 5*time.Second)
 			drainErr := daemon.Drain(drainCtx)
 			drainCancel()
@@ -65,9 +69,6 @@ func TestAttachedResourceGenerationYDBJoinedGateRemovalPreservesOriginalCustody(
 			seen := f.wire.committedSnapshot()
 			if !seen.gateRemoved || seen.gateCalls != 3 || f.installation.LaunchCount() != 1 {
 				t.Fatalf("accepted producer did not use all actual withdrawn-gate inline routes: removed=%t calls=%d launches=%d", seen.gateRemoved, seen.gateCalls, f.installation.LaunchCount())
-			}
-			if err := f.stack.SynchronizePreparedGenerationV3(f.ctx, f.session); err != nil {
-				t.Fatal("actual own successor ACK", err)
 			}
 			head, found, err := f.store.LoadAttachedResourceGenerationHeadV1(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
 			if err != nil || !found || head.CredentialGeneration != 2 || head.Revoked {
@@ -223,6 +224,7 @@ func TestAttachedResourceGenerationYDBJoinedQueuedStaleOutboxDenied(t *testing.T
 	if err != nil || !found || head.CredentialGeneration != 1 || head.Revoked {
 		t.Fatalf("queued intent did not originate under active N1: found=%t err=%v", found, err)
 	}
+	pollCursor := f.wire.pollCursor()
 	daemon, err := attachedworkerdaemon.NewDaemon(attachedworkerdaemon.DaemonConfig{IdleBackoff: 10 * time.Millisecond, ShutdownGrace: 5 * time.Second, ReportGrace: 10 * time.Second}, f.adapter, f.stack, &joinedGenerationTerminalDiagnostic{t: t, adapter: f.adapter, installation: f.installation})
 	if err != nil {
 		t.Fatal(err)
@@ -254,14 +256,14 @@ func TestAttachedResourceGenerationYDBJoinedQueuedStaleOutboxDenied(t *testing.T
 			}
 			f.waitRetired(first, done)
 			f.assertCanonicalResult(first, 1, 1)
+			// The ordinary next poll owns generation publication and readiness;
+			// never retry it manually after Drain cancels a poll context.
+			f.waitFreshPollGeneration(2, pollCursor, done)
 			drainCtx, drainCancel := context.WithTimeout(f.ctx, 5*time.Second)
 			drainErr := daemon.Drain(drainCtx)
 			drainCancel()
 			if drainErr != nil {
 				t.Fatal(drainErr)
-			}
-			if err := f.stack.SynchronizePreparedGenerationV3(f.ctx, f.session); err != nil {
-				t.Fatal("actual successor ACK", err)
 			}
 			head, found, err := f.store.LoadAttachedResourceGenerationHeadV1(f.ctx, f.worker.TenantID, f.worker.OwnerUserID, f.resource)
 			if err != nil || !found || head.CredentialGeneration != 2 || head.Revoked {

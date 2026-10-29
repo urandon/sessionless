@@ -423,6 +423,7 @@ type ExpiredQuotaReservation struct {
 	ReservationID            domain.QuotaReservationID
 	RunID                    domain.RunID
 	SubscriptionConnectionID domain.SubscriptionConnectionID
+	LocalCapacityAssociation *domain.LocalCapacityAssociationV1
 	ExpiresAt                time.Time
 }
 

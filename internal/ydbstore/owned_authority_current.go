@@ -191,6 +191,18 @@ func (s *ownedCurrentScalar) Scan(value any) error {
 		s.bytes = 8
 	}
 	switch destination := s.destination.(type) {
+	case *sql.NullString:
+		*destination = sql.NullString{}
+		switch v := value.(type) {
+		case nil:
+			s.valid = true // only an explicitly nullable destination accepts NULL
+		case string:
+			*destination = sql.NullString{String: v, Valid: true}
+			s.valid = utf8.ValidString(v)
+		case []byte:
+			*destination = sql.NullString{String: string(v), Valid: true}
+			s.valid = utf8.Valid(v)
+		}
 	case *string:
 		switch v := value.(type) {
 		case string:

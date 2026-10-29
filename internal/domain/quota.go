@@ -26,15 +26,24 @@ func CanTransitionReservation(from, to ReservationStatus) bool {
 }
 
 type QuotaReservation struct {
-	ID                       QuotaReservationID       `json:"id"`
-	TenantID                 TenantID                 `json:"tenant_id"`
-	RunID                    RunID                    `json:"run_id"`
-	SubscriptionConnectionID SubscriptionConnectionID `json:"subscription_connection_id"`
-	Status                   ReservationStatus        `json:"status"`
-	CapacityUnits            uint32                   `json:"capacity_units"`
-	HeldAt                   time.Time                `json:"held_at"`
-	ExpiresAt                time.Time                `json:"expires_at"`
-	UpdatedAt                time.Time                `json:"updated_at"`
+	ID                       QuotaReservationID          `json:"id"`
+	TenantID                 TenantID                    `json:"tenant_id"`
+	RunID                    RunID                       `json:"run_id"`
+	SubscriptionConnectionID SubscriptionConnectionID    `json:"subscription_connection_id,omitempty"`
+	LocalCapacityAssociation *LocalCapacityAssociationV1 `json:"local_capacity_association,omitempty"`
+	Status                   ReservationStatus           `json:"status"`
+	CapacityUnits            uint32                      `json:"capacity_units"`
+	HeldAt                   time.Time                   `json:"held_at"`
+	ExpiresAt                time.Time                   `json:"expires_at"`
+	UpdatedAt                time.Time                   `json:"updated_at"`
+}
+
+func (reservation QuotaReservation) Clone() QuotaReservation {
+	if reservation.LocalCapacityAssociation != nil {
+		value := *reservation.LocalCapacityAssociation
+		reservation.LocalCapacityAssociation = &value
+	}
+	return reservation
 }
 
 func (reservation QuotaReservation) ValidateForRun(run Run) error {
@@ -52,6 +61,13 @@ func (reservation QuotaReservation) ValidateForRun(run Run) error {
 	}
 	if reservation.SubscriptionConnectionID != run.SubscriptionConnectionID {
 		return ValidationError{Field: "quota_reservation.subscription_connection_id", Reason: "must match the owning run"}
+	}
+	if err := validateCapacityIdentity(reservation.TenantID, reservation.SubscriptionConnectionID, reservation.LocalCapacityAssociation); err != nil {
+		return err
+	}
+	if (reservation.LocalCapacityAssociation == nil) != (run.LocalCapacityAssociation == nil) ||
+		reservation.LocalCapacityAssociation != nil && *reservation.LocalCapacityAssociation != *run.LocalCapacityAssociation {
+		return ValidationError{Field: "quota_reservation.local_capacity_association", Reason: "must match the owning run"}
 	}
 	if !reservation.Status.Valid() {
 		return ValidationError{Field: "quota_reservation.status", Reason: "is unknown"}
@@ -149,15 +165,16 @@ const (
 )
 
 type UsageObservation struct {
-	ID                       UsageObservationID       `json:"id"`
-	TenantID                 TenantID                 `json:"tenant_id"`
-	RunID                    RunID                    `json:"run_id"`
-	AttemptID                AttemptID                `json:"attempt_id"`
-	SubscriptionConnectionID SubscriptionConnectionID `json:"subscription_connection_id"`
-	Source                   UsageSource              `json:"source"`
-	InputTokens              *uint64                  `json:"input_tokens,omitempty"`
-	OutputTokens             *uint64                  `json:"output_tokens,omitempty"`
-	ObservedAt               time.Time                `json:"observed_at"`
+	ID                       UsageObservationID          `json:"id"`
+	TenantID                 TenantID                    `json:"tenant_id"`
+	RunID                    RunID                       `json:"run_id"`
+	AttemptID                AttemptID                   `json:"attempt_id"`
+	SubscriptionConnectionID SubscriptionConnectionID    `json:"subscription_connection_id,omitempty"`
+	LocalCapacityAssociation *LocalCapacityAssociationV1 `json:"local_capacity_association,omitempty"`
+	Source                   UsageSource                 `json:"source"`
+	InputTokens              *uint64                     `json:"input_tokens,omitempty"`
+	OutputTokens             *uint64                     `json:"output_tokens,omitempty"`
+	ObservedAt               time.Time                   `json:"observed_at"`
 }
 
 func (observation UsageObservation) ValidateForAttempt(run Run, attempt Attempt) error {
@@ -175,6 +192,13 @@ func (observation UsageObservation) ValidateForAttempt(run Run, attempt Attempt)
 	}
 	if observation.SubscriptionConnectionID != run.SubscriptionConnectionID {
 		return ValidationError{Field: "usage_observation.subscription_connection_id", Reason: "must match the owning run"}
+	}
+	if err := validateCapacityIdentity(observation.TenantID, observation.SubscriptionConnectionID, observation.LocalCapacityAssociation); err != nil {
+		return err
+	}
+	if (observation.LocalCapacityAssociation == nil) != (run.LocalCapacityAssociation == nil) ||
+		observation.LocalCapacityAssociation != nil && *observation.LocalCapacityAssociation != *run.LocalCapacityAssociation {
+		return ValidationError{Field: "usage_observation.local_capacity_association", Reason: "must match the owning run"}
 	}
 	if observation.Source != UsageSourceProvider && observation.Source != UsageSourceHarness {
 		return ValidationError{Field: "usage_observation.source", Reason: "is unknown"}

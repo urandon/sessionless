@@ -156,7 +156,7 @@ func (q repairReader) run(ctx context.Context) (domain.Run, error) {
 		return domain.Run{}, err
 	}
 	var run domain.Run
-	if !repairScalar(id, false) || !repairScalar(tenant, false) || !repairScalar(session, false) || !repairScalar(connection, false) || !repairScalar(trigger, false) || !repairStatus(status) ||
+	if !repairScalar(id, false) || !repairScalar(tenant, false) || !repairScalar(session, false) || !repairScalar(connection, true) || !repairScalar(trigger, false) || !repairStatus(status) ||
 		repairDecode(raw, q.r.MaxSourceBytes, &run) != nil || run.Validate() != nil || run.ID != q.r.RunID || run.TenantID != q.r.TenantID ||
 		string(run.ID) != id || string(run.TenantID) != tenant || string(run.SessionID) != session || string(run.SubscriptionConnectionID) != connection ||
 		string(run.TriggerEventID) != trigger || string(run.Status) != status || !repairTime(run.CreatedAt, created) || !repairTime(run.UpdatedAt, updated) {
@@ -268,13 +268,41 @@ func (q repairReader) quota(ctx context.Context, run domain.Run) (domain.QuotaRe
 		return domain.QuotaReservation{}, err
 	}
 	var r domain.QuotaReservation
-	if !repairScalar(id, false) || !repairScalar(tenant, false) || !repairScalar(runID, false) || !repairScalar(connection, false) || !repairStatus(status) || repairDecode(raw, q.r.MaxSourceBytes, &r) != nil ||
+	if !repairScalar(id, false) || !repairScalar(tenant, false) || !repairScalar(runID, false) || !repairScalar(connection, true) || !repairStatus(status) || repairDecode(raw, q.r.MaxSourceBytes, &r) != nil ||
 		id != q.r.ID || tenant != string(q.r.TenantID) || runID != string(run.ID) || connection != string(run.SubscriptionConnectionID) ||
 		r.ID != domain.QuotaReservationID(id) || string(r.TenantID) != tenant || string(r.RunID) != runID || string(r.SubscriptionConnectionID) != connection || string(r.Status) != status || r.Status != domain.ReservationHeld ||
 		r.CapacityUnits != capacity || !repairTime(r.HeldAt, held) || !repairTime(r.ExpiresAt, expires) || r.ValidateForRun(run) != nil {
 		return domain.QuotaReservation{}, ErrReadyExpiryRepairUnavailable
 	}
 	return r, nil
+}
+
+// The exact expiry key may be absent, but an existing conflicting projection
+// must not be repaired into a different capacity owner or selected arm.
+func (q repairReader) quotaProjection(ctx context.Context, reservation domain.QuotaReservation, stored capacityStorageV1) error {
+	bucket, _ := ydbpartition.BucketV1(string(reservation.ID))
+	var runID string
+	var existing capacityStorageV1
+	// The association already fits inside the validated parent payload, so its
+	// projection shares that source cap and the original cumulative read budget.
+	associationCap := min(q.r.MaxSourceBytes, domain.OwnedAgentCurrentMaxRecordBytesV1) + 1
+	statement := fmt.Sprintf("SELECT SUBSTRING(CAST(run_id AS String),0,161),SUBSTRING(CAST(subscription_connection_id AS String),0,161),SUBSTRING(local_capacity_association,0,%d),SUBSTRING(CAST(local_capacity_digest AS String),0,65) FROM quota_expiry_v2 WHERE shard_bucket=$1 AND expires_at=$2 AND tenant_id=$3 AND quota_reservation_id=$4", associationCap)
+	row, err := q.query(ctx, 2*161+associationCap+65, statement,
+		bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID)
+	if err != nil {
+		return err
+	}
+	if err = row.Scan(&runID, &existing.key, &existing.association, &existing.digest); errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	subscription, local, err := decodeCapacityStorageV1(reservation.TenantID, existing)
+	if err != nil || runID != string(reservation.RunID) || existing != stored ||
+		subscription != reservation.SubscriptionConnectionID || !equalLocalCapacityV1(local, reservation.LocalCapacityAssociation) {
+		return ErrReadyExpiryRepairUnavailable
+	}
+	return nil
 }
 func (q repairReader) telegram(ctx context.Context, run domain.Run) (domain.TelegramDeliveryOutbox, error) {
 	var raw, id, tenant, runID, status string
@@ -319,6 +347,7 @@ func (store *Store) RepairReadyExpiryV2(ctx context.Context, r ReadyExpiryRepair
 		return nil, ErrReadyExpiryRepairInvalid
 	}
 	// Max lease callback: THREE JSON cells, 19 ID scalars, TWO status scalars.
+	// Quota's two parents plus capped association projection fit this same bound.
 	// Reserve UTF-8/string returned-byte maxima BEFORE every query, including
 	// missing/error rows. Fixed-width columns have bounded counts. Explicit
 	// raw-to-byte copies and decoding are bounded by these admitted cell sizes;
@@ -375,10 +404,17 @@ func (store *Store) RepairReadyExpiryV2(ctx context.Context, r ReadyExpiryRepair
 			if e != nil {
 				return e
 			}
+			capacity, e := encodeCapacityStorageV1(v.TenantID, v.SubscriptionConnectionID, v.LocalCapacityAssociation)
+			if e != nil {
+				return ErrReadyExpiryRepairUnavailable
+			}
+			if e := q.quotaProjection(ctx, v, capacity); e != nil {
+				return e
+			}
 			o.Bucket, _ = ydbpartition.BucketV1(r.ID)
 			o.DueAt = v.ExpiresAt
-			statement = "UPSERT INTO quota_expiry_v2 (shard_bucket,expires_at,tenant_id,quota_reservation_id,run_id,subscription_connection_id) VALUES ($1,$2,$3,$4,$5,$6)"
-			args = []any{o.Bucket, o.DueAt, r.TenantID, v.ID, r.RunID, v.SubscriptionConnectionID}
+			statement = "UPSERT INTO quota_expiry_v2 (shard_bucket,expires_at,tenant_id,quota_reservation_id,run_id,subscription_connection_id,local_capacity_association,local_capacity_digest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)"
+			args = []any{o.Bucket, o.DueAt, r.TenantID, v.ID, r.RunID, capacity.key, capacity.association, capacity.digest}
 		case "telegram":
 			v, e := q.telegram(ctx, run)
 			if e != nil {

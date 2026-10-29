@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,21 +24,22 @@ func CanTransitionDispatch(from, to DispatchStatus) bool {
 }
 
 type DispatchOutbox struct {
-	ID                    DispatchOutboxID        `json:"id"`
-	TenantID              TenantID                `json:"tenant_id"`
-	RunID                 RunID                   `json:"run_id"`
-	AttemptID             AttemptID               `json:"attempt_id"`
-	InputManifestID       ArtifactManifestID      `json:"input_manifest_id"`
-	ContextSnapshot       BlobRef                 `json:"context_snapshot"`
-	ContextWindow         *SessionContextWindow   `json:"context_window,omitempty"`
-	WorkspaceSnapshot     *BlobRef                `json:"workspace_snapshot,omitempty"`
-	SkillBundle           *BlobRef                `json:"skill_bundle,omitempty"`
-	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
-	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
-	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
-	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
-	AdmissionCostCeiling  *AdmissionCostCeilingV2 `json:"admission_cost_ceiling,omitempty"`
+	ID                       DispatchOutboxID            `json:"id"`
+	TenantID                 TenantID                    `json:"tenant_id"`
+	RunID                    RunID                       `json:"run_id"`
+	AttemptID                AttemptID                   `json:"attempt_id"`
+	InputManifestID          ArtifactManifestID          `json:"input_manifest_id"`
+	ContextSnapshot          BlobRef                     `json:"context_snapshot"`
+	ContextWindow            *SessionContextWindow       `json:"context_window,omitempty"`
+	WorkspaceSnapshot        *BlobRef                    `json:"workspace_snapshot,omitempty"`
+	SkillBundle              *BlobRef                    `json:"skill_bundle,omitempty"`
+	AllowedMCPServers        []string                    `json:"allowed_mcp_servers,omitempty"`
+	CredentialOwnerUserID    UserID                      `json:"credential_owner_user_id,omitempty"`
+	ExecutionPlacementV2     ExecutionPlacementV2        `json:"execution_placement"`
+	HarnessBinding           HarnessBindingV2            `json:"harness_binding"`
+	SubstrateBinding         *SubstrateBindingV1         `json:"substrate_binding,omitempty"`
+	AdmissionCostCeiling     *AdmissionCostCeilingV2     `json:"admission_cost_ceiling,omitempty"`
+	LocalCapacityAssociation *LocalCapacityAssociationV1 `json:"local_capacity_association,omitempty"`
 	// Strict producer bytes preserve exact integers inside this JSON projection.
 	// Original intent is not final admission or source authentication.
 	OwnedExecutionSourceRecord string               `json:"owned_execution_source_record,omitempty"`
@@ -51,6 +53,42 @@ type DispatchOutbox struct {
 	IdempotencyKey   IdempotencyKey  `json:"idempotency_key"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+func (outbox DispatchOutbox) Clone() DispatchOutbox {
+	if outbox.LocalCapacityAssociation != nil {
+		value := *outbox.LocalCapacityAssociation
+		outbox.LocalCapacityAssociation = &value
+	}
+	if outbox.ContextWindow != nil {
+		value := *outbox.ContextWindow
+		if value.SnapshotVersion != nil {
+			version := *value.SnapshotVersion
+			value.SnapshotVersion = &version
+		}
+		outbox.ContextWindow = &value
+	}
+	for _, ref := range []**BlobRef{&outbox.WorkspaceSnapshot, &outbox.SkillBundle} {
+		if *ref != nil {
+			value := **ref
+			*ref = &value
+		}
+	}
+	outbox.AllowedMCPServers = slices.Clone(outbox.AllowedMCPServers)
+	outbox.HarnessBinding = outbox.HarnessBinding.Clone()
+	if outbox.SubstrateBinding != nil {
+		value := *outbox.SubstrateBinding
+		outbox.SubstrateBinding = &value
+	}
+	if outbox.AdmissionCostCeiling != nil {
+		value := outbox.AdmissionCostCeiling.Clone()
+		outbox.AdmissionCostCeiling = &value
+	}
+	if outbox.Origin != nil {
+		value := *outbox.Origin
+		outbox.Origin = &value
+	}
+	return outbox
 }
 
 func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error {
@@ -110,6 +148,10 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 	if err := ValidateOwnedExecutionSourceRecord(outbox.OwnedExecutionSourceRecord,
 		AttemptExecutionSourceScopeV1{TenantID: outbox.TenantID, SessionID: run.SessionID, OwnerUserID: outbox.CredentialOwnerUserID, RunID: outbox.RunID, AttemptID: outbox.AttemptID},
 		outbox.ExecutionPlacementV2, outbox.HarnessBinding, outbox.SubstrateBinding, outbox.AdmissionCostCeiling); err != nil {
+		return err
+	}
+	if err := validateLocalCapacityProjection(run, outbox.LocalCapacityAssociation, outbox.CredentialOwnerUserID,
+		outbox.ExecutionPlacementV2, outbox.HarnessBinding, outbox.SubstrateBinding, outbox.AdmissionCostCeiling, outbox.OwnedExecutionSourceRecord); err != nil {
 		return err
 	}
 	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {

@@ -234,7 +234,7 @@ func (store *Store) CommitCanonicalUserEvent(
 	if err := validateCanonicalCommit(request); err != nil {
 		return result, err
 	}
-	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+	commit := func(ctx context.Context, state ports.StateTx) error {
 		result = ports.CanonicalUserEventResult{}
 		tx := state.(*stateTx)
 		if err := authorizeTenantWriteTx(ctx, tx, request.UserID); err != nil {
@@ -293,7 +293,8 @@ func (store *Store) CommitCanonicalUserEvent(
 			}
 			storedBindingDigest, storedErr := outbox.HarnessBinding.Digest()
 			requestBindingDigest, requestErr := request.HarnessBinding.Digest()
-			if !found || storedErr != nil || requestErr != nil || storedBindingDigest != requestBindingDigest || outbox.OwnedExecutionSourceRecord != request.OwnedExecutionSourceRecord {
+			if !found || storedErr != nil || requestErr != nil || storedBindingDigest != requestBindingDigest || outbox.OwnedExecutionSourceRecord != request.OwnedExecutionSourceRecord ||
+				!equalLocalCapacityV1(run.LocalCapacityAssociation, request.LocalCapacityAssociation) || !equalLocalCapacityV1(outbox.LocalCapacityAssociation, request.LocalCapacityAssociation) {
 				return domain.ErrEventIdempotencyConflict
 			}
 			if err := domain.ValidateOwnedExecutionSourceRecord(outbox.OwnedExecutionSourceRecord,
@@ -371,7 +372,8 @@ func (store *Store) CommitCanonicalUserEvent(
 		run := domain.Run{
 			ID: request.RunID, TenantID: request.TenantID, SessionID: session.ID,
 			TriggerEventID: request.EventID, SubscriptionConnectionID: request.SubscriptionConnectionID,
-			Status: domain.RunCreated, IdempotencyKey: request.IdempotencyKey,
+			LocalCapacityAssociation: request.LocalCapacityAssociation,
+			Status:                   domain.RunCreated, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
 		}
 		attempt := domain.Attempt{
@@ -392,6 +394,7 @@ func (store *Store) CommitCanonicalUserEvent(
 			ExecutionPlacementV2:       request.ExecutionPlacementV2,
 			HarnessBinding:             request.HarnessBinding.Clone(),
 			OwnedExecutionSourceRecord: request.OwnedExecutionSourceRecord,
+			LocalCapacityAssociation:   request.LocalCapacityAssociation,
 			ContextWindow:              &domain.SessionContextWindow{ThroughSequence: sequence},
 			Origin:                     &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
@@ -435,7 +438,19 @@ func (store *Store) CommitCanonicalUserEvent(
 			RunID: request.RunID, Created: true,
 		}
 		return nil
-	})
+	}
+	if request.LocalCapacityAssociation != nil {
+		err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+			result = ports.CanonicalUserEventResult{}
+			q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+			if request.CommittedAt.After(q.at) || store.readLocalCapacityAuthority(ctx, q, request.LocalCapacityAssociation, request.OwnedExecutionSourceRecord, request.ExecutionPlacementV2, request.HarnessBinding, request.SubstrateBinding, request.AdmissionCostCeiling) != nil {
+				return q.budget.deny()
+			}
+			return commit(ctx, q.canonicalState(store, request.TenantID))
+		})
+	} else {
+		err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error { return commit(ctx, state) })
+	}
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
@@ -547,7 +562,7 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	}
 	for _, validate := range []error{
 		request.IdempotencyKey.Validate(), request.EventID.Validate(), request.RunID.Validate(),
-		request.AttemptID.Validate(), request.SubscriptionConnectionID.Validate(),
+		request.AttemptID.Validate(),
 		request.ManifestID.Validate(), request.DispatchID.Validate(),
 	} {
 		if validate != nil {
@@ -570,6 +585,7 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 		ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding,
 		SubstrateBinding: request.SubstrateBinding, AdmissionCostCeiling: request.AdmissionCostCeiling,
 		OwnedExecutionSourceRecord: request.OwnedExecutionSourceRecord,
+		LocalCapacityAssociation:   request.LocalCapacityAssociation,
 	}
 	if err := authority.ValidateForScope(ports.HarnessBindingRequest{
 		TenantID: request.TenantID, OwnerUserID: request.UserID, SessionID: request.SessionID, RunID: request.RunID, AttemptID: request.AttemptID,

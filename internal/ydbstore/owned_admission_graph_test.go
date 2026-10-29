@@ -118,7 +118,9 @@ func (f *managedAdmissionGraphFixture) ExecContext(ctx context.Context, statemen
 			f.rows[table] = []driver.Value{args[payloadArgument].Value}
 		}
 		if table == "subscription_scheduler_slots" {
-			f.slot = []driver.Value{args[2].Value, args[3].Value, args[4].Value, args[5].Value, args[6].Value}
+			// Return the complete new physical projection, including real NULLs
+			// on legacy rows. Omission is not equivalent to the legacy arm.
+			f.slot = []driver.Value{args[2].Value, args[3].Value, args[4].Value, args[5].Value, args[6].Value, args[7].Value, args[8].Value}
 		}
 	}
 	return driver.RowsAffected(1), nil

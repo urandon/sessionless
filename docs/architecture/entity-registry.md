@@ -10,6 +10,40 @@ Logical state and durability decisions are specified in the
 The owning [issue #205](https://gitcode.com/urandon/sessionless/issues/205) holds
 the report, problem register, review findings and implementation decisions.
 
+### Configured-local capacity source extension (not applied schema)
+
+The [configured-local inference capacity contract](../design/configured-local-inference.md#local-resource-capacity-without-a-fabricated-subscription)
+reuses `subscription_scheduler_slots` and `quota_expiry_v2`; it creates no table,
+index, scheduler or ledger. Forward migrations
+[00133](../../migrations/ydb/00133_add_scheduler_slot_local_capacity.sql) and
+[00134](../../migrations/ydb/00134_add_quota_expiry_local_capacity.sql) each add
+nullable `local_capacity_association String` and `local_capacity_digest Utf8` to
+one existing table. The `String` retains the exact closed canonical JSON bytes;
+the digest is lowercase SHA256 of those bytes. For the local arm only, the
+existing physical `subscription_connection_id` Utf8 column holds the 73-byte
+`local-v1/<sha256>` lookup address. This address is not a domain subscription
+identity or authority.
+
+Both new columns NULL select the genuine legacy subscription arm. Local rows
+require both non-NULL and exact byte/digest/key plus tenant/owner/resource
+correspondence to the original Run, reservation and source. Partial NULL,
+noncanonical bytes, mismatched digest/key or conflicting ownership denies;
+there is no decoder fallback or reinterpretation. Original subscription
+row bytes, keys, CREATE migration lineage and retention remain unchanged, with
+no data backfill and no new physical TTL. The registry still has 105 historical
+CREATE records and 101 effective active tables.
+
+The original admission transaction owns the finite hold and its expiry
+projection. Canonical terminal release and queued-only hold expiry must validate
+the retained exact association and preserve existing fence/replay rules; running
+or unknown effects are not released by a TTL-based cleanup shortcut. These
+schema files do not implement those consumers or prove their completeness.
+Before local writers are enabled, upgrade and drain every old control-plane,
+worker and reconciler executor that could read/write/release these rows without
+the explicit arm. Applying the nullable columns alone does not establish runtime
+compatibility. The separately authorized migration/drain prerequisites are in
+the [migration notes](../../migrations/ydb/README.md#configured-local-capacity-extension).
+
 ### Authentication V2 source extension (not applied schema)
 
 The [dual-provider account-linking design](../design/dual-provider-account-linking.md)

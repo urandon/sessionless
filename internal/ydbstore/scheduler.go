@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
@@ -88,6 +89,11 @@ func (store *Store) AdmitDispatch(
 ) (result ports.DispatchAdmissionResult, err error) {
 	if err := validateAdmissionRequest(request); err != nil {
 		return result, err
+	}
+	if original, ok := store.ownedAttemptEffectSourceVerifier.(*localoperator.Source); ok && store.originalLocalPublicationSource(original) {
+		// Trusted startup selects the existing bounded owned callback. Queue
+		// bytes cannot install this Source or activate the local branch.
+		return store.admitBoundedOwnedDispatch(ctx, request)
 	}
 	result.RunID = request.RunID
 	result.AttemptID = request.AttemptID
@@ -222,16 +228,23 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 			ownedSource, err = domain.DecodeAttemptExecutionSourceV1([]byte(outbox.OwnedExecutionSourceRecord))
 			if err != nil || outbox.SubstrateBinding == nil || outbox.AdmissionCostCeiling == nil ||
 				ownedSource.Scope != (domain.AttemptExecutionSourceScopeV1{TenantID: run.TenantID, SessionID: run.SessionID, OwnerUserID: outbox.CredentialOwnerUserID, RunID: run.ID, AttemptID: attempt.ID}) ||
-				ownedSource.ValidateForExecution(outbox.ExecutionPlacementV2, outbox.HarnessBinding, *outbox.SubstrateBinding, *outbox.AdmissionCostCeiling) != nil ||
-				outbox.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
-				currentServerlessProviderResourceTx(ctx, q, outbox.HarnessBinding, &ownedSource.Profile, q.at) != nil {
+				ownedSource.ValidateForExecution(outbox.ExecutionPlacementV2, outbox.HarnessBinding, *outbox.SubstrateBinding, *outbox.AdmissionCostCeiling) != nil {
 				return q.budget.deny()
 			}
-			if err := readOwnedAdmissionPrincipal(ctx, q, ownedSource.Scope); err != nil {
-				return err
-			}
-			if _, err := readOwnedAdmissionSources(ctx, q, ownedSource); err != nil {
-				return err
+			if run.LocalCapacityAssociation != nil {
+				if store.readLocalCapacityAuthority(ctx, q, run.LocalCapacityAssociation, outbox.OwnedExecutionSourceRecord, outbox.ExecutionPlacementV2, outbox.HarnessBinding, outbox.SubstrateBinding, outbox.AdmissionCostCeiling) != nil {
+					return q.budget.deny()
+				}
+			} else {
+				if outbox.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 || currentServerlessProviderResourceTx(ctx, q, outbox.HarnessBinding, &ownedSource.Profile, q.at) != nil {
+					return q.budget.deny()
+				}
+				if err := readOwnedAdmissionPrincipal(ctx, q, ownedSource.Scope); err != nil {
+					return err
+				}
+				if _, err := readOwnedAdmissionSources(ctx, q, ownedSource); err != nil {
+					return err
+				}
 			}
 			final, err = readOwnedAdmission(ctx, q, ownedSource.Scope)
 			if err != nil {
@@ -244,7 +257,14 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 
 	var entitlementValue, quotaValue string
 	var entitlementErr error
-	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+	local := run.LocalCapacityAssociation != nil
+	if local {
+		if !bounded || !owned || !q.ownedAdmission {
+			return domain.ErrMembershipDenied
+		}
+		// The exact original local Source/profile/funding/current resource was
+		// just authenticated above. No subscription read or fabricated quota.
+	} else if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
 		entitlementErr = q.scanMetadata(ctx,
 			`SELECT SUBSTRING(CAST(entitlement_state AS String),0,33), SUBSTRING(CAST(quota_state AS String),0,33)
 				 FROM subscription_connections WHERE tenant_id=$1 AND subscription_connection_id=$2`,
@@ -263,12 +283,16 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	if entitlementErr != nil {
 		return entitlementErr
 	}
-	slot, err := ensureSchedulerSlot(
-		ctx, tx, run.SubscriptionConnectionID,
-		domain.EntitlementState(entitlementValue), request.Now,
+	slot, err := ensureCapacitySchedulerSlot(
+		ctx, tx, run.SubscriptionConnectionID, run.LocalCapacityAssociation,
+		local || domain.EntitlementState(entitlementValue) == domain.EntitlementActive, request.Now,
 	)
 	if err != nil {
 		return err
+	}
+	if local && slot.ActiveRunID == "" && slot.State == domain.SchedulerReauthRequired {
+		// Only the already-rejoined current authority can restore readiness.
+		slot.State, slot.UpdatedAt = domain.SchedulerReady, request.Now
 	}
 	if slot.ActiveRunID == request.RunID &&
 		slot.ActiveReservationID == request.ReservationID {
@@ -345,11 +369,12 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 		request.Limits,
 		request.Workload,
 		scheduler.Snapshot{
-			Entitlement: domain.EntitlementState(entitlementValue),
-			Quota:       domain.ProviderQuotaState(quotaValue),
-			Slot:        slot,
-			QueueDepth:  queueDepth,
-			ActiveRuns:  activeRuns,
+			LocalSourceReady: local,
+			Entitlement:      domain.EntitlementState(entitlementValue),
+			Quota:            domain.ProviderQuotaState(quotaValue),
+			Slot:             slot,
+			QueueDepth:       queueDepth,
+			ActiveRuns:       activeRuns,
 		},
 	)
 	if err != nil {
@@ -440,6 +465,7 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 		ID: request.ReservationID, TenantID: request.TenantID,
 		RunID:                    request.RunID,
 		SubscriptionConnectionID: run.SubscriptionConnectionID,
+		LocalCapacityAssociation: run.LocalCapacityAssociation,
 		Status:                   domain.ReservationHeld, CapacityUnits: 1,
 		HeldAt: request.Now, ExpiresAt: request.HoldUntil,
 		UpdatedAt: request.Now,
@@ -470,6 +496,7 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 		ReplyToMessageID:           outbox.ReplyToMessageID,
 		CreatedAt:                  request.Now,
 		OwnedExecutionSourceRecord: outbox.OwnedExecutionSourceRecord,
+		LocalCapacityAssociation:   run.LocalCapacityAssociation,
 	}
 	if outbox.SubstrateBinding != nil {
 		substrate := *outbox.SubstrateBinding
@@ -651,7 +678,7 @@ func (store *Store) ListExpiredQuotaReservations(
 	}
 	rows, err := store.db.QueryContext(ctx,
 		`SELECT tenant_id, quota_reservation_id, run_id,
-		        subscription_connection_id, expires_at
+		        subscription_connection_id, expires_at, SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
 		 FROM quota_expiry_v2
 		 WHERE shard_bucket = $1 AND expires_at <= $2
 		 ORDER BY expires_at, tenant_id, quota_reservation_id
@@ -664,11 +691,17 @@ func (store *Store) ListExpiredQuotaReservations(
 	defer rows.Close()
 	for rows.Next() {
 		var item ports.ExpiredQuotaReservation
+		var key string
+		var association, digest sql.NullString
 		if err := rows.Scan(
 			&item.TenantID, &item.ReservationID, &item.RunID,
-			&item.SubscriptionConnectionID, &item.ExpiresAt,
+			&key, &item.ExpiresAt, &association, &digest,
 		); err != nil {
 			return nil, err
+		}
+		item.SubscriptionConnectionID, item.LocalCapacityAssociation, err = decodeCapacityStorageV1(item.TenantID, capacityStorageV1{key: key, association: association, digest: digest})
+		if err != nil || validateExpiredReservation(item, before) != nil {
+			return nil, domain.ErrMembershipDenied
 		}
 		result = append(result, item)
 	}
@@ -694,7 +727,8 @@ func (store *Store) ExpireQuotaReservation(
 			return err
 		}
 		if reservation.RunID != candidate.RunID ||
-			reservation.SubscriptionConnectionID != candidate.SubscriptionConnectionID {
+			reservation.SubscriptionConnectionID != candidate.SubscriptionConnectionID ||
+			!equalLocalCapacityV1(reservation.LocalCapacityAssociation, candidate.LocalCapacityAssociation) || !reservation.ExpiresAt.Equal(candidate.ExpiresAt) {
 			return domain.ValidationError{
 				Field: "quota expiry candidate", Reason: "does not match the stored reservation",
 			}
@@ -709,8 +743,22 @@ func (store *Store) ExpireQuotaReservation(
 		if !found {
 			return fmt.Errorf("run %q not found", reservation.RunID)
 		}
-		if run.Status == domain.RunRunning {
+		if run.Status == domain.RunRunning || run.LocalCapacityAssociation != nil && run.Status != domain.RunQueued {
 			return nil
+		}
+		if err := reservation.ValidateForRun(run); err != nil {
+			return err
+		}
+		if run.LocalCapacityAssociation != nil {
+			// A queued status cannot erase possibly-active lease custody.
+			var lease string
+			leaseErr := tx.sqlTx.QueryRowContext(ctx, `SELECT lease_id FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`, run.TenantID, run.ID).Scan(&lease)
+			if leaseErr == nil {
+				return nil
+			}
+			if !errors.Is(leaseErr, sql.ErrNoRows) {
+				return leaseErr
+			}
 		}
 		if err := reservation.Transition(domain.ReservationExpired, at); err != nil {
 			return err
@@ -718,30 +766,36 @@ func (store *Store) ExpireQuotaReservation(
 		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
 			return err
 		}
-		var entitlementValue string
-		if err := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT entitlement_state FROM subscription_connections
-			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-			candidate.TenantID, reservation.SubscriptionConnectionID,
-		).Scan(&entitlementValue); err != nil {
-			return err
-		}
-		slot, err := ensureSchedulerSlot(
-			ctx, tx, reservation.SubscriptionConnectionID,
-			domain.EntitlementState(entitlementValue), at,
-		)
-		if err != nil {
-			return err
-		}
-		if slot.ActiveRunID == reservation.RunID &&
-			slot.ActiveReservationID == reservation.ID {
-			slot.ActiveRunID = ""
-			slot.ActiveReservationID = ""
-			slot.State = domain.SchedulerReady
-			slot.BlockedUntil = nil
-			slot.UpdatedAt = at
-			if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+		if run.LocalCapacityAssociation != nil {
+			if err := releaseLocalCapacitySlotTx(ctx, tx, run, reservation, at); err != nil {
 				return err
+			}
+		} else {
+			var entitlementValue string
+			if err := tx.sqlTx.QueryRowContext(ctx,
+				`SELECT entitlement_state FROM subscription_connections
+			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+				candidate.TenantID, reservation.SubscriptionConnectionID,
+			).Scan(&entitlementValue); err != nil {
+				return err
+			}
+			slot, err := ensureSchedulerSlot(
+				ctx, tx, reservation.SubscriptionConnectionID,
+				domain.EntitlementState(entitlementValue), at,
+			)
+			if err != nil {
+				return err
+			}
+			if slot.ActiveRunID == reservation.RunID &&
+				slot.ActiveReservationID == reservation.ID {
+				slot.ActiveRunID = ""
+				slot.ActiveReservationID = ""
+				slot.State = domain.SchedulerReady
+				slot.BlockedUntil = nil
+				slot.UpdatedAt = at
+				if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+					return err
+				}
 			}
 		}
 		if run.Status == domain.RunQueued {
@@ -801,31 +855,52 @@ func ensureSchedulerSlot(
 	entitlement domain.EntitlementState,
 	at time.Time,
 ) (domain.SubscriptionSchedulerSlot, error) {
+	return ensureCapacitySchedulerSlot(ctx, tx, connectionID, nil, entitlement == domain.EntitlementActive, at)
+}
+
+// localReady is derived only by the caller's same-transaction Source/funding
+// join. This function authenticates storage identity, not execution authority.
+func ensureCapacitySchedulerSlot(ctx context.Context, tx *stateTx, connectionID domain.SubscriptionConnectionID, local *domain.LocalCapacityAssociationV1, localReady bool, at time.Time) (domain.SubscriptionSchedulerSlot, error) {
+	return capacitySchedulerSlot(ctx, tx, connectionID, local, localReady, at, true)
+}
+
+func capacitySchedulerSlot(ctx context.Context, tx *stateTx, connectionID domain.SubscriptionConnectionID, local *domain.LocalCapacityAssociationV1, localReady bool, at time.Time, allowCreate bool) (domain.SubscriptionSchedulerSlot, error) {
 	slot := domain.SubscriptionSchedulerSlot{
 		TenantID: tx.tenantID, SubscriptionConnectionID: connectionID,
 	}
+	physical, err := encodeCapacityStorageV1(tx.tenantID, connectionID, local)
+	if err != nil {
+		return slot, err
+	}
+	if local != nil {
+		copy := *local
+		slot.LocalCapacityAssociation = &copy
+	}
 	var state, activeRun, activeReservation string
 	var blockedUntil, updatedAt time.Time
-	var err error
+	var association, digest sql.NullString
 	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
 		err = q.scanMetadata(ctx,
-			`SELECT SUBSTRING(CAST(state AS String),0,33), SUBSTRING(CAST(active_run_id AS String),0,161), SUBSTRING(CAST(active_reservation_id AS String),0,161), blocked_until, updated_at
+			`SELECT SUBSTRING(CAST(state AS String),0,33), SUBSTRING(CAST(active_run_id AS String),0,161), SUBSTRING(CAST(active_reservation_id AS String),0,161), blocked_until, updated_at, SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
 			 FROM subscription_scheduler_slots WHERE tenant_id=$1 AND subscription_connection_id=$2`,
-			[]any{tx.tenantID, connectionID}, &state, &activeRun, &activeReservation, &blockedUntil, &updatedAt)
-		if err == nil && (len(state) > 32 || len(activeRun) > 160 || len(activeReservation) > 160 || updatedAt.After(q.at)) {
+			[]any{tx.tenantID, physical.key}, &state, &activeRun, &activeReservation, &blockedUntil, &updatedAt, &association, &digest)
+		if err == nil && (len(state) > 32 || len(activeRun) > 160 || len(activeReservation) > 160 || len(association.String) > ownedAuthorityHeadBytes || len(digest.String) > 64 || updatedAt.After(q.at)) {
 			err = q.budget.deny()
 		}
 	} else {
 		err = tx.sqlTx.QueryRowContext(ctx,
-			`SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at
+			`SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at, SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
 		 FROM subscription_scheduler_slots
 		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-			tx.tenantID, connectionID,
-		).Scan(&state, &activeRun, &activeReservation, &blockedUntil, &updatedAt)
+			tx.tenantID, physical.key,
+		).Scan(&state, &activeRun, &activeReservation, &blockedUntil, &updatedAt, &association, &digest)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
+		if !allowCreate {
+			return domain.SubscriptionSchedulerSlot{}, sql.ErrNoRows
+		}
 		slot.State = domain.SchedulerReauthRequired
-		if entitlement == domain.EntitlementActive {
+		if localReady {
 			slot.State = domain.SchedulerReady
 		}
 		slot.UpdatedAt = at
@@ -846,6 +921,11 @@ func ensureSchedulerSlot(
 	if err != nil {
 		return slot, err
 	}
+	storedSubscription, storedLocal, err := decodeCapacityStorageV1(tx.tenantID, capacityStorageV1{key: physical.key, association: association, digest: digest})
+	if err != nil || storedSubscription != connectionID || !equalLocalCapacityV1(storedLocal, local) {
+		// A conflicting physical row is never repaired or overwritten.
+		return domain.SubscriptionSchedulerSlot{}, domain.ErrMembershipDenied
+	}
 	slot.State = domain.SchedulerState(state)
 	slot.ActiveRunID = domain.RunID(activeRun)
 	slot.ActiveReservationID = domain.QuotaReservationID(activeReservation)
@@ -865,17 +945,24 @@ func writeSchedulerSlot(
 	if err := slot.Validate(); err != nil {
 		return err
 	}
+	if slot.TenantID != tx.tenantID {
+		return domain.ErrMembershipDenied
+	}
+	physical, err := encodeCapacityStorageV1(slot.TenantID, slot.SubscriptionConnectionID, slot.LocalCapacityAssociation)
+	if err != nil {
+		return err
+	}
 	blocked := time.Unix(0, 0).UTC()
 	if slot.BlockedUntil != nil {
 		blocked = *slot.BlockedUntil
 	}
-	_, err := tx.sqlTx.ExecContext(ctx,
+	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO subscription_scheduler_slots
 		 (tenant_id, subscription_connection_id, state, active_run_id,
-		  active_reservation_id, blocked_until, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		slot.TenantID, slot.SubscriptionConnectionID, slot.State,
-		slot.ActiveRunID, slot.ActiveReservationID, blocked, slot.UpdatedAt,
+		  active_reservation_id, blocked_until, updated_at, local_capacity_association, local_capacity_digest)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		slot.TenantID, physical.key, slot.State,
+		slot.ActiveRunID, slot.ActiveReservationID, blocked, slot.UpdatedAt, physical.association, physical.digest,
 	)
 	return err
 }
@@ -974,7 +1061,7 @@ func validateExpiredReservation(
 	if err := candidate.RunID.Validate(); err != nil {
 		return err
 	}
-	if err := candidate.SubscriptionConnectionID.Validate(); err != nil {
+	if _, err := encodeCapacityStorageV1(candidate.TenantID, candidate.SubscriptionConnectionID, candidate.LocalCapacityAssociation); err != nil {
 		return err
 	}
 	if candidate.ExpiresAt.IsZero() || at.IsZero() {

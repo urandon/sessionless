@@ -796,6 +796,7 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 			TenantID: sink.loaded.Run.TenantID, RunID: sink.loaded.Run.ID,
 			AttemptID:                sink.loaded.Attempt.ID,
 			SubscriptionConnectionID: sink.loaded.Run.SubscriptionConnectionID,
+			LocalCapacityAssociation: sink.loaded.Run.Clone().LocalCapacityAssociation,
 			Source:                   domain.UsageSourceHarness, InputTokens: event.InputTokens,
 			OutputTokens: event.OutputTokens, ObservedAt: at,
 		}

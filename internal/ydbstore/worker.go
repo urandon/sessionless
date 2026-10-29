@@ -783,28 +783,34 @@ func finishWorkerScheduling(
 	fence uint64,
 	at time.Time,
 ) error {
-	var entitlement string
-	if err := tx.sqlTx.QueryRowContext(ctx,
-		`SELECT entitlement_state FROM subscription_connections
-		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-		run.TenantID, run.SubscriptionConnectionID,
-	).Scan(&entitlement); err != nil {
-		return err
-	}
-	slot, err := ensureSchedulerSlot(
-		ctx, tx, run.SubscriptionConnectionID, domain.EntitlementState(entitlement), at,
-	)
-	if err != nil {
-		return err
-	}
-	if slot.ActiveRunID == run.ID && slot.ActiveReservationID == reservation.ID {
-		slot.ActiveRunID = ""
-		slot.ActiveReservationID = ""
-		slot.State = domain.SchedulerReady
-		slot.BlockedUntil = nil
-		slot.UpdatedAt = at
-		if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+	if run.LocalCapacityAssociation != nil {
+		if err := releaseLocalCapacitySlotTx(ctx, tx, run, reservation, at); err != nil {
 			return err
+		}
+	} else {
+		var entitlement string
+		if err := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT entitlement_state FROM subscription_connections
+		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+			run.TenantID, run.SubscriptionConnectionID,
+		).Scan(&entitlement); err != nil {
+			return err
+		}
+		slot, err := ensureSchedulerSlot(
+			ctx, tx, run.SubscriptionConnectionID, domain.EntitlementState(entitlement), at,
+		)
+		if err != nil {
+			return err
+		}
+		if slot.ActiveRunID == run.ID && slot.ActiveReservationID == reservation.ID {
+			slot.ActiveRunID = ""
+			slot.ActiveReservationID = ""
+			slot.State = domain.SchedulerReady
+			slot.BlockedUntil = nil
+			slot.UpdatedAt = at
+			if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+				return err
+			}
 		}
 	}
 	queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, at)

@@ -351,6 +351,7 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if found && (stored.SessionID != run.SessionID ||
 		stored.TriggerEventID != run.TriggerEventID ||
 		stored.SubscriptionConnectionID != run.SubscriptionConnectionID ||
+		!equalLocalCapacityV1(stored.LocalCapacityAssociation, run.LocalCapacityAssociation) ||
 		stored.IdempotencyKey != run.IdempotencyKey ||
 		!stored.CreatedAt.Equal(run.CreatedAt)) {
 		return domain.ValidationError{Field: "run", Reason: "immutable identity fields cannot change"}
@@ -551,6 +552,10 @@ func (tx *stateTx) PutQuotaReservation(
 	if err := reservation.ValidateForRun(run); err != nil {
 		return err
 	}
+	physical, err := encodeCapacityStorageV1(reservation.TenantID, reservation.SubscriptionConnectionID, reservation.LocalCapacityAssociation)
+	if err != nil {
+		return err
+	}
 	payload, err := marshal(reservation)
 	if err != nil {
 		return err
@@ -568,6 +573,11 @@ func (tx *stateTx) PutQuotaReservation(
 		return err
 	}
 	if found {
+		if previous.ID != reservation.ID || previous.ValidateForRun(run) != nil ||
+			previous.CapacityUnits != reservation.CapacityUnits || !previous.HeldAt.Equal(reservation.HeldAt) ||
+			!equalLocalCapacityV1(previous.LocalCapacityAssociation, reservation.LocalCapacityAssociation) {
+			return domain.ErrMembershipDenied
+		}
 		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
 		if err != nil {
 			return err
@@ -597,10 +607,10 @@ func (tx *stateTx) PutQuotaReservation(
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO quota_expiry_v2
 		 (shard_bucket, expires_at, tenant_id, quota_reservation_id,
-		  run_id, subscription_connection_id)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		  run_id, subscription_connection_id, local_capacity_association, local_capacity_digest)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID,
-		reservation.RunID, reservation.SubscriptionConnectionID,
+		reservation.RunID, physical.key, physical.association, physical.digest,
 	)
 	return err
 }

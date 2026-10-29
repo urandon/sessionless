@@ -13,6 +13,10 @@ type Snapshot struct {
 	Slot        domain.SubscriptionSchedulerSlot
 	QueueDepth  uint32
 	ActiveRuns  uint32
+	// DATA derived only after the admission transaction authenticated its
+	// original local source/principal/resource and four current funding heads.
+	// It is not a standalone permission or an entitlement/quota substitute.
+	LocalSourceReady bool
 }
 
 type Decision struct {
@@ -40,34 +44,50 @@ func Evaluate(
 	if err := snapshot.Slot.Validate(); err != nil {
 		return Decision{}, err
 	}
-
-	switch snapshot.Entitlement {
-	case domain.EntitlementDisconnected, domain.EntitlementUnknown,
-		domain.EntitlementInactive,
-		domain.EntitlementReauthRequired:
-		return Decision{
-			State: domain.SchedulerReauthRequired,
-			Code:  "subscription_reauthentication_required",
-		}, nil
-	}
-	if snapshot.Slot.State == domain.SchedulerDraining {
-		return Decision{State: domain.SchedulerDraining, Code: "subscription_draining"}, nil
-	}
-	if snapshot.Slot.State == domain.SchedulerBlockedUntilReset &&
-		snapshot.Slot.BlockedUntil != nil &&
-		now.Before(*snapshot.Slot.BlockedUntil) {
-		retryAt := *snapshot.Slot.BlockedUntil
-		return Decision{
-			State:   domain.SchedulerBlockedUntilReset,
-			Code:    "provider_quota_blocked",
-			RetryAt: &retryAt,
-		}, nil
-	}
-	if snapshot.Quota == domain.ProviderQuotaExhausted {
-		return Decision{
-			State: domain.SchedulerBlockedUntilReset,
-			Code:  "provider_quota_exhausted_reset_unknown",
-		}, nil
+	local := snapshot.Slot.LocalCapacityAssociation != nil
+	if local {
+		if snapshot.Entitlement != "" || snapshot.Quota != "" {
+			return Decision{}, domain.ValidationError{Field: "scheduler.local_source", Reason: "local capacity excludes subscription entitlement and quota observations"}
+		}
+		if !snapshot.LocalSourceReady || snapshot.Slot.State != domain.SchedulerReady {
+			state := snapshot.Slot.State
+			if !snapshot.LocalSourceReady && state != domain.SchedulerDraining {
+				state = domain.SchedulerReauthRequired
+			}
+			return Decision{State: state, Code: "local_source_unavailable"}, nil
+		}
+	} else {
+		if snapshot.LocalSourceReady {
+			return Decision{}, domain.ValidationError{Field: "scheduler.local_source", Reason: "local readiness requires the explicit local capacity arm"}
+		}
+		switch snapshot.Entitlement {
+		case domain.EntitlementDisconnected, domain.EntitlementUnknown,
+			domain.EntitlementInactive,
+			domain.EntitlementReauthRequired:
+			return Decision{
+				State: domain.SchedulerReauthRequired,
+				Code:  "subscription_reauthentication_required",
+			}, nil
+		}
+		if snapshot.Slot.State == domain.SchedulerDraining {
+			return Decision{State: domain.SchedulerDraining, Code: "subscription_draining"}, nil
+		}
+		if snapshot.Slot.State == domain.SchedulerBlockedUntilReset &&
+			snapshot.Slot.BlockedUntil != nil &&
+			now.Before(*snapshot.Slot.BlockedUntil) {
+			retryAt := *snapshot.Slot.BlockedUntil
+			return Decision{
+				State:   domain.SchedulerBlockedUntilReset,
+				Code:    "provider_quota_blocked",
+				RetryAt: &retryAt,
+			}, nil
+		}
+		if snapshot.Quota == domain.ProviderQuotaExhausted {
+			return Decision{
+				State: domain.SchedulerBlockedUntilReset,
+				Code:  "provider_quota_exhausted_reset_unknown",
+			}, nil
+		}
 	}
 	switch {
 	case shape.Runtime > limits.MaxRuntime:
@@ -81,6 +101,9 @@ func Evaluate(
 	case shape.Artifacts > limits.MaxArtifacts:
 		return Decision{State: domain.SchedulerPressured, Code: "artifact_limit_exceeded"}, nil
 	case snapshot.Slot.ActiveRunID != "":
+		if local {
+			return Decision{State: domain.SchedulerPressured, Code: "local_capacity_slot_busy"}, nil
+		}
 		return Decision{State: domain.SchedulerPressured, Code: "subscription_slot_busy"}, nil
 	case snapshot.QueueDepth >= limits.MaxTenantQueueDepth:
 		return Decision{State: domain.SchedulerPressured, Code: "tenant_queue_depth_exhausted"}, nil

@@ -59,23 +59,28 @@ func CanTransitionRun(from, to RunStatus) bool {
 }
 
 type Run struct {
-	ID                       RunID                    `json:"id"`
-	TenantID                 TenantID                 `json:"tenant_id"`
-	SessionID                SessionID                `json:"session_id"`
-	TriggerEventID           SessionEventID           `json:"trigger_event_id"`
-	SubscriptionConnectionID SubscriptionConnectionID `json:"subscription_connection_id"`
-	Status                   RunStatus                `json:"status"`
-	IdempotencyKey           IdempotencyKey           `json:"idempotency_key"`
-	CancellationRequestedAt  *time.Time               `json:"cancellation_requested_at,omitempty"`
-	StartedAt                *time.Time               `json:"started_at,omitempty"`
-	FinishedAt               *time.Time               `json:"finished_at,omitempty"`
-	CreatedAt                time.Time                `json:"created_at"`
-	UpdatedAt                time.Time                `json:"updated_at"`
-	DerivedContext           *RunDerivedContextV1     `json:"derived_context,omitempty"`
-	TerminalCustody          *RunTerminalCustodyV1    `json:"terminal_custody,omitempty"`
+	ID                       RunID                       `json:"id"`
+	TenantID                 TenantID                    `json:"tenant_id"`
+	SessionID                SessionID                   `json:"session_id"`
+	TriggerEventID           SessionEventID              `json:"trigger_event_id"`
+	SubscriptionConnectionID SubscriptionConnectionID    `json:"subscription_connection_id,omitempty"`
+	LocalCapacityAssociation *LocalCapacityAssociationV1 `json:"local_capacity_association,omitempty"`
+	Status                   RunStatus                   `json:"status"`
+	IdempotencyKey           IdempotencyKey              `json:"idempotency_key"`
+	CancellationRequestedAt  *time.Time                  `json:"cancellation_requested_at,omitempty"`
+	StartedAt                *time.Time                  `json:"started_at,omitempty"`
+	FinishedAt               *time.Time                  `json:"finished_at,omitempty"`
+	CreatedAt                time.Time                   `json:"created_at"`
+	UpdatedAt                time.Time                   `json:"updated_at"`
+	DerivedContext           *RunDerivedContextV1        `json:"derived_context,omitempty"`
+	TerminalCustody          *RunTerminalCustodyV1       `json:"terminal_custody,omitempty"`
 }
 
 func (run Run) Clone() Run {
+	if run.LocalCapacityAssociation != nil {
+		value := *run.LocalCapacityAssociation
+		run.LocalCapacityAssociation = &value
+	}
 	for _, pair := range []struct {
 		source *time.Time
 		target **time.Time
@@ -109,7 +114,7 @@ func (run Run) Validate() error {
 	if err := run.TriggerEventID.Validate(); err != nil {
 		return err
 	}
-	if err := run.SubscriptionConnectionID.Validate(); err != nil {
+	if err := validateCapacityIdentity(run.TenantID, run.SubscriptionConnectionID, run.LocalCapacityAssociation); err != nil {
 		return err
 	}
 	if !run.Status.Valid() {

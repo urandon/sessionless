@@ -14,6 +14,13 @@ const (
 	preparedContractStageUnsupportedInput
 	preparedContractStageDriver
 	preparedContractStagePreflight
+	preparedContractStageIngressShape
+	preparedContractStageIngressManifest
+	preparedContractStageIngressRecords
+	preparedContractStageIngressTrigger
+	preparedContractStageIngressSource
+	preparedContractStageIngressHistory
+	preparedContractStageIngressUploads
 )
 
 type preparedContractStageError struct {
@@ -54,6 +61,20 @@ func PreparedContractStageV1(err error) string {
 		return "driver"
 	case preparedContractStagePreflight:
 		return "preflight"
+	case preparedContractStageIngressShape:
+		return "ingress_shape"
+	case preparedContractStageIngressManifest:
+		return "ingress_manifest"
+	case preparedContractStageIngressRecords:
+		return "ingress_records"
+	case preparedContractStageIngressTrigger:
+		return "ingress_trigger"
+	case preparedContractStageIngressSource:
+		return "ingress_source"
+	case preparedContractStageIngressHistory:
+		return "ingress_history"
+	case preparedContractStageIngressUploads:
+		return "ingress_uploads"
 	default:
 		return ""
 	}

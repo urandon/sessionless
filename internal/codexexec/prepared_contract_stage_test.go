@@ -21,6 +21,13 @@ func TestPreparedContractStageV1IsClosedAndRedacted(t *testing.T) {
 		{preparedContractStageUnsupportedInput, "unsupported_input"},
 		{preparedContractStageDriver, "driver"},
 		{preparedContractStagePreflight, "preflight"},
+		{preparedContractStageIngressShape, "ingress_shape"},
+		{preparedContractStageIngressManifest, "ingress_manifest"},
+		{preparedContractStageIngressRecords, "ingress_records"},
+		{preparedContractStageIngressTrigger, "ingress_trigger"},
+		{preparedContractStageIngressSource, "ingress_source"},
+		{preparedContractStageIngressHistory, "ingress_history"},
+		{preparedContractStageIngressUploads, "ingress_uploads"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {

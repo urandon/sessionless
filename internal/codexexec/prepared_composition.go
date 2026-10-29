@@ -165,8 +165,8 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend {
 			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDescriptor)
 		}
-		if !preparedIngressEnvelope(input) {
-			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageIngress)
+		if ingressStage := preparedIngressContractStage(input); ingressStage != 0 {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(ingressStage)
 		}
 		media, err = prepareMediaInput(input)
 		if err != nil {
@@ -310,18 +310,22 @@ func preparedTextEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) b
 }
 
 func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) bool {
+	return preparedIngressContractStage(input) == 0
+}
+
+func preparedIngressContractStage(input *attachedworkerdaemon.VerifiedAttachedInputV1) preparedContractStage {
 	if input == nil || input.CanonicalContext == nil || input.Job.ContextWindow == nil {
-		return false
+		return preparedContractStageIngressShape
 	}
 	if len(input.Artifacts) == 0 && len(input.Manifest.Artifacts) == 0 {
-		return true // Existing admitted history-only library inputs.
+		return 0 // Existing admitted history-only library inputs.
 	}
 	if len(input.Artifacts) == 0 || len(input.Artifacts) != len(input.Manifest.Artifacts) {
-		return false
+		return preparedContractStageIngressManifest
 	}
 	artifact, ref := input.Artifacts[0], input.Manifest.Artifacts[0]
 	if artifact.Name != "message.json" || ref.Name != "message.json" || ref.MediaType != "application/json" {
-		return false
+		return preparedContractStageIngressManifest
 	}
 	records, err := sessioncontext.DecodeJSONL(input.Context, input.Job.TenantID, input.Job.SessionID)
 	defer func() {
@@ -330,7 +334,7 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 		}
 	}()
 	if err != nil || len(records) == 0 {
-		return false
+		return preparedContractStageIngressRecords
 	}
 	trigger := records[len(records)-1]
 	event, job := trigger.Event, input.Job
@@ -339,19 +343,19 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 		event.AuthorUserID != nil && *event.AuthorUserID == job.CredentialOwnerUserID &&
 		event.RunID != nil && *event.RunID == job.RunID && ref.Blob == event.Payload && bytes.Equal(artifact.Body, trigger.Payload)) ||
 		!strictJSONObject(trigger.Payload) {
-		return false
+		return preparedContractStageIngressTrigger
 	}
 	// Reuse ingress's closed envelope validator: these must be exactly its
 	// ordered current-event uploads, not arbitrary independently valid blobs.
 	uploads := input.Manifest.Artifacts[1:]
 	prepared, err := sessionmaterial.PrepareV1(event, trigger.Payload, uploads)
 	if err != nil {
-		return false
+		return preparedContractStageIngressSource
 	}
 	defer prepared.Release()
 	proof := input.CanonicalContext
 	if len(proof.Attachments) < len(uploads) {
-		return false
+		return preparedContractStageIngressHistory
 	}
 	// ProjectCanonical/ValidateFor already bound the complete ordered history.
 	// Its last record is this trigger, so its uploads form only the final suffix;
@@ -362,10 +366,10 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 		name := strings.TrimPrefix(upload.Name, fmt.Sprintf("attachment-%02d-", index+1))
 		qualified := sessioncontext.AttachmentRef{Name: fmt.Sprintf("%020d-%02d-%s", event.Sequence, index+1, name), MediaType: upload.MediaType, Blob: upload.Blob}
 		if body.Name != upload.Name || current[index].AttachmentRef != qualified || !bytes.Equal(body.Body, current[index].Body) {
-			return false
+			return preparedContractStageIngressUploads
 		}
 	}
-	return true
+	return 0
 }
 
 func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared attachedworkerdaemon.PreparedInvocationV1) (attachedworkerdaemon.AttemptResult, error) {

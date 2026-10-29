@@ -73,7 +73,18 @@ func newLocalSessionConnectedSeedWithAuth(t *testing.T, endpoint string, compile
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID,
 		SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
 	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, mcpModelDescription: limits.MCPModelDescription, mcpSyntheticPriceMicrounits: limits.MCPSyntheticPriceMicrounits, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
-	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at,
+	// Declare the scripted canonical DATA in the selected local arm BEFORE
+	// its outbox/parent seals. A local model never borrows the old synthetic
+	// subscription identity. This remains a seeded running fixture, not ingress.
+	association := domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: actual.profile.Locator.ResourceID}
+	if association.ValidateForScope(actual.profile.Locator.TenantID, actual.profile.Locator.OwnerUserID, actual.profile.Resource.ResourceID) != nil || actual.profile.Locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		t.Fatal("local fixture requires its original exact Source resource")
+	}
+	state.Run.SubscriptionConnectionID, state.Reservation.SubscriptionConnectionID = "", ""
+	state.Run.LocalCapacityAssociation = &association
+	state.Job.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	state.Reservation.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, state: &state,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
 	if err != nil {

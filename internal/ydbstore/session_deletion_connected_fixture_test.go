@@ -137,7 +137,9 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 		}
 		f.tables[table] = append(f.tables[table], m)
 	}
-	record("runs", s.Run, map[string]any{"run_id": s.Run.ID})
+	// The actual Run writer always emits the physical subscription Utf8, even
+	// when the selected local arm canonically omits that JSON member.
+	record("runs", s.Run, map[string]any{"run_id": s.Run.ID, "subscription_connection_id": string(s.Run.SubscriptionConnectionID)})
 	f.tables["runs_by_session"] = []map[string]driver.Value{{"tenant_id": string(s.Run.TenantID), "session_id": string(s.Run.SessionID), "created_at": s.Run.CreatedAt, "run_id": string(s.Run.ID), "trigger_event_id": string(s.Run.TriggerEventID), "status": string(s.Run.Status)}}
 	f.tables["run_finalizations"] = []map[string]driver.Value{{"tenant_id": string(s.Run.TenantID), "run_id": string(s.Run.ID), "terminal_status": s.FinalStatus, "content_digest": s.FinalDigest, "created_at": s.Run.UpdatedAt}}
 	var job domain.WorkerJob

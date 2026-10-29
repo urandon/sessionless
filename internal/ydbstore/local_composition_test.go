@@ -51,7 +51,20 @@ func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeAct
 	prebuild.scope, prebuild.setupDuration = scope, 10*time.Second
 	prebuild.authenticFunding = true
 	actual := newLocalRuntimeActualFixture(t, true, true, prebuild)
-	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
+	// This older bootstrap also seeds an already-running local invocation. Its
+	// retained DATA must name the original local resource before the parent and
+	// outbox are sealed; it is not a subscription or canonical admission proof.
+	association := domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1,
+		TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: actual.profile.Locator.ResourceID}
+	if association.ValidateForScope(actual.profile.Locator.TenantID, actual.profile.Locator.OwnerUserID, actual.profile.Resource.ResourceID) != nil || actual.profile.Locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		t.Fatal("local bootstrap fixture requires its original exact Source resource")
+	}
+	state.Run.SubscriptionConnectionID, state.Reservation.SubscriptionConnectionID = "", ""
+	state.Run.LocalCapacityAssociation = &association
+	state.Job.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	state.Reservation.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, state: &state, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
+	declareLocalSessionCapacityRows(t, parent)
 	issuer, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time {
 		if prebuild.operationClockBarrier != nil {
 			prebuild.operationClockBarrier()

@@ -35,7 +35,7 @@ func TestPreparedIngressContractStageMatchesExistingManifestFixtures(t *testing.
 	}{
 		{fault: "missing", stage: preparedContractStageIngressSource},
 		{fault: "extra", stage: preparedContractStageIngressSource},
-		{fault: "duplicate", stage: preparedContractStageIngressSource},
+		{fault: "duplicate", stage: preparedContractStageIngressManifest},
 		{fault: "foreign blob", stage: preparedContractStageIngressSource},
 		{fault: "name", stage: preparedContractStageIngressSource},
 		{fault: "media", stage: preparedContractStageIngressSource},

@@ -323,8 +323,20 @@ func preparedIngressContractStage(input *attachedworkerdaemon.VerifiedAttachedIn
 	if len(input.Artifacts) == 0 || len(input.Artifacts) != len(input.Manifest.Artifacts) {
 		return preparedContractStageIngressManifest
 	}
-	artifact, ref := input.Artifacts[0], input.Manifest.Artifacts[0]
-	if artifact.Name != "message.json" || ref.Name != "message.json" || ref.MediaType != "application/json" {
+	// The sealed materializer independently sorts body carriers by name. Its
+	// name/blob validation does not change the ingress manifest's ordered
+	// message+upload declaration. Join bodies by their immutable names, not by
+	// parallel slice positions; retain that original manifest order below.
+	bodies := make(map[string]attachedworkerdaemon.VerifiedAttachedArtifactV1, len(input.Artifacts))
+	for _, body := range input.Artifacts {
+		if _, duplicate := bodies[body.Name]; duplicate {
+			return preparedContractStageIngressManifest
+		}
+		bodies[body.Name] = body
+	}
+	artifact, messageFound := bodies["message.json"]
+	ref := input.Manifest.Artifacts[0]
+	if !messageFound || ref.Name != "message.json" || ref.MediaType != "application/json" {
 		return preparedContractStageIngressManifest
 	}
 	records, err := sessioncontext.DecodeJSONL(input.Context, input.Job.TenantID, input.Job.SessionID)
@@ -362,10 +374,10 @@ func preparedIngressContractStage(input *attachedworkerdaemon.VerifiedAttachedIn
 	// older attachments remain present and must not be mistaken for new uploads.
 	current := proof.Attachments[len(proof.Attachments)-len(uploads):]
 	for index, upload := range uploads {
-		body := input.Artifacts[index+1]
+		body, bodyFound := bodies[upload.Name]
 		name := strings.TrimPrefix(upload.Name, fmt.Sprintf("attachment-%02d-", index+1))
 		qualified := sessioncontext.AttachmentRef{Name: fmt.Sprintf("%020d-%02d-%s", event.Sequence, index+1, name), MediaType: upload.MediaType, Blob: upload.Blob}
-		if body.Name != upload.Name || current[index].AttachmentRef != qualified || !bytes.Equal(body.Body, current[index].Body) {
+		if !bodyFound || current[index].AttachmentRef != qualified || !bytes.Equal(body.Body, current[index].Body) {
 			return preparedContractStageIngressUploads
 		}
 	}

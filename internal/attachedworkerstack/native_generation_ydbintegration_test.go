@@ -461,7 +461,7 @@ func newJoinedGenerationScenario(t *testing.T) *joinedGenerationScenario {
 	if err != nil || len(q["go_query_mode"]) != 1 || q.Get("go_query_mode") != "data" || q.Has("go_fake_tx") {
 		t.Fatal("joined generation proof forbids fake/scripting transactions")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), joinedGenerationScenarioTimeout)
 	t.Cleanup(cancel)
 	client, err := ydbclient.Open(ctx, u.String())
 	if err != nil {
@@ -790,7 +790,7 @@ func (f *joinedGenerationScenario) admitOutbox(store *ydbstore.Store, outbox dom
 		f.t.Fatal(err)
 	}
 	at := f.installation.Now()
-	return store.AdmitDispatch(f.ctx, ports.DispatchAdmissionRequest{TenantID: f.worker.TenantID, OutboxID: outbox.ID, RunID: outbox.RunID, AttemptID: outbox.AttemptID, ReservationID: domain.QuotaReservationID(fmt.Sprintf("joined-reservation-%d", reservationOrdinal)), Now: at, HoldUntil: at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 16, MaxActiveRuns: 2, MaxRuntime: 30 * time.Second, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 16, MaxArtifacts: 16, MaxToolEvents: 1, MaxToolEventBytes: 1024}, Workload: domain.WorkloadShape{Runtime: 30 * time.Second, Turns: 1, InputBytes: 4096, ContextBytes: 4096, Artifacts: 5}})
+	return store.AdmitDispatch(f.ctx, joinedGenerationAdmissionRequest(f.worker.TenantID, outbox, reservationOrdinal, at))
 }
 
 func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobState {

@@ -180,7 +180,32 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		return nil, domain.ErrMembershipDenied
 	}
 	ref := entry.source.Profile
-	grant, err := entry.owner.source.ReadMCPToolGrant(callCtx, ref, source.state.snapshot.Accounting.UpdatedAt)
+	var at time.Time
+	var grant mcpadmission.MCPToolGrantV1
+	// Accounting.UpdatedAt is the preceding MODEL's reservation time, not the
+	// start of this operation. Match MODEL preparation: authenticate the same
+	// current source/profile and grant at this callback's DB time, under the
+	// original logical-call budget. No original deadline or debit is renewed.
+	err = entry.owner.store.ownedAuthorityTx(callCtx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		if err := source.rejoinLocked(ctx, q, nil, nil); err != nil {
+			return err
+		}
+		profile, err := readOwnedProfileCurrent(ctx, q, ref)
+		if err != nil {
+			return err
+		}
+		current, err := entry.owner.source.ReadMCPToolGrant(ctx, ref, q.at)
+		if err != nil {
+			return q.budget.deny()
+		}
+		digest, err := current.Digest()
+		cost := entry.parent.Authority.AdmissionCostCeiling.MCPToolCost
+		if err != nil || digest != profile.MCPToolGrantDigest || digest != policy.MCPToolGrantDigest || cost == nil || cost.ValidateAt(q.at) != nil || cost.ScopedGrantDigest != digest {
+			return q.budget.deny()
+		}
+		grant, at = current, q.at
+		return nil
+	})
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -206,7 +231,7 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 	// operation lifetime. As with MODEL preparation, compare the immutable
 	// network deadline against the original caller; keep all joins below under
 	// the unchanged bounded metadata context.
-	operation, err := entry.localPreparedMCPOperation(ctx, source, bound, request, grant, source.state.snapshot.Accounting.UpdatedAt)
+	operation, err := entry.localPreparedMCPOperation(ctx, source, bound, request, grant, at)
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}

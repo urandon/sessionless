@@ -198,15 +198,17 @@ source-policy test checks this disjoint union against both adversarial future
 names and the actual repository test-name corpus; only fresh full executions
 and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
-`make test-mcp-offline`: two sequential uncached race/shuffle executions for the
+`make test-mcp-offline`: three sequential uncached race/shuffle executions for the
 explicitly tagged synthetic MCP transport fixture. The first selects the complete
-`^TestLocalSessionCredentialedMCPOfflineWeb` prefix; the second selects the original
-complete `^TestLocalSessionCredentialedMCPOffline` prefix excluding that Web prefix.
+`^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError` family; the second
+selects the complete `^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure`
+family. The third selects the original complete
+`^TestLocalSessionCredentialedMCPOffline` prefix excluding both families.
 They are disjoint and include every current and future original-prefix member
 exactly once. Each binary keeps the five-minute bound, race detector, count1,
 shuffle190351, package, tag and overlay. The test-execution budgets now sum to
-ten minutes, in addition to compilation and two binary initializations; the former
-single-binary cumulative five-minute ceiling is not preserved. No scenario,
+fifteen minutes, in addition to compilation and three binary initializations;
+the previous two-execution ten-minute aggregate ceiling is not preserved. No scenario,
 subtest or assertion is shortened. Separate recipe
 lines stop at the first failure, including under `make -j`. The source-policy
 test checks the exact commands, real corpus, future names and guard mutations.
@@ -258,7 +260,7 @@ process state or test-order dependence. The source-policy test checks both
 local and CI unions against adversarial names and the actual corpus. The existing
 `verify` job runs the same required `make test-mcp-offline` target after
 `make ci-core-base` instead. All three Go jobs keep their 30-minute bound; the offline
-gate keeps its five-minute per-binary bound across both sequential executions,
+gate keeps its five-minute per-binary bound across all three sequential executions,
 race/shuffle/uncached flags and
 additive-only overlay guards. Redistribution across the existing jobs does not
 change test coverage or job bounds. The source-policy test requires exactly one CI

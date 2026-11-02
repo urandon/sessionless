@@ -148,12 +148,8 @@ func FreezeRequestV1(profile domain.ConfiguredInferenceProfileV1, effective doma
 		if !validString(tool.Name, effective.ToolNameBytes, false) || !validString(tool.Description, effective.RequestBytes, true) || f.tools[tool.Name] != nil {
 			return nil, ErrContract
 		}
-		v, err := strictJSON(tool.Parameters, effective.RequestBytes, effective.JSONDepth-4, effective.JSONMembers)
+		schema, err := compileToolSchemaV1(tool.Parameters, effective)
 		if err != nil {
-			return nil, ErrContract
-		}
-		schema, err := compileSchema(v, 1, effective)
-		if err != nil || schema.kind != "object" {
 			return nil, ErrContract
 		}
 		f.tools[tool.Name] = schema

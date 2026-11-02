@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
@@ -246,8 +245,9 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 	localRuntimeCount(t, ctx, client.DB, "runs", tenant, 0)
 	var retryErrors []error
 	var retryMu sync.Mutex
+	diagnostics := &localRuntimeDiagnosticSignals{}
 	scratch := t.TempDir()
-	runtime, err := worker.NewLocalRuntime(worker.LocalRuntimeConfig{Source: source, Receipt: receipt, DB: client.DB, Blobs: blobs, Worker: worker.Config{ScratchRoot: scratch, WorkerID: "runtime-" + suffix, LeaseTTL: 5 * time.Minute, LeaseWatchdogInterval: time.Minute, ProjectionWakePublisher: wakes, DeliveryWakePublisher: wakes, RetryObserver: func(err error) { retryMu.Lock(); defer retryMu.Unlock(); retryErrors = append(retryErrors, err) }}}, clock)
+	runtime, err := worker.NewLocalRuntime(worker.LocalRuntimeConfig{Source: source, Receipt: receipt, DB: client.DB, Blobs: blobs, Worker: worker.Config{ScratchRoot: scratch, WorkerID: "runtime-" + suffix, LeaseTTL: 5 * time.Minute, LeaseWatchdogInterval: time.Minute, ProjectionWakePublisher: wakes, DeliveryWakePublisher: wakes, OpsSignals: diagnostics, RetryObserver: func(err error) { retryMu.Lock(); defer retryMu.Unlock(); retryErrors = append(retryErrors, err) }}}, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,17 +290,19 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 	t.Cleanup(closeFirstCaller)
 	firstCaller := &localRuntimeLifetimeCaller{Context: firstContext}
 	firstObserved := &localRuntimeQueue{Queue: firstQueue, onAck: func() error {
-		if active, started := firstCaller.counts(); active != 0 || started == 0 {
-			return fmt.Errorf("productive ACK before original caller hooks joined: active=%d started=%d", active, started)
+		if counts := firstCaller.counts(); counts.attached != 0 || counts.started == 0 {
+			return fmt.Errorf("productive ACK retained caller registrations: %+v", counts)
 		}
 		return localRuntimeReleased(ctx, client.DB, store, blobs, tenant, owner, firstJob, 1)
 	}}
 	outcome, err := runtime.RunOnce(firstCaller, firstObserved)
-	if active, started := firstCaller.counts(); active != 0 || started == 0 {
-		t.Fatal("first caller not joined at runtime return", active, started)
+	if counts := firstCaller.counts(); counts.attached != 0 || counts.started == 0 {
+		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller)
+		t.Fatal("first caller registrations retained at runtime return", counts)
 	}
 	closeFirstCaller()
 	if err != nil || outcome != worker.OutcomeCompleted || firstObserved.acks != 1 || firstQueue.Remaining() != 0 || model.calls() != 1 {
+		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller)
 		t.Fatal("first public runtime", outcome, firstObserved.acks, model.calls(), err)
 	}
 	firstSnapshot := localRuntimeStoredSnapshot(t, ctx, client.DB, tenant, firstJob)
@@ -334,27 +336,34 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 			}
 			return nil
 		}
-		if active, started := batchCaller.counts(); active != 0 || started == 0 {
-			return fmt.Errorf("second productive ACK before original caller hooks joined: active=%d started=%d", active, started)
+		if counts := batchCaller.counts(); counts.attached != 0 || counts.started == 0 {
+			return fmt.Errorf("second productive ACK retained caller registrations: %+v", counts)
 		}
 		return localRuntimeReleased(ctx, client.DB, store, blobs, tenant, owner, secondJob, 2)
 	}}
 	var outcomes []worker.Outcome
 	for batch.Remaining() > 0 {
+		diagnosticJob := firstJob
+		if batch.Remaining() == 1 {
+			diagnosticJob = secondJob
+		}
 		invocation, closeCaller := context.WithCancel(ctx)
 		t.Cleanup(closeCaller)
 		batchCaller = &localRuntimeLifetimeCaller{Context: invocation}
 		result, err := runtime.RunOnce(batchCaller, observed)
-		if active, started := batchCaller.counts(); active != 0 || started == 0 {
-			t.Fatal("batch message caller not joined at runtime return", active, started)
+		if counts := batchCaller.counts(); counts.attached != 0 || counts.started == 0 {
+			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller)
+			t.Fatal("batch caller registrations retained at runtime return", counts)
 		}
 		closeCaller()
 		if err != nil {
+			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller)
 			t.Fatal("actual YMQ batch runtime", result, err)
 		}
 		outcomes = append(outcomes, result)
 	}
 	if !reflect.DeepEqual(outcomes, []worker.Outcome{worker.OutcomeDuplicate, worker.OutcomeCompleted}) || observed.acks != 2 || model.calls() != 2 {
+		localRuntimeLogFailure(t, client.DB, tenant, secondJob, diagnostics, batchCaller)
 		t.Fatal("actual trigger batch outcomes", outcomes, observed.acks, model.calls())
 	}
 	if next := localRuntimeStoredSnapshot(t, ctx, client.DB, tenant, firstJob); !reflect.DeepEqual(firstSnapshot, next) {
@@ -1013,64 +1022,6 @@ type localRuntimeQueue struct {
 	ports.Queue
 	onAck func() error
 	acks  int
-}
-
-// Observe the public Context.AfterFunc contract, not a capability or a new
-// lifecycle owner. Hide cancelCtx's private Value shortcut so each original
-// hook is observable; cancellation itself remains the real caller's context.
-type localRuntimeLifetimeCaller struct {
-	context.Context
-	mu              sync.Mutex
-	active, started int
-}
-
-func (*localRuntimeLifetimeCaller) Value(any) any { return nil }
-func (c *localRuntimeLifetimeCaller) AfterFunc(f func()) func() bool {
-	c.mu.Lock()
-	c.active++
-	c.started++
-	c.mu.Unlock()
-	var once sync.Once
-	finish := func() { once.Do(func() { c.mu.Lock(); c.active--; c.mu.Unlock() }) }
-	stop := context.AfterFunc(c.Context, func() { defer finish(); f() })
-	return func() bool {
-		stopped := stop()
-		if stopped {
-			finish()
-		}
-		return stopped
-	}
-}
-func (c *localRuntimeLifetimeCaller) counts() (int, int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.active, c.started
-}
-
-func TestLocalRuntimeYDBCallerHookObservationJoins(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		caller := &localRuntimeLifetimeCaller{Context: ctx}
-		var calls int
-		stop := context.AfterFunc(caller, func() { calls++ })
-		if active, started := caller.counts(); active != 1 || started != 1 {
-			t.Fatal("original hook not observed", active, started)
-		}
-		if !stop() {
-			t.Fatal("live hook did not stop")
-		}
-		stop()
-		if active, started := caller.counts(); active != 0 || started != 1 {
-			t.Fatal("stop did not join exact original hook", active, started)
-		}
-		context.AfterFunc(caller, func() { calls++ })
-		cancel()
-		synctest.Wait()
-		if active, started := caller.counts(); active != 0 || started != 2 || calls != 1 {
-			t.Fatal("cancellation hook observation mismatch", active, started, calls)
-		}
-	})
 }
 
 func (q *localRuntimeQueue) Ack(ctx context.Context, receipt string) error {

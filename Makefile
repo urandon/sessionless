@@ -235,8 +235,9 @@ test-mcp-offline: prepare
 	test ! -e internal/providerloopsession/mcp_offline_fixture.go
 	mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"
 	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession
-	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore
-	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure)' ./internal/ydbstore
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

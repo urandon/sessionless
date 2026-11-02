@@ -62,6 +62,7 @@ help:
 		'make dockerless-web-up start the explicitly configured native Web BFF' \
 		'make dockerless-web-down stop only the owned native Web BFF' \
 		'make local-profile-validate-build build the read-only operator template checker' \
+		'make local-profile-prepare-build build the explicit fresh private-profile preparer' \
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
 		'make attached-worker-package-test run focused package and CLI race/shuffle tests' \
 		'make attached-worker-receipt-session-test verify offline session-bound receipt lifecycle' \
@@ -275,6 +276,12 @@ local-profile-validate-build: prepare
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
 		-o "$(BIN_DIR)/local-profile-validate" ./cmd/local-profile-validate
+
+.PHONY: local-profile-prepare-build
+local-profile-prepare-build: prepare
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o "$(BIN_DIR)/local-profile-prepare" ./cmd/local-profile-prepare
 
 attached-worker-package-test: prepare
 	go test -race -count=1 ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker

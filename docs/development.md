@@ -115,10 +115,55 @@ contract or enable either tool. Windows, invoice and service evidence use their
 existing canonical validators. The later installer still authenticates actual
 private files/key, current SQL publication and its real receipt independently.
 
-Template **preparation** remains separate: this read-only command neither
-authors evidence nor generates the private installation. There is not yet a
-production preparation command; do not present structural validation as that
-missing step or copy synthetic fixture evidence to make installation pass.
+Template **preparation** remains separate: the read-only checker neither
+authors evidence nor generates the private installation. Do not copy synthetic
+fixture evidence to make validation or installation pass.
+
+### Fresh private local profile preparation
+
+Build the explicit tool with `make local-profile-prepare-build`. It is not a
+startup step, a model manager, or the profile installer. Supply genuine complete
+operator-authored `ManifestV1` evidence as above, except leave these derived
+fields empty: `key_fingerprint`; configuration worker, host and network identity
+digests; and substrate host/network, outer-harness artifact, egress-proxy
+artifact/identity, egress-policy and admission-cost digests. Installation-owned
+fields must also remain empty. Nonempty derived fields are rejected, not
+silently replaced. All model/capability/price/invoice/MCP/search evidence and
+body/reference correlations still come from the operator, not from this tool.
+
+Choose an **unused** canonical absolute installation path whose existing
+parent is owned by the operator with exact mode `0700`. Redirect a finite
+template file (at most 256 KiB), and explicitly confirm this private-file
+operation:
+
+```sh
+.build/bin/local-profile-prepare \
+  --installation-root /absolute/workspace/private-local/new-installation \
+  --executable /absolute/workspace/sessionless/.build/bin/worker-runtime \
+  --confirm 'PREPARE LOCAL PROFILE' \
+  < /absolute/workspace/private-input/operator-template.json
+```
+
+The tool observes the explicit executable and boot-host/network identity but
+never executes it. It derives their canonical digests and the existing
+connector/policy/cost digests, generates a 32-byte private key, and runs the
+complete template validator **before creating output**. It exclusively creates
+a `0700` installation containing only `0600` `manifest.json` and `source.key`,
+then syncs the files, directory and parent. Keys and template contents are not
+printed. Same-UID host trust remains unchanged; this is not a host sandbox.
+
+An existing path, partial output or uncertain failure is never deleted,
+repaired, reused or overwritten. Reconcile it explicitly; do not automatically
+retry under another name or regenerate keys. A success message means private
+declaration files exist, **not** installation, independent evidence acceptance,
+endpoint qualification or permission to execute. The prepared manifest may be
+checked with the read-only checker above; actual private-file intake and SQL
+publication remain the separate installer below.
+
+Preparation performs no Source intake, installation-ID allocation, grant,
+receipt, SQL operation, daemon start, download or endpoint request. Building
+and testing the tool does not authorize preparing a real owner profile or
+starting/calling a shared Ollama host; those require their own bounded approval.
 
 ### Explicit local profile installation (operator tool)
 

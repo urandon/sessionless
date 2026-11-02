@@ -3,6 +3,7 @@
 package ydbintegration
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -234,11 +235,14 @@ func localRuntimeAllocationState(raw string, proxy bool) string {
 // authority. The native test already guarded this newly owned tenant/database.
 // An independent 3s total context allows observation after the caller expired;
 // it grants no retry, write, renewal, repair or additional execution lifetime.
-func localRuntimeLogFailure(t *testing.T, db *sql.DB, tenant domain.TenantID, job ports.WorkerJobState, signals *localRuntimeDiagnosticSignals, caller *localRuntimeLifetimeCaller) {
+func localRuntimeLogFailure(t *testing.T, db *sql.DB, tenant domain.TenantID, job ports.WorkerJobState, signals *localRuntimeDiagnosticSignals, caller *localRuntimeLifetimeCaller, blobs *localRuntimeBlobs) {
 	t.Helper()
 	records, dropped := signals.snapshot()
 	raw, _ := json.Marshal(records) // All fields passed the closed Record validator.
 	t.Logf("runtime failure signals=%s dropped=%d caller_registrations=%+v (running/tail are not join evidence)", raw, dropped, caller.counts())
+	// These are the controlled peer's actual mutex-protected completed calls,
+	// not an inferred cleanup phase or a physical erasure/authority receipt.
+	t.Logf("runtime failure blob_calls=%+v original_terminal_deadline=not_exposed (no inferred timing/deadline)", blobs.counts())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var at time.Time
@@ -249,9 +253,12 @@ func localRuntimeLogFailure(t *testing.T, db *sql.DB, tenant domain.TenantID, jo
 		clock = at.UTC().Format(time.RFC3339Nano)
 	}
 	t.Logf("runtime failure database_clock result=%s at=%s valid_microseconds=%t (sample precedes separate non-atomic probes)", localRuntimeProbeResult(err), clock, clockKnown)
-	var status string
-	err = db.QueryRowContext(ctx, "SELECT SUBSTRING(CAST(status AS String),0,33) FROM runs WHERE tenant_id=$1 AND run_id=$2", tenant, job.Run.ID).Scan(&status)
-	t.Logf("runtime failure run result=%s status=%s", localRuntimeProbeResult(err), localRuntimeRunStatus(status))
+	var status, runRaw string
+	// Same existing Run point probe and original 3s total budget: one bounded
+	// payload projection, no extra query, writes or success-path observation.
+	err = db.QueryRowContext(ctx, "SELECT SUBSTRING(CAST(status AS String),0,33),SUBSTRING(CAST(payload AS String),0,32769) FROM runs WHERE tenant_id=$1 AND run_id=$2", tenant, job.Run.ID).Scan(&status, &runRaw)
+	plan, correspondence, evidence := localRuntimeCustodyPresence(runRaw)
+	t.Logf("runtime failure run result=%s status=%s custody_plan=%s correspondence=%s local_evidence=%s (presence only, not validated completion)", localRuntimeProbeResult(err), localRuntimeRunStatus(status), plan, correspondence, evidence)
 	status = ""
 	var expires time.Time
 	err = db.QueryRowContext(ctx, "SELECT SUBSTRING(CAST(status AS String),0,33),expires_at FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2", tenant, job.Reservation.ID).Scan(&status, &expires)
@@ -267,8 +274,55 @@ func localRuntimeLogFailure(t *testing.T, db *sql.DB, tenant domain.TenantID, jo
 	t.Logf("runtime failure operation_frontier result=%s rows=%d nonnull_observation_digests=%d (not validated completion)", localRuntimeProbeResult(err), operations, observed)
 }
 
+func localRuntimeCustodyPresence(raw string) (plan, correspondence, evidence string) {
+	if len(raw) > 32<<10 {
+		return "over_limit", "over_limit", "over_limit"
+	}
+	var run struct {
+		Custody json.RawMessage `json:"terminal_custody"`
+	}
+	if json.Unmarshal([]byte(raw), &run) != nil {
+		return "invalid", "invalid", "invalid"
+	}
+	if len(run.Custody) == 0 || string(run.Custody) == "null" {
+		return "absent", "absent", "absent"
+	}
+	var custody struct {
+		Plan           json.RawMessage `json:"plan"`
+		Correspondence json.RawMessage `json:"correspondence"`
+		Evidence       json.RawMessage `json:"local_evidence"`
+	}
+	if len(run.Custody) == 0 || run.Custody[0] != '{' || json.Unmarshal(run.Custody, &custody) != nil {
+		return "invalid", "invalid", "invalid"
+	}
+	presence := func(v json.RawMessage) string {
+		if len(v) == 0 || string(v) == "null" {
+			return "absent"
+		}
+		if v[0] != '{' {
+			return "invalid"
+		}
+		return "present"
+	}
+	return presence(custody.Plan), presence(custody.Correspondence), presence(custody.Evidence)
+}
+
 func TestLocalRuntimeYDBDiagnosticClosedFieldsAndBounds(t *testing.T) {
 	secret := "private-tenant-key-path-provider-body"
+	for _, check := range []struct{ raw, plan, correspondence, evidence string }{
+		{`{}`, "absent", "absent", "absent"},
+		{`{"terminal_custody":null}`, "absent", "absent", "absent"},
+		{`{"terminal_custody":{"plan":{},"correspondence":null,"local_evidence":{}}}`, "present", "absent", "present"},
+		{`{"terminal_custody":{"plan":"` + secret + `","correspondence":{},"local_evidence":false}}`, "invalid", "present", "invalid"},
+		{`{"terminal_custody":[]}`, "invalid", "invalid", "invalid"},
+		{secret, "invalid", "invalid", "invalid"},
+		{strings.Repeat("x", (32<<10)+1), "over_limit", "over_limit", "over_limit"},
+	} {
+		p, c, e := localRuntimeCustodyPresence(check.raw)
+		if p != check.plan || c != check.correspondence || e != check.evidence {
+			t.Fatalf("closed custody presence got=(%s,%s,%s) want=(%s,%s,%s)", p, c, e, check.plan, check.correspondence, check.evidence)
+		}
+	}
 	for _, check := range []struct {
 		err  error
 		want string
@@ -312,5 +366,34 @@ func TestLocalRuntimeYDBDiagnosticClosedFieldsAndBounds(t *testing.T) {
 	group.Wait()
 	if records, dropped := s.snapshot(); len(records) != localRuntimeDiagnosticSignalLimit || dropped != 34 {
 		t.Fatal("concurrent sink exceeded bound or lost accounting", len(records), dropped)
+	}
+}
+
+func TestLocalRuntimeYDBDiagnosticBlobCountsConcurrentSnapshot(t *testing.T) {
+	blobs := &localRuntimeBlobs{values: make(map[string][]byte), deleted: make(map[string]bool), absent: make(map[string]bool)}
+	tenant := domain.TenantID("diagnostic-blob-tenant")
+	ref, err := blobs.Put(t.Context(), tenant, "tenants/diagnostic-blob-tenant/operation-body", bytes.NewBufferString("synthetic public DATA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			if err := blobs.Delete(t.Context(), tenant, ref); err != nil {
+				t.Error("delete", err)
+				return
+			}
+			if err := blobs.RequireBlobAbsent(t.Context(), tenant, ref); err != nil {
+				t.Error("absence", err)
+			}
+			c := blobs.counts()
+			if c.puts != 1 || c.absent > c.deletes || c.deletes > 32 {
+				t.Error("inconsistent bounded blob snapshot", c)
+			}
+		})
+	}
+	group.Wait()
+	if got := blobs.counts(); got != (localRuntimeBlobCounts{puts: 1, deletes: 32, absent: 32}) {
+		t.Fatal("completed peer calls", got)
 	}
 }

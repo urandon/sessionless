@@ -297,12 +297,12 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 	}}
 	outcome, err := runtime.RunOnce(firstCaller, firstObserved)
 	if counts := firstCaller.counts(); counts.attached != 0 || counts.started == 0 {
-		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller)
+		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller, blobs)
 		t.Fatal("first caller registrations retained at runtime return", counts)
 	}
 	closeFirstCaller()
 	if err != nil || outcome != worker.OutcomeCompleted || firstObserved.acks != 1 || firstQueue.Remaining() != 0 || model.calls() != 1 {
-		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller)
+		localRuntimeLogFailure(t, client.DB, tenant, firstJob, diagnostics, firstCaller, blobs)
 		t.Fatal("first public runtime", outcome, firstObserved.acks, model.calls(), err)
 	}
 	firstSnapshot := localRuntimeStoredSnapshot(t, ctx, client.DB, tenant, firstJob)
@@ -352,18 +352,18 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 		batchCaller = &localRuntimeLifetimeCaller{Context: invocation}
 		result, err := runtime.RunOnce(batchCaller, observed)
 		if counts := batchCaller.counts(); counts.attached != 0 || counts.started == 0 {
-			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller)
+			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller, blobs)
 			t.Fatal("batch caller registrations retained at runtime return", counts)
 		}
 		closeCaller()
 		if err != nil {
-			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller)
+			localRuntimeLogFailure(t, client.DB, tenant, diagnosticJob, diagnostics, batchCaller, blobs)
 			t.Fatal("actual YMQ batch runtime", result, err)
 		}
 		outcomes = append(outcomes, result)
 	}
 	if !reflect.DeepEqual(outcomes, []worker.Outcome{worker.OutcomeDuplicate, worker.OutcomeCompleted}) || observed.acks != 2 || model.calls() != 2 {
-		localRuntimeLogFailure(t, client.DB, tenant, secondJob, diagnostics, batchCaller)
+		localRuntimeLogFailure(t, client.DB, tenant, secondJob, diagnostics, batchCaller, blobs)
 		t.Fatal("actual trigger batch outcomes", outcomes, observed.acks, model.calls())
 	}
 	if next := localRuntimeStoredSnapshot(t, ctx, client.DB, tenant, firstJob); !reflect.DeepEqual(firstSnapshot, next) {
@@ -1152,21 +1152,32 @@ func localRuntimeStoredSnapshot(t *testing.T, ctx context.Context, db *sql.DB, t
 }
 
 func localRuntimeRetired(ctx context.Context, db *sql.DB, tenant domain.TenantID, attempt domain.AttemptID) (allocationRaw, proxyRaw, claim, lease string, resultErr error) {
-	if err := db.QueryRowContext(ctx, "SELECT allocation_current_record,proxy_current_record,physical_invocation_claim_id,lease_id FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3", tenant, attempt, domain.ProviderEffectTurnV1).Scan(&allocationRaw, &proxyRaw, &claim, &lease); err != nil {
+	// Exact owned keys, bounded canonical DATA, same original caller context.
+	// This historical oracle grants no current authority or cleanup permission.
+	var v localRuntimeRetirementData
+	if err := db.QueryRowContext(ctx, `SELECT
+ COALESCE(SUBSTRING(owned_record,0,32769),CAST('' AS String)),COALESCE(SUBSTRING(CAST(owned_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(allocation_original_record,0,32769),CAST('' AS String)),COALESCE(SUBSTRING(CAST(allocation_original_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(allocation_current_record,0,32769),CAST('' AS String)),COALESCE(SUBSTRING(CAST(allocation_current_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(CAST(allocation_transition_parent_digest AS String),0,65),CAST('' AS String)),COALESCE(SUBSTRING(CAST(allocation_publication_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(proxy_original_record,0,32769),CAST('' AS String)),COALESCE(SUBSTRING(CAST(proxy_original_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(proxy_current_record,0,32769),CAST('' AS String)),COALESCE(SUBSTRING(CAST(proxy_current_digest AS String),0,65),CAST('' AS String)),
+ SUBSTRING(CAST(physical_invocation_claim_id AS String),0,161),SUBSTRING(CAST(lease_id AS String),0,161),SUBSTRING(CAST(run_id AS String),0,161),fence_token,effect_sequence,reserved_at
+ FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`, tenant, attempt, domain.ProviderEffectTurnV1).Scan(
+		&v.parent, &v.parentDigest, &v.originalAllocation, &v.originalAllocationDigest, &v.currentAllocation, &v.currentAllocationDigest, &v.previousAllocationDigest, &v.allocationIntent,
+		&v.originalProxy, &v.originalProxyDigest, &v.currentProxy, &v.currentProxyDigest, &v.claim, &v.lease, &v.run, &v.fence, &v.effectSequence, &v.reservedAt); err != nil {
 		return "", "", "", "", err
 	}
-	allocation, err := domain.DecodeRegisteredAllocationV2([]byte(allocationRaw))
-	if err != nil || (allocation.State != domain.RegisteredPreparationRetiredV1 && allocation.State != domain.RegisteredPreparationRevokedV1) {
-		return "", "", "", "", errors.New("ACK before original allocation retirement")
+	if err := db.QueryRowContext(ctx, `SELECT SUBSTRING(record,0,32769),SUBSTRING(CAST(digest AS String),0,65) FROM attempt_execution_admissions_v1 WHERE tenant_id=$1 AND attempt_id=$2`, tenant, attempt).Scan(&v.final, &v.finalDigest); err != nil {
+		return "", "", "", "", err
 	}
-	proxy, err := domain.DecodeRegisteredProxyAttestationV2([]byte(proxyRaw))
-	if err != nil || (proxy.State != domain.RegisteredPreparationRetiredV1 && proxy.State != domain.RegisteredPreparationRevokedV1) {
-		return "", "", "", "", errors.New("ACK before original proxy retirement")
+	if err := db.QueryRowContext(ctx, `SELECT SUBSTRING(record,0,32769),SUBSTRING(CAST(digest AS String),0,65),SUBSTRING(CAST(operation_digest AS String),0,65),SUBSTRING(CAST(call_id AS String),0,161) FROM attempt_operations_v1 WHERE tenant_id=$1 AND attempt_id=$2 AND sequence=$3`, tenant, attempt, uint64(1)).Scan(&v.operation, &v.reservationDigest, &v.operationDigest, &v.call); err != nil {
+		return "", "", "", "", err
 	}
-	if allocation.Scope.TenantID != tenant || allocation.Scope.AttemptID != attempt || proxy.Scope != allocation.Scope || allocation.ParentReservation.PhysicalInvocationClaimID != claim || allocation.Lease.ID != domain.LeaseID(lease) || proxy.PhysicalInvocationClaimID != claim {
-		return "", "", "", "", errors.New("original retirement identity mismatch")
+	if err := v.validate(tenant, attempt); err != nil {
+		return "", "", "", "", err
 	}
-	return allocationRaw, proxyRaw, claim, lease, nil
+	return v.currentAllocation, v.currentProxy, v.claim, v.lease, nil
 }
 
 func localRuntimeCleanup(t *testing.T, db *sql.DB, auth *localRuntimeAuthStore, tenants []domain.TenantID) {

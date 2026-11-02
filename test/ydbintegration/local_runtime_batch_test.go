@@ -864,12 +864,40 @@ func newLocalRuntimeLogin(t *testing.T, ctx context.Context, store *localRuntime
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.handler, err = webbff.New(webbff.Config{BaseURL: localRuntimeWebOrigin, RedirectURI: localRuntimeWebOrigin + webcontract.RouteLoginCallback, OAuthProvider: provider, OAuthClientID: "runtime-client", Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: clock, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	// API construction always requires an exact browser capability origin,
+	// including this text-only proof. The reserved synthetic origin is policy
+	// DATA, not a contacted object service or qualification of uploads/media.
+	l.handler, err = webbff.New(webbff.Config{BaseURL: localRuntimeWebOrigin, RedirectURI: localRuntimeWebOrigin + webcontract.RouteLoginCallback, ObjectStorageOrigin: "https://runtime-objects.example.invalid", OAuthProvider: provider, OAuthClientID: "runtime-client", Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: clock, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return l
 }
+
+// Constructor/response policy only. Empty service DATA is never invoked: this
+// isolates the same BFF configuration used by the real-SQL scenario without
+// opening SQL, installing an operator or executing a model. Health is public
+// and has no persistence dependency. The synthetic OAuth peer is never called.
+type localRuntimeConfigurationClock struct{}
+
+func (localRuntimeConfigurationClock) Now() time.Time {
+	return time.Unix(1_700_000_000, 0).UTC()
+}
+
+func TestLocalRuntimeLoginConfigurationHasObjectStorageOrigin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+	login := newLocalRuntimeLogin(t, ctx, &localRuntimeAuthStore{}, nil, &webapi.Service{}, localRuntimeConfigurationClock{})
+	response := localRuntimeRequest(ctx, login.handler, http.MethodGet, "/healthz", "", nil, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("same native fixture BFF health: got=%d want=%d", response.Code, http.StatusOK)
+	}
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "connect-src 'self' https://runtime-objects.example.invalid") || strings.Contains(policy, "connect-src *") {
+		t.Fatalf("same native fixture exact object origin missing from CSP: %q", policy)
+	}
+}
+
 func (l *localRuntimeLogin) signIn(t *testing.T, subject string) (*http.Cookie, *http.Cookie) {
 	t.Helper()
 	l.mu.Lock()

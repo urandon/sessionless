@@ -455,6 +455,62 @@ start_reconciler() {
 		"$repo_root/.build/bin/reconciler"
 }
 
+web_listener_pids() {
+	# Metadata only, numeric output: no DNS lookup, HTTP request or socket bind.
+	# lsof returns 1 when no matching listener exists; readiness still requires
+	# positive evidence for the exact owned PID, never absence as success.
+	lsof -nP -iTCP:"$web_port" -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
+wait_web_bff() {
+	attempt=1
+	while test "$attempt" -le 120; do
+		web_pid=$(owned_pid web-bff) || fail 'native Web child exited or lost ownership before readiness'
+		listeners=$(web_listener_pids)
+		if test -n "$listeners" && test "$listeners" != "$web_pid"; then
+			fail 'native Web port belongs to another listener'
+		fi
+		if test "$listeners" = "$web_pid" && \
+			curl --connect-timeout 2 --max-time 5 --fail --silent --show-error \
+			"http://127.0.0.1:$web_port/readyz" >/dev/null 2>&1; then
+			current_web_pid=$(owned_pid web-bff) || fail 'native Web child exited during readiness'
+			test "$current_web_pid" = "$web_pid" && test "$(web_listener_pids)" = "$web_pid" || \
+				fail 'native Web listener ownership changed during readiness'
+			printf 'web-bff is ready on its owned port %s\n' "$web_port"
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	fail 'native Web did not become ready on its owned port'
+}
+
+start_web_bff() {
+	# An explicit leaf command: ordinary stand/E2E startup stays unchanged.
+	# Login configuration, membership and operator profiles are never invented.
+	test "$SESSIONLESS_ENVIRONMENT" = local || fail 'native Web startup requires SESSIONLESS_ENVIRONMENT=local'
+	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDER:-}" || \
+		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER'
+	web_port=${WEB_PORT:-8083}
+	case "$web_port" in
+		''|0*|*[!0-9]*) fail 'WEB_PORT must be a decimal port between 1 and 65535' ;;
+	esac
+	test "${#web_port}" -le 5 && test "$web_port" -gt 0 && test "$web_port" -le 65535 || \
+		fail 'WEB_PORT must be a decimal port between 1 and 65535'
+	test -x "$repo_root/.build/bin/web-bff" || fail 'build native Web explicitly with make dockerless-web-build'
+	command -v lsof >/dev/null 2>&1 || fail 'native Web readiness requires an already installed lsof'
+	listeners=$(web_listener_pids)
+	if test -n "$listeners"; then
+		web_pid=$(owned_pid web-bff) || fail 'native Web port belongs to another listener'
+		test "$listeners" = "$web_pid" || fail 'native Web port belongs to another listener'
+	fi
+	# PORT is used by control-api too and takes precedence inside web-bff.
+	# Pin this child's port without changing the shared process environment.
+	start_process web-bff "$repo_root/.build/bin/web-bff" env \
+		PORT="$web_port" "$repo_root/.build/bin/web-bff"
+	wait_web_bff
+}
+
 run_migrations() {
 	# shellcheck source=/dev/null
 	. "$repo_root/scripts/local-ydb-readiness.sh"
@@ -513,10 +569,10 @@ up() {
 
 down() {
 	status=0
-	for service in reconciler telegram-sender control-api telegram-fake queue-local object-storage-local ydb-local; do
+	for service in web-bff reconciler telegram-sender control-api telegram-fake queue-local object-storage-local ydb-local; do
 		stop_process "$service" || status=1
 	done
-	for log_name in reconciler telegram-sender control-api telegram-fake queue-local object-storage-local ydb-local ydbd ydb-deploy ydb-migration worker-runtime; do
+	for log_name in web-bff reconciler telegram-sender control-api telegram-fake queue-local object-storage-local ydb-local ydbd ydb-deploy ydb-migration worker-runtime; do
 		bound_log_file "$log_dir/$log_name.log" || status=1
 	done
 	return "$status"
@@ -524,6 +580,16 @@ down() {
 
 status() {
 	result=0
+	# Absence is normal for the optional Web leaf; retained ownership metadata
+	# makes a stopped/mismatched Web process visible instead of hiding it.
+	if test -e "$(pid_path web-bff)" || test -e "$(marker_path web-bff)"; then
+		if pid=$(owned_pid web-bff); then
+			printf '%-22s running pid=%s\n' web-bff "$pid"
+		else
+			printf '%-22s stopped or unmanaged\n' web-bff
+			result=1
+		fi
+	fi
 	for service in ydb-local object-storage-local queue-local telegram-fake control-api telegram-sender reconciler; do
 		if pid=$(owned_pid "$service"); then
 			printf '%-22s running pid=%s\n' "$service" "$pid"
@@ -536,7 +602,7 @@ status() {
 }
 
 logs() {
-	for service in ydb-local object-storage-local queue-local telegram-fake control-api telegram-sender reconciler worker-runtime; do
+	for service in ydb-local object-storage-local queue-local telegram-fake control-api telegram-sender reconciler web-bff worker-runtime; do
 		log_file=$log_dir/$service.log
 		if test -f "$log_file"; then
 			printf '\n==> %s <==\n' "$service"
@@ -571,11 +637,15 @@ restart_service() {
 			start_queue
 			wait_http queue-local "$QUEUE_ENDPOINT/?Action=ListQueues&Version=2012-11-05"
 			;;
+		web-bff)
+			stop_process web-bff
+			start_web_bff
+			;;
 		reconciler)
 			stop_process reconciler
 			start_reconciler
 			;;
-		*) fail "restart supports only queue-local and reconciler, got: $service" ;;
+		*) fail "restart supports only queue-local, reconciler and web-bff, got: $service" ;;
 	esac
 }
 
@@ -595,13 +665,14 @@ main() {
 			case "${2:-}" in
 				queue-local) start_queue; wait_http queue-local "$QUEUE_ENDPOINT/?Action=ListQueues&Version=2012-11-05" ;;
 				reconciler) start_reconciler ;;
-				*) fail 'start supports only queue-local and reconciler' ;;
+				web-bff) start_web_bff ;;
+				*) fail 'start supports only queue-local, reconciler and web-bff' ;;
 			esac
 			;;
 		stop)
 			case "${2:-}" in
-				queue-local|reconciler) stop_process "$2" ;;
-				*) fail 'stop supports only queue-local and reconciler' ;;
+				queue-local|reconciler|web-bff) stop_process "$2" ;;
+				*) fail 'stop supports only queue-local, reconciler and web-bff' ;;
 			esac
 			;;
 		restart) restart_service "${2:-}" ;;

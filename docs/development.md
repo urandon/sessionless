@@ -68,6 +68,103 @@ Reports and unresolved reduction decisions belong in
 [#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
 or the original task description.
 
+### Read-only local profile template validation
+
+Build the checker with `make local-profile-validate-build`. It reads a finite
+operator-authored template from redirected standard input and the explicitly
+named worker executable/boot-host/network identity, not an installation or key:
+
+```sh
+.build/bin/local-profile-validate \
+  --executable /absolute/workspace/sessionless/.build/bin/worker-runtime \
+  < /absolute/workspace/private-input/operator-template.json
+```
+
+Use the existing [`localoperator.ManifestV1`](../internal/localoperator/source.go)
+shape, not a test fixture or another configuration format. Input is bounded to
+256 KiB; no private input, paths or decoder details are printed. Redirect a
+finite file: the byte limit does not make an arbitrary blocking stdin reader
+interruptible. The executable is observed, never executed. Validation creates
+no Source, IDs, grant, receipt, key, file, SQL state, process or network request.
+It cannot prove possession of `source.key`, independent review, actual model
+capabilities, service-price truth or current Store authority.
+
+The complete prepared template must explicitly supply:
+
+- Tenant, owner and billing owner; exact literal-loopback `/v1` endpoint, model
+  and response-model IDs, server/version/template identity, protocol and auth;
+  capability/data-class declarations, model window, estimator and finite limits.
+- Existing profile/backend/substrate and cost declarations. Retain actual
+  capability/review/calibration bodies, canonical owner-local invoice terms,
+  MCP grant and independent price/terms documents, and search resource grant,
+  expenditure and independent source documents. Exact bytes/references and
+  semantic correlations must agree. Hashes do not turn declarations into proof.
+- Observed worker/boot-host/network identity, original body hashes/lengths and
+  key fingerprint. The checker validates the fingerprint's form only; it does
+  not read, create, rotate or authenticate a key.
+
+Leave installation-owned resource/installation/mutation IDs, revisions/state,
+backend-profile digest, `OriginalSource` and installed-manifest reference empty.
+The original installer, not this checker or a copied test, owns those fields.
+Internally, validation uses a private deterministic DATA-only projection to run
+the same installed-shape checks; no projected identity or authority is returned.
+
+This complete-template check also requires original calibration and both
+MCP/search declarations; it does not change the historical one-shot intake's
+contract or enable either tool. Windows, invoice and service evidence use their
+existing canonical validators. The later installer still authenticates actual
+private files/key, current SQL publication and its real receipt independently.
+
+Template **preparation** remains separate: the read-only checker neither
+authors evidence nor generates the private installation. Do not copy synthetic
+fixture evidence to make validation or installation pass.
+
+### Fresh private local profile preparation
+
+Build the explicit tool with `make local-profile-prepare-build`. It is not a
+startup step, a model manager, or the profile installer. Supply genuine complete
+operator-authored `ManifestV1` evidence as above, except leave these derived
+fields empty: `key_fingerprint`; configuration worker, host and network identity
+digests; and substrate host/network, outer-harness artifact, egress-proxy
+artifact/identity, egress-policy and admission-cost digests. Installation-owned
+fields must also remain empty. Nonempty derived fields are rejected, not
+silently replaced. All model/capability/price/invoice/MCP/search evidence and
+body/reference correlations still come from the operator, not from this tool.
+
+Choose an **unused** canonical absolute installation path whose existing
+parent is owned by the operator with exact mode `0700`. Redirect a finite
+template file (at most 256 KiB), and explicitly confirm this private-file
+operation:
+
+```sh
+.build/bin/local-profile-prepare \
+  --installation-root /absolute/workspace/private-local/new-installation \
+  --executable /absolute/workspace/sessionless/.build/bin/worker-runtime \
+  --confirm 'PREPARE LOCAL PROFILE' \
+  < /absolute/workspace/private-input/operator-template.json
+```
+
+The tool observes the explicit executable and boot-host/network identity but
+never executes it. It derives their canonical digests and the existing
+connector/policy/cost digests, generates a 32-byte private key, and runs the
+complete template validator **before creating output**. It exclusively creates
+a `0700` installation containing only `0600` `manifest.json` and `source.key`,
+then syncs the files, directory and parent. Keys and template contents are not
+printed. Same-UID host trust remains unchanged; this is not a host sandbox.
+
+An existing path, partial output or uncertain failure is never deleted,
+repaired, reused or overwritten. Reconcile it explicitly; do not automatically
+retry under another name or regenerate keys. A success message means private
+declaration files exist, **not** installation, independent evidence acceptance,
+endpoint qualification or permission to execute. The prepared manifest may be
+checked with the read-only checker above; actual private-file intake and SQL
+publication remain the separate installer below.
+
+Preparation performs no Source intake, installation-ID allocation, grant,
+receipt, SQL operation, daemon start, download or endpoint request. Building
+and testing the tool does not authorize preparing a real owner profile or
+starting/calling a shared Ollama host; those require their own bounded approval.
+
 ### Explicit local profile installation (operator tool)
 
 Build with `make local-profile-install-build`. This tool does not run as part

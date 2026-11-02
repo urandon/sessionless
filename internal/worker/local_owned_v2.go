@@ -112,6 +112,10 @@ func (manager *Manager) runLocalOwned(ctx context.Context, message ports.Receive
 		observeClose(err)
 		return fail(err)
 	}
+	// Resource owners are now joined. Detach this consumed execution child
+	// before ACK rather than retaining its caller registration until return.
+	// Final readback/wake/ACK retain their independent completion deadline.
+	cancelExecution()
 	observeClose(nil)
 	// The original transaction may have observed a late cancellation. Read its
 	// actual canonical result; a prepared success candidate is not the outcome.

@@ -233,6 +233,40 @@ func (p *offlineMCPPeer) setError(e error) {
 		p.err = e
 	}
 }
+
+// Failure-only, mutex-protected snapshot. Never format a raw transport error,
+// request body, endpoint or credential-bearing value.
+func (p *offlineMCPPeer) diagnostic() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	methods := make([]string, 0, min(len(p.methods), 4))
+	for _, method := range p.methods[:min(len(p.methods), 4)] {
+		switch method {
+		case "initialize", "notifications/initialized", "tools/list", "tools/call":
+			methods = append(methods, method)
+		default:
+			methods = append(methods, "invalid")
+		}
+	}
+	errClass := "none"
+	if p.err != nil {
+		errClass = "fixture_error"
+		var networkError net.Error
+		switch {
+		case errors.Is(p.err, context.Canceled):
+			errClass = "cancelled"
+		case errors.Is(p.err, context.DeadlineExceeded):
+			errClass = "deadline"
+		case errors.Is(p.err, net.ErrClosed):
+			errClass = "closed"
+		case errors.Is(p.err, io.EOF):
+			errClass = "eof"
+		case errors.As(p.err, &networkError) && networkError.Timeout():
+			errClass = "timeout"
+		}
+	}
+	return fmt.Sprintf("lookups=%d dials=%d verifiedTLS=%t frames=%d methods=%v error_class=%s", p.lookups, p.dials, p.verifiedTLS, len(p.methods), methods, errClass)
+}
 func (p *offlineMCPPeer) wait(t *testing.T) {
 	t.Helper()
 	timer := time.NewTimer(10 * time.Second)

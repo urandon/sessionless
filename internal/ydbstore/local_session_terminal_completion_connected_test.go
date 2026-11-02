@@ -61,6 +61,8 @@ func TestLocalSessionTerminalCompletionConnected(t *testing.T) {
 			}
 			for i := 0; i < steps; i++ {
 				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
+					t.Logf("original MODEL step%d: %v", i, err)
+					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original MODEL step%d: %v", i, err)
 				}
 			}

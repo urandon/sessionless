@@ -248,6 +248,8 @@ func (s *ownedCurrentScalar) Scan(value any) error {
 		}
 	case *uint32:
 		switch v := value.(type) {
+		case uint32:
+			*destination, s.valid = v, true
 		case uint64:
 			if v <= uint64(^uint32(0)) {
 				*destination, s.valid = uint32(v), true

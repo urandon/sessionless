@@ -78,17 +78,26 @@ func (entry *LocalInvocationEntryV1) localCompactionLifetimeContext(ctx context.
 			deadline, bounded = end, true
 		}
 	}
-	var call context.Context
-	var cancel context.CancelFunc
 	parent := localCompactionCallerValues{Context: life, caller: context.WithoutCancel(ctx)}
+	call, cancelCause := context.WithCancelCause(parent)
+	cancelDeadline := func() {}
 	if bounded {
-		call, cancel = context.WithDeadline(parent, deadline)
-	} else {
-		call, cancel = context.WithCancel(parent)
+		call, cancelDeadline = context.WithDeadline(call, deadline)
 	}
-	stopCaller := context.AfterFunc(ctx, cancel)
-	stopInvocation := context.AfterFunc(entry.invocationContext, cancel)
-	finish := func() { stopCaller(); stopInvocation(); cancel() }
+	// As in context's AfterFunc merge example, carry each original cause.
+	// A nested Source child can also be ctx here: a plain CancelFunc would
+	// race direct parent propagation and replace its cause with Canceled.
+	propagateCancellation := func(original context.Context) {
+		// Invocation wrappers may themselves collapse Source revocation to
+		// Canceled. If the original Source is already canceling, its direct
+		// standard-parent propagation owns this cancellation and exact cause.
+		if life.Err() == nil {
+			cancelCause(context.Cause(original))
+		}
+	}
+	stopCaller := context.AfterFunc(ctx, func() { propagateCancellation(ctx) })
+	stopInvocation := context.AfterFunc(entry.invocationContext, func() { propagateCancellation(entry.invocationContext) })
+	finish := func() { stopCaller(); stopInvocation(); cancelDeadline(); cancelCause(context.Canceled) }
 	if ctx.Err() != nil || life.Err() != nil || entry.invocationContext.Err() != nil || call.Err() != nil {
 		finish()
 		return nil, nil, domain.ErrMembershipDenied

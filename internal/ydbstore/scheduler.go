@@ -757,7 +757,7 @@ func (store *Store) ExpireQuotaReservation(
 		}
 		if reservation.RunID != candidate.RunID ||
 			reservation.SubscriptionConnectionID != candidate.SubscriptionConnectionID ||
-			!equalLocalCapacityV1(reservation.LocalCapacityAssociation, candidate.LocalCapacityAssociation) || !reservation.ExpiresAt.Equal(candidate.ExpiresAt) {
+			!equalLocalCapacityV1(reservation.LocalCapacityAssociation, candidate.LocalCapacityAssociation) || !quotaStorageTimestampEqual(reservation.ExpiresAt, candidate.ExpiresAt) {
 			return domain.ValidationError{
 				Field: "quota expiry candidate", Reason: "does not match the stored reservation",
 			}

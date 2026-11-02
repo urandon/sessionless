@@ -25,6 +25,14 @@ const quotaExpiryStorageSQLV1 = `SELECT shard_bucket, expires_at,
  SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
  FROM quota_expiry_v2 WHERE shard_bucket=$1 AND expires_at=$2 AND tenant_id=$3 AND quota_reservation_id=$4`
 
+// The canonical JSON retains its original nanoseconds. A physical YDB Timestamp
+// is exactly the SDK's microsecond projection, not an independently rounded or
+// approximately equal authority time. Never project the physical value or alter
+// the returned record/deadline to make a corrupted scalar match.
+func quotaStorageTimestampEqual(record, scalar time.Time) bool {
+	return record.UTC().Truncate(time.Microsecond).Equal(scalar)
+}
+
 // Point-read the complete original reservation and its physical scalars in the
 // caller's transaction. This establishes retained correspondence, not funding,
 // current resource authority, a fresh hold or permission to execute.
@@ -86,7 +94,7 @@ func readQuotaReservationStorageV1(ctx context.Context, tx *stateTx, run domain.
 	d.DisallowUnknownFields()
 	if d.Decode(&reservation) != nil || reservation.ValidateForRun(run) != nil || reservation.ID != id ||
 		rowID != string(reservation.ID) || tenant != string(reservation.TenantID) || runID != string(reservation.RunID) || subscription != string(reservation.SubscriptionConnectionID) ||
-		status != string(reservation.Status) || units != reservation.CapacityUnits || !held.Equal(reservation.HeldAt) || !expires.Equal(reservation.ExpiresAt) {
+		status != string(reservation.Status) || units != reservation.CapacityUnits || !quotaStorageTimestampEqual(reservation.HeldAt, held) || !quotaStorageTimestampEqual(reservation.ExpiresAt, expires) {
 		return deny()
 	}
 	return reservation.Clone(), true, nil
@@ -107,20 +115,21 @@ func readQuotaExpiryStorageV1(ctx context.Context, tx *stateTx, reservation doma
 	if err != nil {
 		return false, err
 	}
+	expiresAt := reservation.ExpiresAt.UTC().Truncate(time.Microsecond)
 	var rowBucket uint32
 	var expires time.Time
 	var tenant, id, run string
 	var stored capacityStorageV1
 	destinations := []any{&rowBucket, &expires, &tenant, &id, &run, &stored.key, &stored.association, &stored.digest}
 	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
-		err = q.scanMetadata(ctx, quotaExpiryStorageSQLV1, []any{bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID}, destinations...)
+		err = q.scanMetadata(ctx, quotaExpiryStorageSQLV1, []any{bucket, expiresAt, reservation.TenantID, reservation.ID}, destinations...)
 	} else {
-		_, err = scanOwnedCurrentRow(tx.sqlTx.QueryRowContext(ctx, quotaExpiryStorageSQLV1, bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID), destinations...)
+		_, err = scanOwnedCurrentRow(tx.sqlTx.QueryRowContext(ctx, quotaExpiryStorageSQLV1, bucket, expiresAt, reservation.TenantID, reservation.ID), destinations...)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	if err != nil || rowBucket != bucket || !expires.Equal(reservation.ExpiresAt) || tenant != string(reservation.TenantID) || id != string(reservation.ID) || run != string(reservation.RunID) || stored != want {
+	if err != nil || rowBucket != bucket || !expires.Equal(expiresAt) || tenant != string(reservation.TenantID) || id != string(reservation.ID) || run != string(reservation.RunID) || stored != want {
 		return false, domain.ErrMembershipDenied
 	}
 	if _, _, err := decodeCapacityStorageV1(reservation.TenantID, stored); err != nil {

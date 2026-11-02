@@ -41,6 +41,9 @@ func readRunPayload(ctx context.Context, query rowQuery, tenant domain.TenantID,
 	if err == nil && run.TerminalCustody != nil {
 		err = run.TerminalCustody.ValidateForRun(run)
 	}
+	if err == nil && run.TerminalFailure != nil {
+		err = run.TerminalFailure.ValidateForRun(run)
+	}
 	if err != nil {
 		if isOwned {
 			return domain.Run{}, false, owned.budget.deny()
@@ -53,6 +56,11 @@ func readRunPayload(ctx context.Context, query rowQuery, tenant domain.TenantID,
 // All physical Run writers must use this codec before ANY mutation, including
 // explanation invalidation. This serializes the complete Run, not a projection.
 func marshalRunPayload(run domain.Run) (string, error) {
+	if run.TerminalFailure != nil {
+		if err := run.TerminalFailure.ValidateForRun(run); err != nil {
+			return "", err
+		}
+	}
 	if run.DerivedContext != nil {
 		if err := run.DerivedContext.ValidateForRun(run); err != nil {
 			return "", err

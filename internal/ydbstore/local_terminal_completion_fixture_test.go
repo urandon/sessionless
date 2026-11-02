@@ -785,10 +785,11 @@ type terminalCompletionFormat uint8
 const (
 	terminalCompletionLocalV2 terminalCompletionFormat = iota + 1
 	terminalCompletionManagedV1
+	terminalCompletionLocalF1
 )
 
 func applyTerminalCompletionWrite(state *LocalTerminalCompletionSnapshot, rows map[string][]driver.Value, counters *[]driver.Value, format terminalCompletionFormat, statement string, args []driver.NamedValue) error {
-	if state == nil || rows == nil || counters == nil || (format != terminalCompletionLocalV2 && format != terminalCompletionManagedV1) {
+	if state == nil || rows == nil || counters == nil || (format != terminalCompletionLocalV2 && format != terminalCompletionManagedV1 && format != terminalCompletionLocalF1) {
 		return errors.New("invalid canonical fixture storage host")
 	}
 	flat := completionSQL(statement)
@@ -809,6 +810,9 @@ func applyTerminalCompletionWrite(state *LocalTerminalCompletionSnapshot, rows m
 	}{state}
 	switch {
 	case strings.HasPrefix(flat, "INSERT INTO substrate_execution_evidence "):
+		if format == terminalCompletionLocalF1 {
+			return errors.New("F1 cannot publish successful evidence")
+		}
 		if f.state.EvidenceRecord != "" {
 			return errors.New("duplicate terminal evidence")
 		}
@@ -877,7 +881,12 @@ func applyTerminalCompletionWrite(state *LocalTerminalCompletionSnapshot, rows m
 		if f.state.Finalizations != 0 {
 			return errors.New("duplicate finalization")
 		}
-		if format == terminalCompletionLocalV2 {
+		if format == terminalCompletionLocalF1 {
+			var run domain.Run
+			if _, err := decodeLocalFailureMarker(val(3).(string)); err != nil || val(2) != string(domain.RunFailed) || len(rows["runs"]) != 1 || json.Unmarshal([]byte(rows["runs"][0].(string)), &run) != nil || run.TerminalFailure == nil || run.Validate() != nil {
+				return errors.New("F1 requires exact failed Run commitment and tagged marker")
+			}
+		} else if format == terminalCompletionLocalV2 {
 			if _, err := decodeLocalFinalizationMarkerV2(val(3).(string)); err != nil || (val(2) != string(domain.RunSucceeded) && val(2) != string(domain.RunCancelled)) {
 				return errors.New("local completion requires exact tagged success/cancellation marker")
 			}

@@ -719,6 +719,13 @@ func failWorkerTx(
 	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
 	finalize func(domain.Run) error,
 ) error {
+	return failWorkerWithAuthorityTx(ctx, state, tx, run, attempt, reservation, runStatus, attemptStatus, leaseID, fence, at, code, reconciliationEvidence, finalize, nil)
+}
+
+// Only the original closed F1 owner may use the private Run write arm. Public
+// FailWorkerJob and legacy failure retain their original generic/notice-only
+// behavior; all Attempt/quota/scheduling/fence/finalize work is shared below.
+func failWorkerWithAuthorityTx(ctx context.Context, state ports.StateTx, tx *stateTx, run domain.Run, attempt domain.Attempt, reservation domain.QuotaReservation, runStatus domain.RunStatus, attemptStatus domain.AttemptStatus, leaseID domain.LeaseID, fence uint64, at time.Time, code string, reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1, finalize func(domain.Run) error, known *LocalFailureV1) error {
 	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
 		return err
 	}
@@ -738,7 +745,16 @@ func failWorkerTx(
 	if err := reservation.Transition(domain.ReservationReleased, at); err != nil {
 		return err
 	}
-	if err := state.PutRun(ctx, run); err != nil {
+	if known != nil {
+		var err error
+		run, err = known.terminalRun(run)
+		if err != nil {
+			return err
+		}
+		if err := known.putRun(ctx, tx, run); err != nil {
+			return err
+		}
+	} else if err := state.PutRun(ctx, run); err != nil {
 		return err
 	}
 	if err := state.PutAttempt(ctx, attempt); err != nil {

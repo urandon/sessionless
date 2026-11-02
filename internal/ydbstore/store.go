@@ -366,6 +366,9 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if (!found && run.TerminalCustody != nil) || (found && !domain.EqualRunTerminalCustodyV1(run.TerminalCustody, stored.TerminalCustody)) {
 		return domain.ValidationError{Field: "run.terminal_custody", Reason: "generic writes must preserve existing metadata exactly"}
 	}
+	if (!found && run.TerminalFailure != nil) || (found && !domain.EqualRunTerminalFailureV1(run.TerminalFailure, stored.TerminalFailure)) {
+		return domain.ValidationError{Field: "run.terminal_failure", Reason: "generic writes must preserve existing metadata exactly"}
+	}
 	return putCanonicalRunPayloadTx(ctx, tx, run, payload)
 }
 

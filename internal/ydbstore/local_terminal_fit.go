@@ -233,6 +233,12 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 	if chargeLocalTerminalFit(ctx, q, entry.terminalOutputs.CapsuleLimit()+ownedAuthorityHeadBytes) != nil {
 		return domain.ErrMembershipDenied
 	}
+	if op.Kind == domain.AttemptOperationMCPToolV1 && chargeLocalTerminalFit(ctx, q, entry.terminalOutputs.CapsuleLimit()+ownedAuthorityHeadBytes) != nil {
+		return domain.ErrMembershipDenied
+	}
+	if err := entry.knownFailureFitLocked(ctx, source, op); err != nil {
+		return err
+	}
 	if localTerminalNeedsV2(source.state.operations, op) {
 		// The V2 counter decodes the original bodies again to derive exact
 		// canonical pairs. Charge that additional bounded materialization to

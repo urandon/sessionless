@@ -370,6 +370,13 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotWithBurn(ctx conte
 // either the unchanged active path or the original private cleanup owner with
 // exact historical allocation correspondence. No caller-selectable bypass.
 func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotBody(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
+	if phase == localKnownFailureCapture {
+		h := entry.failure.Load()
+		d, ok := ctx.Deadline()
+		if !h.original() || !ok || d.After(h.deadline) || !time.Now().Before(h.deadline) {
+			return localCompactionSnapshot{}, q.budget.deny()
+		}
+	}
 	var v localCompactionSnapshot
 	deny := func() (localCompactionSnapshot, error) { return localCompactionSnapshot{}, q.budget.deny() }
 	job, err := loadOwnedEffectWorkerJob(ctx, q, operationParentRequest(ownedOperationScope(entry.parent)))
@@ -470,6 +477,10 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Con
 		pending := owner.present() && phase == localCompactionBeforeSend && sequence == owner.operation().Sequence
 		if pending {
 			if row.observation != nil || !reflect.DeepEqual(row.reservation.Operation, owner.operation()) {
+				return nil, q.budget.deny()
+			}
+		} else if phase == localKnownFailureCapture {
+			if !entry.failure.Load().authenticatedRow(*row, accounting.Aggregate.Operations) {
 				return nil, q.budget.deny()
 			}
 		} else if row.observation == nil || !entry.originalObservationAllowsSuccessor(row.reservation, *row.observation) {

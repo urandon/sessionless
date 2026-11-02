@@ -434,7 +434,14 @@ func (f *canonicalTerminalSQL) ExecContext(ctx context.Context, s string, args [
 		}
 		f.state.Mutations++
 	} else {
-		if e := applyTerminalCompletionWrite(&f.state, seed.peer.base.rows, &seed.peer.base.counters, terminalCompletionLocalV2, s, args); e != nil {
+		format := terminalCompletionLocalV2
+		// Only the actual private F1 writer's failed Run postimage selects its
+		// storage discriminator. Existing success/cancellation remain V2.
+		var run domain.Run
+		if len(seed.peer.base.rows["runs"]) == 1 && json.Unmarshal([]byte(seed.peer.base.rows["runs"][0].(string)), &run) == nil && run.TerminalFailure != nil {
+			format = terminalCompletionLocalF1
+		}
+		if e := applyTerminalCompletionWrite(&f.state, seed.peer.base.rows, &seed.peer.base.counters, format, s, args); e != nil {
 			return nil, e
 		}
 	}

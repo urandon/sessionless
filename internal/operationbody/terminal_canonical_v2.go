@@ -36,6 +36,12 @@ type canonicalPublicationV2 struct {
 // V2 share one lifetime, gate and assistant slot; failure-notice custody remains
 // separate and cannot clear uncertainty.
 func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domain.Run, drafts []domain.SessionEventDraft, bodies [][]byte) error {
+	return t.writeCanonicalEvents(ctx, run, drafts, bodies, false)
+}
+
+// Only the two closed public methods select this encoding arm. The original
+// batch/assistant slot and protected notice slot are shared, never replenished.
+func (t *TerminalOutputV1) writeCanonicalEvents(ctx context.Context, run domain.Run, drafts []domain.SessionEventDraft, bodies [][]byte, failure bool) error {
 	if t.OperationBodyLimit() == 0 || len(drafts) < 3 || len(drafts) > maxCanonicalToolEventsV2+1 || len(drafts)%2 != 1 || len(drafts) != len(bodies) {
 		return ErrBody
 	}
@@ -46,7 +52,7 @@ func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domai
 	}
 	defer finish()
 	st := t.state
-	if call.Err() != nil || st.writeFailed || t.owner.assistantUsed || !t.owner.capsule.used ||
+	if call.Err() != nil || st.writeFailed || t.owner.assistantUsed || (failure && t.owner.failure.used) || !t.owner.capsule.used ||
 		run.Validate() != nil || run.Status != domain.RunRunning || run.CancellationRequestedAt != nil ||
 		run.ID != st.scope.RunID || run.TenantID != st.scope.TenantID || run.SessionID != st.scope.SessionID ||
 		run.TerminalCustody == nil || run.TerminalCustody.Plan.Scope != st.scope ||
@@ -57,6 +63,10 @@ func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domai
 	// select a different version/plan after any uncertainty.
 	t.owner.assistantUsed = true
 	st.writeFailed = true
+	if failure {
+		t.owner.failure.used = true
+		t.owner.failure.ref = drafts[len(drafts)-1].Payload
+	}
 	run = run.Clone()
 	plan := make([]canonicalPublicationV2, len(drafts))
 	defer func() {
@@ -76,6 +86,13 @@ func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domai
 				return ErrBody
 			}
 			toolBytes += uint64(len(body))
+		} else if failure {
+			notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, domain.KnownMCPServiceErrorV1)
+			matches := e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID && uint64(len(body)) <= t.owner.failure.limit
+			clear(notice.Payload)
+			if !matches {
+				return ErrBody
+			}
 		}
 		plan[i] = canonicalPublicationV2{draft: draft, body: bytes.Clone(body)}
 	}
@@ -87,6 +104,9 @@ func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domai
 		wantKind := domain.SessionEventToolCall
 		if i == len(plan)-1 {
 			wantKind = domain.SessionEventAssistantMessage
+			if failure {
+				wantKind = domain.SessionEventSystemNotice
+			}
 		} else if i%2 == 1 {
 			wantKind = domain.SessionEventToolResult
 		}

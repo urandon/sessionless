@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
@@ -494,4 +495,308 @@ func TestLocalSessionCredentialedMCPOfflineWebCanonicalManager(t *testing.T) {
 		t.Fatal("Web/Manager/readback changed borrowed original Source/profile/four publications")
 	}
 	t.Logf("Web actual queued Manager prelease=%d lease=%d start=%d/%d authority maxSQL=%d canonical raw=%d", principals, leases, runs, attempts, managerSeed.MaxCallbackSQL(), managerSeed.TerminalRawStatements())
+}
+
+// Genuine original Web admission/Source/Manager path. Only the SQL and owned
+// MODEL/TLS peers are synthetic. A known application error is neither MODEL2
+// permission nor financially measured/zero usage, erasure or success evidence.
+func TestLocalSessionCredentialedMCPOfflineWebKnownServiceError(t *testing.T) {
+	runKnownServiceErrorWeb(t, false)
+}
+func TestLocalSessionCredentialedMCPOfflineWebKnownServiceErrorFreshHistory(t *testing.T) {
+	runKnownServiceErrorWeb(t, true)
+}
+func TestLocalSessionCredentialedMCPOfflineWebKnownServiceErrorChangedNoticeDenied(t *testing.T) {
+	for _, mode := range []string{"changed_notice", "missing_notice", "metadata_stripped", "marker_stripped"} {
+		t.Run(mode, func(t *testing.T) { runKnownServiceErrorWeb(t, true, mode) })
+	}
+}
+func TestLocalSessionCredentialedMCPOfflineWebKnownServiceErrorCommitLoss(t *testing.T) {
+	for _, mode := range []string{"rollback", "ambiguous"} {
+		t.Run(mode, func(t *testing.T) { runKnownServiceErrorWeb(t, false, mode) })
+	}
+}
+func runKnownServiceErrorWeb(t *testing.T, next bool, commitFault ...string) {
+	if len(commitFault) > 1 || len(commitFault) == 1 && ((!next && (commitFault[0] != "rollback" && commitFault[0] != "ambiguous")) || (next && commitFault[0] != "changed_notice" && commitFault[0] != "missing_notice" && commitFault[0] != "metadata_stripped" && commitFault[0] != "marker_stripped")) {
+		t.Fatal("closed first F1 terminal commit fault")
+	}
+	want := 1
+	if next {
+		want = 2
+	}
+	model := newOfflineModelChainPeer(t, want)
+	seed := ydbstore.NewLocalWebManagerSeed(t, model.endpoint())
+	profile, err := seed.Source.Configuration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.configure(t, profile.ModelID)
+	blobs := &canonicalManagerBlobs{canonicalTerminalBlobs: &canonicalTerminalBlobs{sessionCompactionBlobs: newSessionCompactionBlobs(), owner: t}}
+	h := newWebManagerHandler(t, seed, blobs, newWebManagerAuth(seed.Tenant, seed.Owner))
+	cookie, csrf := webManagerLogin(t, h)
+	path := "/api/web/v1/sessions/" + string(seed.Session) + "/messages"
+	body := `{"text":"known application error","idempotency_key":"web-service-error"}`
+	ingress := webManagerRequest(h, http.MethodPost, path, body, cookie, csrf)
+	if ingress.Code != http.StatusCreated {
+		t.Fatalf("genuine Web admission status=%d SQL=%s", ingress.Code, seed.LastError())
+	}
+	originalStorage := seed.OriginalStorageDigest(t)
+	managerSeed := seed.AdmitManager(t)
+	if len(commitFault) == 1 && !next {
+		managerSeed.LoseNextTerminalCommit(t, commitFault[0])
+	}
+	blobs.seed = managerSeed.LocalCanonicalTerminalSeed
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	invocation, err := providerloopsession.NewLocalV1(ctx, providerloopsession.LocalConfigV1{Source: seed.Source, DB: seed.DB, StoreOptions: seed.Options, Prepare: managerSeed.Prepare, Operate: managerSeed.Operate, Backend: managerSeed.Backend, Substrate: managerSeed.Substrate, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := invocation.Close(); err != nil {
+			t.Error("original session join", err)
+		}
+	})
+	mcp := newOfflineMCPPeer(t, managerSeed.Grant.Descriptor, 4, nil, false, true)
+	if err := invocation.ConfigureMCPOfflineNetwork(mcp.lookup, mcp.dial, mcp.roots); err != nil {
+		t.Fatal(err)
+	}
+	state, err := invocation.WorkerState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := &canonicalManagerQueue{message: ports.ReceivedMessage{Envelope: queuecontract.Envelope{Schema: queuecontract.SchemaV1, MessageID: "web-failure-delivery", Kind: queuecontract.KindDispatchRun, TenantID: seed.Tenant, SubjectID: string(managerSeed.Loaded.Run.ID), EnqueuedAt: managerSeed.Loaded.Job.CreatedAt}}}
+	var retryError error
+	manager, err := worker.New(worker.Config{ScratchRoot: t.TempDir(), WorkerID: managerSeed.Claim.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, LocalOwnedSession: invocation, ProjectionWakePublisher: q, DeliveryWakePublisher: q, RetryObserver: func(err error) { retryError = err }}, localManagerClock{}, q, state, blobs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.beforeAck = func() error {
+		got := managerSeed.TerminalSnapshot(t)
+		if got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed || got.Reservation.Status != domain.ReservationReleased || got.Finalizations != 1 || got.Run.TerminalFailure == nil || got.Run.TerminalCustody == nil || got.Run.TerminalCustody.LocalEvidence != nil || got.Run.TerminalCustody.Correspondence != nil || got.LeasePresent || got.ActiveRuns != 0 || q.wake != q.ack+1 || blobs.deletes != 0 || blobs.absences != 0 {
+			return errors.New("F1 ACK before truthful canonical failure/joined-retained release/wake")
+		}
+		if _, err := invocation.WorkerState(); err == nil {
+			return errors.New("F1 ACK before original session close")
+		}
+		return nil
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if len(commitFault) == 1 && !next {
+		if commitFault[0] == "rollback" {
+			if err != nil || retryError == nil || outcome != worker.OutcomeRetried || q.retry != 1 || q.ack != 0 || q.wake != 0 || q.dead != 0 {
+				t.Fatalf("uncommitted F1 was acknowledged outcome=%s err=%v retry=%v", outcome, err, retryError)
+			}
+		} else if err != nil || retryError != nil || outcome != worker.OutcomeFailed || q.retry != 0 || q.ack != 1 || q.wake != 1 || q.dead != 0 {
+			t.Fatalf("same-budget exact committed observation unavailable outcome=%s err=%v retry=%v", outcome, err, retryError)
+		}
+		mcp.wait(t)
+		model.waitCompleted(t, 1)
+		model.wait(t, false)
+		got := managerSeed.TerminalSnapshot(t)
+		if got.LostACKs != 1 || blobs.eventWrites != 3 || blobs.capsulePuts != 1 || blobs.deletes != 0 || blobs.absences != 0 {
+			t.Fatal("commit uncertainty changed one-use physical output/retained disposition")
+		}
+		want := worker.OutcomeDuplicate
+		if commitFault[0] == "rollback" {
+			want = worker.OutcomeRetried
+			if got.Run.Status != domain.RunRunning || got.Finalizations != 0 || got.Run.TerminalFailure != nil || len(got.Events) != 0 {
+				t.Fatal("rolled-back F1 became known canonical failure")
+			}
+		} else if got.Run.Status != domain.RunFailed || got.Finalizations != 1 || got.Run.TerminalFailure == nil || len(got.Events) != 3 {
+			t.Fatal("persisted ambiguous F1 not exactly retained")
+		}
+		before, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats, puts := managerSeed.Stats(), blobs.puts
+		if outcome, err := manager.RunOnce(ctx); err != nil || outcome != want {
+			t.Fatal("repeat did not observe known commit or reconcile only", outcome, err)
+		}
+		after, err := json.Marshal(managerSeed.TerminalSnapshot(t))
+		if err != nil || !bytes.Equal(before, after) || managerSeed.Stats() != stats || blobs.puts != puts || blobs.deletes != 0 || model.completedCalls() != 1 || seed.OriginalStorageDigest(t) != originalStorage {
+			t.Fatal("repeat uncertainty replayed/refunded original operation or rewrote canonical state")
+		}
+		reservations, observed := managerSeed.OperationReadback(t)
+		if len(reservations) != 2 || len(observed) != 2 || observed[1].Reason != domain.AttemptOperationReasonServiceErrorV1 || observed[1].Usage.State != domain.AttemptOperationUsageUnknownV1 {
+			t.Fatal("commit uncertainty changed authenticated complete frontier/UNKNOWN money")
+		}
+		return
+	}
+	if err != nil || retryError != nil || outcome != worker.OutcomeFailed || q.ack != 1 || q.retry != 0 || q.dead != 0 {
+		t.Fatalf("known service error outcome=%s err=%v retry=%v trace=%s SQL=%s puts=%d events=%d canonical=%d", outcome, err, retryError, managerSeed.TerminalTrace(), seed.LastError(), blobs.puts, blobs.eventWrites, managerSeed.TerminalSnapshot(t).Finalizations)
+	}
+	mcp.wait(t)
+	model.waitCompleted(t, 1)
+	if model.completedCalls() != 1 {
+		t.Fatal("service error continued MODEL")
+	}
+	if !next {
+		model.wait(t, false)
+	}
+	got := managerSeed.TerminalSnapshot(t)
+	if len(got.Events) != 3 || got.Events[0].Kind != domain.SessionEventToolCall || got.Events[1].Kind != domain.SessionEventToolResult || got.Events[2].Kind != domain.SessionEventSystemNotice || got.Manifest.ID != "" || got.EvidenceRecord != "" || !strings.HasPrefix(got.FinalDigest, "local_f1:") {
+		t.Fatal("F1 did not publish exactly pair plus fixed notice without success metadata")
+	}
+	reservations, observed := managerSeed.OperationReadback(t)
+	if len(reservations) != 2 || len(observed) != 2 || observed[1].Outcome != domain.AttemptOperationCompletedV1 || observed[1].Reason != domain.AttemptOperationReasonServiceErrorV1 || observed[1].Usage.State != domain.AttemptOperationUsageUnknownV1 || reservations[1].Operation.Debit.AmountMicrounits != *managerSeed.ManagerParent(t).Authority.AdmissionCostCeiling.MCPToolCost.MaxAmountMicrounits {
+		t.Fatal("durable known failure/full reserved UNKNOWN money frontier")
+	}
+	stats, puts := managerSeed.Stats(), blobs.puts
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeDuplicate || q.ack != 2 || q.wake != 2 || q.retry != 0 || q.dead != 0 || managerSeed.Stats() != stats || blobs.puts != puts || !reflect.DeepEqual(got, managerSeed.TerminalSnapshot(t)) {
+		t.Fatal("duplicate failed delivery repeated effects or canonical failure", outcome, err)
+	}
+	duplicate := webManagerRequest(h, http.MethodPost, path, body, cookie, csrf)
+	if duplicate.Code != http.StatusOK {
+		t.Fatal("duplicate Web admission", duplicate.Code)
+	}
+	historyPath := "/api/web/v1/sessions/" + string(seed.Session) + "/events?limit=10"
+	history := webManagerRequest(h, http.MethodGet, historyPath, "", cookie, nil)
+	if history.Code != http.StatusOK || !bytes.Contains(history.Body.Bytes(), []byte(`service_error`)) {
+		t.Fatal("canonical known error history", history.Code, history.Body.String())
+	}
+	if managerSeed.Stats() != stats || blobs.puts != puts || blobs.deletes != 0 || !reflect.DeepEqual(got, managerSeed.TerminalSnapshot(t)) || seed.OriginalStorageDigest(t) != originalStorage {
+		t.Fatal("failure duplicate/history mutated original effects/funding")
+	}
+	for _, mode := range []string{"positive", "missing_observation", "missing_parent", "changed_marker", "changed_accounting", "missing_body"} {
+		t.Run("retained_deletion_"+mode, func(t *testing.T) {
+			before, err := json.Marshal(managerSeed.TerminalSnapshot(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			blobs.mu.Lock()
+			objects := make(map[string][]byte, len(blobs.objects))
+			for key, body := range blobs.objects {
+				objects[key] = bytes.Clone(body)
+			}
+			blobs.mu.Unlock()
+			defer func() {
+				for _, body := range objects {
+					clear(body)
+				}
+			}()
+			if err := seed.CheckKnownFailureDeletion(t, managerSeed, blobs, mode); err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(managerSeed.TerminalSnapshot(t))
+			if err != nil || !bytes.Equal(before, after) || managerSeed.Stats() != stats || blobs.puts != puts || blobs.deletes != 0 || seed.OriginalStorageDigest(t) != originalStorage {
+				t.Fatal("isolated deletion changed original serving rows/effects")
+			}
+			blobs.mu.Lock()
+			unchanged := reflect.DeepEqual(objects, blobs.objects)
+			blobs.mu.Unlock()
+			if !unchanged {
+				t.Fatal("isolated deletion changed original retained serving bytes")
+			}
+		})
+	}
+	if next {
+		runNextAfterKnownFailure(t, seed, managerSeed, blobs, h, cookie, csrf, model, commitFault...)
+	}
+}
+
+func runNextAfterKnownFailure(t *testing.T, seed *ydbstore.LocalWebManagerSeed, prior *ydbstore.LocalCanonicalManagerSeed, oldBlobs *canonicalManagerBlobs, h http.Handler, cookie, csrf *http.Cookie, model *offlineModelChainPeer, historyFault ...string) {
+	t.Helper()
+	priorSnapshot := prior.TerminalSnapshot(t)
+	seed.BeginNextAfterKnownFailure(t, prior)
+	if len(historyFault) == 1 && historyFault[0] == "changed_notice" {
+		notice, err := canonicaloutput.EncodeFailureV1(priorSnapshot.Run.ID, false, "harness_failed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer clear(notice.Payload)
+		var event domain.SessionEvent
+		for _, e := range priorSnapshot.Events {
+			if e.Kind == domain.SessionEventSystemNotice {
+				event = e
+			}
+		}
+		if event.ID == "" {
+			t.Fatal("actual first F1 notice absent")
+		}
+		ref, err := oldBlobs.sessionCompactionBlobs.Put(t.Context(), event.TenantID, domain.SessionEventObjectPrefix(event.TenantID, event.SessionID, event.ID)+"changed-notice.json", bytes.NewReader(notice.Payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed.ReplacePriorKnownFailureNotice(t, ref)
+	} else if len(historyFault) == 1 {
+		seed.CorruptPriorKnownFailureCorrespondence(t, historyFault[0])
+	}
+	path := "/api/web/v1/sessions/" + string(seed.Session) + "/messages"
+	response := webManagerRequest(h, http.MethodPost, path, `{"text":"new explicit user request after known error","idempotency_key":"after-known-error"}`, cookie, csrf)
+	if response.Code != http.StatusCreated {
+		for i, statement := range seed.LastCommitStatements() {
+			t.Logf("intake_statement[%d]=%s", i+1, statement)
+		}
+		t.Fatalf("actual next Web request status=%d body=%s SQL=%s", response.Code, response.Body.String(), seed.LastError())
+	}
+	next := seed.AdmitManager(t)
+	blobs := &canonicalManagerBlobs{canonicalTerminalBlobs: &canonicalTerminalBlobs{sessionCompactionBlobs: oldBlobs.sessionCompactionBlobs, owner: t, seed: next.LocalCanonicalTerminalSeed}}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	invocation, err := providerloopsession.NewLocalV1(ctx, providerloopsession.LocalConfigV1{Source: seed.Source, DB: seed.DB, StoreOptions: seed.Options, Prepare: next.Prepare, Operate: next.Operate, Backend: next.Backend, Substrate: next.Substrate, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := invocation.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	state, err := invocation.WorkerState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := &canonicalManagerQueue{message: ports.ReceivedMessage{Envelope: queuecontract.Envelope{Schema: queuecontract.SchemaV1, MessageID: "after-error-delivery", Kind: queuecontract.KindDispatchRun, TenantID: seed.Tenant, SubjectID: string(next.Loaded.Run.ID), EnqueuedAt: next.Loaded.Job.CreatedAt}}}
+	var retried error
+	manager, err := worker.New(worker.Config{ScratchRoot: t.TempDir(), WorkerID: next.Claim.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, LocalOwnedSession: invocation, ProjectionWakePublisher: q, DeliveryWakePublisher: q, RetryObserver: func(err error) { retried = err }}, localManagerClock{}, q, state, blobs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if len(historyFault) == 1 {
+		reservations, observed := next.OperationReadback(t)
+		if err != nil || retried == nil || outcome != worker.OutcomeRetried || q.ack != 0 || q.retry != 1 || q.dead != 0 || model.completedCalls() != 1 || len(reservations) != 0 || len(observed) != 0 || blobs.puts != 0 {
+			t.Fatalf("changed valid notice bypassed retained F1 before effect: outcome=%s err=%v retry=%v MODEL=%d reservations=%d puts=%d", outcome, err, retried, model.completedCalls(), len(reservations), blobs.puts)
+		}
+		return
+	}
+	if err != nil || retried != nil || outcome != worker.OutcomeCompleted || q.ack != 1 {
+		t.Fatalf("fresh original serving history outcome=%s err=%v retry=%v trace=%s SQL=%s", outcome, err, retried, next.TerminalTrace(), seed.LastError())
+	}
+	wires := model.wait(t, false)
+	if len(wires) != 2 {
+		t.Fatal("fresh MODEL request count")
+	}
+	var wire globalClosureWire
+	var history globalClosureHistory
+	if json.Unmarshal(wires[1].body, &wire) != nil || len(wire.Messages) != 2 || json.Unmarshal([]byte(wire.Messages[1].Content), &history) != nil || history.Schema != "sessionless.history.v1" {
+		t.Fatal("actual fresh MODEL frozen history grammar")
+	}
+	for _, event := range prior.TerminalSnapshot(t).Events {
+		oldBlobs.mu.Lock()
+		payload := bytes.Clone(oldBlobs.objects[string(event.TenantID)+"\x00"+event.Payload.Key])
+		oldBlobs.mu.Unlock()
+		if len(payload) == 0 {
+			t.Fatal("original failed canonical body absent")
+		}
+		found := 0
+		for _, frame := range append(history.Protected, history.Units...) {
+			if frame.EventID == string(event.ID) {
+				found++
+				if frame.Kind != "canonical" || frame.RunID != string(prior.Loaded.Run.ID) || frame.Role != string(event.Kind) || frame.Sequence != event.Sequence || frame.Digest != event.Payload.SHA256 || frame.Payload != string(payload) {
+					t.Fatal("fresh input changed exact authenticated failed canonical frame")
+				}
+			}
+		}
+		clear(payload)
+		if found != 1 {
+			t.Fatal("fresh input dropped/duplicated authenticated known failure frame")
+		}
+	}
+	reservations, observed := next.OperationReadback(t)
+	if len(reservations) != 1 || len(observed) != 1 || reservations[0].Operation.Kind != domain.AttemptOperationModelV1 {
+		t.Fatal("new explicit Run replayed prior MCP rather than one new MODEL")
+	}
 }

@@ -44,26 +44,29 @@ type localTerminalHistorySnapshot struct {
 }
 
 type localTerminalHistoryV1 struct {
-	snapshots []localTerminalHistorySnapshot
-	legacy    []localTerminalLegacySnapshot
-	runs      []compactioncontext.HistoricalRunV1
-	runsV2    []compactioncontext.HistoricalRunV2
-	parents   []*compactioncontext.RetainedV1
+	failures             []localFailureHistoryV1
+	failuresMaterialized bool
+	snapshots            []localTerminalHistorySnapshot
+	legacy               []localTerminalLegacySnapshot
+	runs                 []compactioncontext.HistoricalRunV1
+	runsV2               []compactioncontext.HistoricalRunV2
+	parents              []*compactioncontext.RetainedV1
 }
 
 // Both classification arms are part of the immutable source identity; neither
 // a marker nor a digest substitutes for their original current rejoin.
 type localTerminalHistoryCommitmentV1 struct {
-	Version uint32
-	Local   []localTerminalHistorySnapshot
-	Legacy  []localTerminalLegacySnapshot
+	Version  uint32
+	Local    []localTerminalHistorySnapshot
+	Legacy   []localTerminalLegacySnapshot
+	Failures []localFailureHistoryV1 `json:"Failures,omitempty"`
 }
 
 func (h *localTerminalHistoryV1) commitmentV1() localTerminalHistoryCommitmentV1 {
 	if h == nil {
 		return localTerminalHistoryCommitmentV1{} // Invalid, never an empty-history fallback.
 	}
-	return localTerminalHistoryCommitmentV1{Version: 1, Local: h.snapshots, Legacy: h.legacy}
+	return localTerminalHistoryCommitmentV1{Version: 1, Local: h.snapshots, Legacy: h.legacy, Failures: h.failures}
 }
 
 func localTerminalHistoryRunsSQL(count int) string {
@@ -97,6 +100,7 @@ func (h *localTerminalHistoryV1) clear() {
 	}
 	h.snapshots, h.legacy, h.runs, h.parents = nil, nil, nil, nil
 	h.runsV2 = nil
+	h.failures = nil
 }
 
 // The source owns view and history under its original mutex. The first call is
@@ -115,10 +119,16 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 	anchors := make(map[domain.RunID]domain.SessionEvent)
 	byProducing := make(map[domain.RunID][]sessioncontext.EventPayload)
 	var ids []domain.RunID
+	var producingIDs []domain.RunID
+	producing := make(map[domain.RunID]bool)
 	for _, record := range records {
 		e := record.Event
 		if e.RunID != nil {
 			byProducing[*e.RunID] = append(byProducing[*e.RunID], record)
+			if *e.RunID != s.entry.parent.Scope.RunID && !producing[*e.RunID] && (e.Kind == domain.SessionEventAssistantMessage || e.Kind == domain.SessionEventToolCall || e.Kind == domain.SessionEventToolResult || e.Kind == domain.SessionEventSystemNotice) {
+				producing[*e.RunID] = true
+				producingIDs = append(producingIDs, *e.RunID)
+			}
 		}
 		if e.Kind == domain.SessionEventAssistantMessage && e.RunID != nil && *e.RunID != s.entry.parent.Scope.RunID {
 			if _, exists := anchors[*e.RunID]; exists {
@@ -128,46 +138,63 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 			ids = append(ids, *e.RunID)
 		}
 	}
-	if len(ids) > 4096 {
+	if len(producingIDs) > 4096 {
 		return q.budget.deny()
 	}
 	byRun := make(map[domain.RunID]domain.Run)
 	markers := make(map[domain.RunID]string)
-	if len(ids) > 0 {
+	statuses := make(map[domain.RunID]string)
+	if len(producingIDs) > 0 {
 		args := []any{s.entry.parent.Scope.TenantID, s.entry.parent.Scope.SessionID}
-		for _, id := range ids {
+		for _, id := range producingIDs {
 			args = append(args, id)
 		}
 		// Bound the whole result's possible transfer to <=1MiB, including
 		// overflow sentinels. Large histories may explicitly exceed admission.
-		rowBudget := (ownedAuthorityMaxBytes / 4) / uint64(len(ids)+1)
+		rowBudget := (ownedAuthorityMaxBytes / 4) / uint64(len(producingIDs)+1)
 		if rowBudget <= 268 {
 			return q.budget.deny()
 		}
 		cell := min(uint64(32769), rowBudget-268)
 		args = append(args, cell)
-		rows, err := q.QueryContext(ctx, localTerminalHistoryRunsSQL(len(ids)), args...)
+		rows, err := q.QueryContext(ctx, localTerminalHistoryRunsSQL(len(producingIDs)), args...)
 		if err != nil {
 			return q.budget.deny()
 		}
 		for rows.Next() {
 			var id, raw, status, marker string
 			n, err := scanOwnedCurrentRow(rows, &id, &raw, &status, &marker)
-			if q.budget.materialized(q.callback, n) != nil || err != nil || len(id) > 160 || uint64(len(raw)) >= cell || len(byRun) >= len(ids) {
+			if q.budget.materialized(q.callback, n) != nil || err != nil || len(id) > 160 || uint64(len(raw)) >= cell || len(byRun) >= len(producingIDs) {
 				rows.Close()
 				return q.budget.deny()
 			}
 			var run domain.Run
-			_, expected := anchors[domain.RunID(id)]
+			expected := producing[domain.RunID(id)]
 			_, duplicate := byRun[domain.RunID(id)]
-			if !expected || duplicate || decodeOwnedEffectCanonicalJSON(raw, &run) != nil || run.Validate() != nil || string(run.ID) != id || run.TenantID != s.entry.parent.Scope.TenantID || run.SessionID != s.entry.parent.Scope.SessionID || status != string(domain.RunSucceeded) || run.Status != domain.RunSucceeded || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || run.UpdatedAt.After(q.at) || (domain.ValidateSHA256Digest("legacy.marker", marker) != nil && !isLocalFinalizationMarkerV2(marker)) {
+			if !expected || duplicate || decodeOwnedEffectCanonicalJSON(raw, &run) != nil || run.Validate() != nil || string(run.ID) != id || run.TenantID != s.entry.parent.Scope.TenantID || run.SessionID != s.entry.parent.Scope.SessionID || run.UpdatedAt.After(q.at) {
 				rows.Close()
 				return q.budget.deny()
 			}
 			byRun[run.ID] = run
 			markers[run.ID] = marker
+			statuses[run.ID] = status
 		}
 		if rows.Err() != nil || rows.Close() != nil {
+			return q.budget.deny()
+		}
+		if len(byRun) != len(producingIDs) {
+			return q.budget.deny()
+		}
+	}
+	failures, err := s.readFailureHistories(ctx, q, records, producingIDs, byRun, markers, statuses)
+	if err != nil {
+		return err
+	}
+	// Preserve the successful/legacy producer grammar exactly. Discovery of an
+	// F1 tool/notice producer must not promote it into the success validators.
+	for _, id := range ids {
+		run := byRun[id]
+		if statuses[id] != string(domain.RunSucceeded) || run.Status != domain.RunSucceeded || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || (domain.ValidateSHA256Digest("legacy.marker", markers[id]) != nil && !isLocalFinalizationMarkerV2(markers[id])) {
 			return q.budget.deny()
 		}
 	}
@@ -233,8 +260,8 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 		snapshots = append(snapshots, v)
 	}
 	if s.state.history == nil {
-		s.state.history = &localTerminalHistoryV1{snapshots: snapshots, legacy: legacy}
-	} else if !reflect.DeepEqual(s.state.history.snapshots, snapshots) || !reflect.DeepEqual(s.state.history.legacy, legacy) {
+		s.state.history = &localTerminalHistoryV1{snapshots: snapshots, legacy: legacy, failures: failures}
+	} else if !reflect.DeepEqual(s.state.history.snapshots, snapshots) || !reflect.DeepEqual(s.state.history.legacy, legacy) || !reflect.DeepEqual(s.state.history.failures, failures) {
 		return q.budget.deny()
 	}
 	return nil
@@ -299,6 +326,9 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 		return domain.ErrMembershipDenied
 	}
 	h := s.state.history
+	if err := s.materializeFailureHistories(ctx); err != nil {
+		return err
+	}
 	if len(h.runs)+len(h.runsV2) != 0 || len(h.snapshots) == 0 {
 		return nil
 	}

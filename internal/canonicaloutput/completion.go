@@ -123,19 +123,17 @@ func EncodeCompletionV1(runID domain.RunID, limits domain.ProductLimits, result 
 		if uint64(len(tool.CallID)) > remaining || uint64(len(tool.ToolName)) > remaining-uint64(len(tool.CallID)) {
 			return nil, toolBytesError()
 		}
-		payload, err := json.Marshal(toolEnvelope{Schema: "sessionless.tool-event.v1", CallID: tool.CallID, ToolName: tool.ToolName, Content: json.RawMessage(tool.Payload)})
+		event, err := encodeToolEventV1(runID, index, tool)
 		if err != nil {
 			return nil, err
 		}
+		payload := event.Payload
 		if uint64(len(payload)) > remaining {
 			clear(payload)
 			return nil, toolBytesError()
 		}
 		encodedBytes += uint64(len(payload))
-		plan.events = append(plan.events, EventV1{
-			ID:   domain.SessionEventID(stableID("evt", string(runID), fmt.Sprintf("tool-%04d", index+1), string(tool.Kind), tool.CallID)),
-			Kind: tool.Kind, Payload: payload,
-		})
+		plan.events = append(plan.events, event)
 	}
 	summary := NormalizedSummary(result.Summary)
 	payload, err := json.Marshal(assistantEnvelope{Schema: "sessionless.assistant-message.v1", Summary: summary, ArtifactManifestID: manifestID})
@@ -145,6 +143,16 @@ func EncodeCompletionV1(runID domain.RunID, limits domain.ProductLimits, result 
 	plan.events = append(plan.events, EventV1{ID: domain.SessionEventID(stableID("evt", string(runID), "assistant")), Kind: domain.SessionEventAssistantMessage, Payload: payload, DisplayText: summary})
 	success = true
 	return plan, nil
+}
+
+// The one canonical envelope/identity encoder is shared by successful output
+// and the closed known-error DATA plan. It grants no publication authority.
+func encodeToolEventV1(runID domain.RunID, index int, tool ports.ExecutionToolEvent) (EventV1, error) {
+	payload, err := json.Marshal(toolEnvelope{Schema: "sessionless.tool-event.v1", CallID: tool.CallID, ToolName: tool.ToolName, Content: json.RawMessage(tool.Payload)})
+	if err != nil {
+		return EventV1{}, err
+	}
+	return EventV1{ID: domain.SessionEventID(stableID("evt", string(runID), fmt.Sprintf("tool-%04d", index+1), string(tool.Kind), tool.CallID)), Kind: tool.Kind, Payload: payload}, nil
 }
 
 // EncodeFailureV1 produces the existing single SystemNotice, not an assistant

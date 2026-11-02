@@ -188,6 +188,20 @@ its exact registered object. Structural validation does not prove original
 upload, stop, retirement or erasure. Their dedicated producer and terminal
 replay seal remain required; no table, TTL or complete 32 KiB Run bound changes.
 
+The initial known MCP service-error arm adds optional `Run.terminal_failure`
+V1 correspondence in that SAME payload and Plan/capsule slot. A strict
+`local_f1:` finalization binds the complete authenticated completed frontier,
+full original debit/UNKNOWN financial usage, exact call/result plus one fixed
+failure notice, and `joined_retained` cleanup. Success correspondence, local
+execution evidence, assistant and public output manifest are absent. The
+original private keeper/bridge/writer gates must actually stop and join; the
+same ordinary-body adapter is fenced without erasure. Every retained body key
+must map to its complete persisted operation so deletion can inventory exact
+SQL-owned targets and independently verify capsule/canonical/body bytes before
+its existing destructive admission. Generic Run writers preserve F1 metadata;
+it grants no replay, settled money or erasure. Remote UNKNOWN, missing tails
+and late success-candidate reuse remain reconciliation-only in this slice.
+
 The local completion successor uses that same Run and the existing
 `substrate_execution_evidence` row, with explicitly tagged V2 evidence; it does
 not reinterpret managed V1 rows or add an execution table. Its full original

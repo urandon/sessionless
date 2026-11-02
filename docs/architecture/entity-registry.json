@@ -2587,7 +2587,7 @@
     {
       "table": "quota_expiry_v2",
       "migration": "00026_create_quota_expiry_v2.sql",
-      "role": "Expiry/deadline access-path projection.",
+      "role": "Expiry/deadline access-path projection. Additive migration 00134 adds nullable local_capacity_association String (exact canonical bytes) and local_capacity_digest Utf8 for the explicit local endpoint capacity arm; both NULL retain the genuine subscription arm. Local rows correlate the complete association/digest and physical local-v1/<sha256> address to the original Run/reservation/source; the address is never subscription authority. Existing CREATE lineage and keys remain unchanged, with no backfill, new table or independent lifecycle.",
       "primaryKey": [
         "shard_bucket",
         "expires_at",
@@ -3635,7 +3635,7 @@
     {
       "table": "subscription_scheduler_slots",
       "migration": "00039_create_subscription_scheduler_slots.sql",
-      "role": "Operational queue, scheduler, or dispatch state.",
+      "role": "Operational capacity slot reused by subscription and explicit configured-local execution. Additive migration 00133 adds nullable local_capacity_association String (exact canonical bytes) and local_capacity_digest Utf8. Both NULL retain the genuine legacy subscription arm; local rows require both, complete tenant/owner/resource correlation and the matching local-v1/<sha256> physical address in the existing subscription-labelled key. Partial NULL, malformed bytes, digest/key mismatch or foreign ownership denies; the lookup address is not a domain subscription identity. No new table, key, scheduler, backfill or independent lifecycle.",
       "primaryKey": [
         "tenant_id",
         "subscription_connection_id"

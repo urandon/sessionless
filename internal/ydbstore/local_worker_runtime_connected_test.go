@@ -196,6 +196,19 @@ func TestLocalSessionRuntimeOwnsEachRunOnceConnected(t *testing.T) {
 	}
 	queue.empty = false
 	queue.onAck = func() error {
+		// Only the first delivery executes work. A later terminal duplicate has
+		// an inert factory whose caller registration is closed at RunOnce return.
+		if queue.ack == 0 {
+			// This caller is still live: no cancellation callback can be running.
+			// Observe registrations, not a tail or a substitute for resource joins.
+			if ctx.Err() != nil {
+				return errors.New("runtime ACK used an expired original caller")
+			}
+			if active, started := caller.counts(); active != 0 || started == 0 {
+				t.Errorf("productive ACK retained live caller registrations: active=%d started=%d", active, started)
+				return errors.New("runtime ACK retained original caller registrations")
+			}
+		}
 		got := fixture.Snapshot(t)
 		if got.Finalizations != 1 || got.LeasePresent || queue.wake != queue.ack+1 {
 			return errors.New("runtime ACK before canonical completion and projection wake")

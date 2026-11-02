@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/localcontrolplane"
 	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -99,18 +100,30 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	if err != nil {
 		return nil, func() {}, err
 	}
+	localConfig, err := localcontrolplane.ConfigFromEnv(os.Getenv)
+	if err != nil || (localConfig.Enabled && generations != nil) {
+		return nil, func() {}, localcontrolplane.ErrUnavailable
+	}
+	local, err := localcontrolplane.Open(ctx, localConfig)
+	if err != nil {
+		return nil, func() {}, err
+	}
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
+		_ = local.Close()
 		return nil, func() {}, fmt.Errorf("open YDB: %w", err)
 	}
 	closeYDB := func() {
+		_ = local.Close()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := ydb.Close(closeCtx); err != nil {
 			logger.Error("close web BFF YDB", "component", component, "error", err)
 		}
 	}
-	store, err := ydbstore.New(ydb.DB, ydbstore.Options{AttachedResourceGenerations: generations})
+	storeOptions := local.StoreOptions()
+	storeOptions.AttachedResourceGenerations = generations
+	store, err := ydbstore.New(ydb.DB, storeOptions)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -185,7 +198,16 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
-	harnessBinder, err := webHarnessBinderFromEnv(os.Getenv, store, generations)
+	var harnessBinder ports.HarnessBinder
+	var resources ports.WebResourceStore = store
+	if local != nil {
+		harnessBinder, err = local.Binder(store)
+		if err == nil {
+			resources, err = local.Resources(store)
+		}
+	} else {
+		harnessBinder, err = webHarnessBinderFromEnv(os.Getenv, store, generations)
+	}
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -205,7 +227,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		IDKey:             identityKey,
 		MaxUploadBytes:    maxUploadBytes,
 		AllowedMCPServers: envCSV("WEB_ALLOWED_MCP_SERVERS"),
-	}, sessions, canonicalIngress, store, store, blobs, systemClock{})
+	}, sessions, canonicalIngress, store, resources, blobs, systemClock{})
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err

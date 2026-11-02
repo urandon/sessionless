@@ -14,6 +14,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedresourcegeneration"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/localcontrolplane"
 	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
@@ -41,13 +42,26 @@ func main() {
 		logger.Error("configure attached resource generations", "error", err)
 		os.Exit(1)
 	}
+	localConfig, err := localcontrolplane.ConfigFromEnv(os.Getenv)
+	if err != nil || (localConfig.Enabled && generations != nil) {
+		logger.Error("configure owner-local control plane", "error", localcontrolplane.ErrUnavailable)
+		os.Exit(1)
+	}
+	local, err := localcontrolplane.Open(ctx, localConfig)
+	if err != nil {
+		logger.Error("open owner-local control plane", "error", err)
+		os.Exit(1)
+	}
+	defer local.Close()
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
 		logger.Error("open YDB", "error", err)
 		os.Exit(1)
 	}
 	defer ydb.Close(context.Background())
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttachedResourceGenerations: generations})
+	storeOptions := local.StoreOptions()
+	storeOptions.AttachedResourceGenerations = generations
+	state, err := ydbstore.New(ydb.DB, storeOptions)
 	if err != nil {
 		logger.Error("create state store", "error", err)
 		os.Exit(1)

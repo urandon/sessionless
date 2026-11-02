@@ -94,10 +94,10 @@ returns historical DATA only. Normal startup must use that receipt with
 `OpenExisting` and retain current Source/Store checks, never reinstall per
 message or treat receipt text as execution permission.
 
-This tool delivers the first-install handoff only. Worker startup is described
-below; Web wiring, genuine no-subscription canonical queued admission and the
-separately authorized real-model demo remain under #218. Defaults and schema
-are unchanged.
+This tool delivers the first-install handoff only. Worker and control-plane
+startup are described below. Their source wiring is not acceptance of the
+joined Web/queued/runtime scenario or the separately authorized real-model
+demo under #218. Defaults and schema are unchanged.
 
 ### Local per-delivery worker ownership (library, default off)
 
@@ -145,6 +145,45 @@ a subscription. That separate canonical capacity/admission/release contract,
 Web integration, two productive messages and the authorized real-model demo
 remain under #218. No command, profile or cloud route is enabled by this code
 change; running against services requires its own operation authority.
+
+### Normal local control-plane startup (default off)
+
+For an explicitly selected local deployment, set
+`WEB_LOCAL_EXECUTION_ENABLED=true` in both `web-bff` and `reconciler`, with
+`SESSIONLESS_ENVIRONMENT=local` and the same three existing `WEB_LOCAL_*`
+installation/executable/receipt paths described above. The worker separately
+requires `WORKER_LOCAL_EXECUTION_ENABLED=true`. Every process reopens the same
+original installation with `OpenExisting`; only the explicit installer publishes
+a profile. Missing/invalid paths, non-noauth profiles, cloud environments and
+mixed attached-resource configuration fail closed. No model server is started,
+downloaded, probed or implicitly substituted. The BFF never performs inference.
+
+The BFF installs the original Source into the three Store verifier slots and
+borrows it for the trusted local binder and resource-status view. The allocating
+reconciler installs the same verifiers for ordinary dispatch/wake/recovery.
+Compute status reads current writable Session/member/participant and original
+profile/audit at database time, without creating an Attempt, publishing funding,
+reserving capacity or touching the inference endpoint. Its public
+`kind=local_development` observation has no subscription, entitlement or provider
+quota fields. The UI labels it as execution on the owner's machine, not managed
+cloud compute. Readiness permits submitting to the queue; it is not a reservation
+or a promise that execution capacity is currently free.
+
+Submit retains duplicate-first canonical lookup. A new message uses the
+existing local binder and missing-component publisher/recovery path; canonical
+commit and scheduler admission independently recheck current authority. Endpoint,
+profile, owner and payer cannot be selected by the browser. Local runs keep the
+explicit no-subscription capacity association, including historical labels after
+the installation is closed. Default deterministic and explicit attached modes
+retain their existing behavior; this local deployment does not mix those modes
+in one configured Store or replace either required MVP route.
+
+Before enabling local writers, apply the separately reviewed additive slot/expiry
+schema through its authorized procedure and drain executors that do not support
+the explicit local arm. Source/fixture permission does not authorize applying
+migrations, running the installer/stand, contacting a model or enabling a cloud
+profile. Joined normal Web ingress, refresh/re-login, worker integration and a
+finite owner-approved real-model run remain separate acceptance evidence.
 
 ### Attached execution composition (default off)
 

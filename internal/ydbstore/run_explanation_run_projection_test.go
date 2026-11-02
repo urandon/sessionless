@@ -17,20 +17,22 @@ import (
 
 // Independent expected statement: the fixture refuses full JSON transfer,
 // alternate paths, missing per-field caps or a non-point selector. It simulates
-// these documented JSON_VALUE semantics; it is not a substitute for real YDB.
+// documented strict JSON_VALUE/JSON_EXISTS/JSON_QUERY semantics; it is not a
+// substitute for real YDB. Only a bounded selected object may join the scalars.
 const explanationExpectedRunProjectionSQL = `SELECT
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.tenant_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.session_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.trigger_event_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
- SUBSTRING(CAST(JSON_VALUE(payload,"strict $.subscription_connection_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ CASE WHEN JSON_EXISTS(payload,"strict $.subscription_connection_id" FALSE ON ERROR) THEN CASE WHEN JSON_VALUE(payload,"strict $.subscription_connection_id.type()" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR)="null" THEN CAST("" AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"strict $.subscription_connection_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161) END ELSE CAST(NULL AS String) END,
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.status" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,33),
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.idempotency_key" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
  CASE WHEN JSON_VALUE(payload,"$.cancellation_requested_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.cancellation_requested_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
  CASE WHEN JSON_VALUE(payload,"$.started_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.started_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
  CASE WHEN JSON_VALUE(payload,"$.finished_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.finished_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
  SUBSTRING(CAST(JSON_VALUE(payload,"strict $.created_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,36),
- SUBSTRING(CAST(JSON_VALUE(payload,"strict $.updated_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,36)
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.updated_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,36),
+ CASE WHEN JSON_EXISTS(payload,"strict $.local_capacity_association" FALSE ON ERROR) THEN SUBSTRING(CAST(JSON_QUERY(payload,"strict $.local_capacity_association" WITHOUT WRAPPER ERROR ON EMPTY ERROR ON ERROR) AS String),0,1025) ELSE CAST(NULL AS String) END
  FROM runs WHERE tenant_id=$1 AND run_id=$2`
 
 func explanationRunProjectionRows(query string, args []driver.NamedValue, row []driver.Value) (driver.Rows, error) {
@@ -56,6 +58,13 @@ func explanationRunProjectionRows(query string, args []driver.NamedValue, row []
 	for i, key := range keys {
 		value, exists := body[key]
 		optional := i >= 7 && i <= 9
+		if i == 4 && !exists {
+			continue // Only the final Go selected-arm check may admit this absence.
+		}
+		if i == 4 && string(value) == "null" {
+			values[i] = "" // Present null is not the absent subscription arm.
+			continue
+		}
 		if !exists || string(value) == "null" {
 			if optional {
 				continue
@@ -77,6 +86,19 @@ func explanationRunProjectionRows(query string, args []driver.NamedValue, row []
 		}
 		values[i] = scalar
 	}
+	var local driver.Value
+	if object, exists := body["local_capacity_association"]; exists {
+		// WITHOUT WRAPPER rejects scalar/null; arrays reach the Go schema guard.
+		trimmed := strings.TrimSpace(string(object))
+		if len(trimmed) == 0 || trimmed[0] != '{' && trimmed[0] != '[' {
+			return nil, errors.New("fixture JSON_QUERY requires an object or array")
+		}
+		if len(trimmed) > 1025 {
+			trimmed = trimmed[:1025]
+		}
+		local = trimmed
+	}
+	values = append(values, local)
 	return &explanationFixtureRows{values: values}, nil
 }
 
@@ -288,6 +310,9 @@ func TestRunExplanationProjectionFixtureRejectsUnboundedOrWrongSQL(t *testing.T)
 		`SELECT SUBSTRING(CAST(payload AS String),0,8193) FROM runs WHERE tenant_id=$1 AND run_id=$2`,
 		strings.Replace(explanationExpectedRunProjectionSQL, ",0,161)", ",0,160)", 1),
 		strings.Replace(explanationExpectedRunProjectionSQL, "strict $.id", "$.id", 1),
+		strings.Replace(explanationExpectedRunProjectionSQL, "strict $.local_capacity_association", "$.local_capacity_association", -1),
+		strings.Replace(explanationExpectedRunProjectionSQL, "WITHOUT WRAPPER", "WITH CONDITIONAL WRAPPER", 1),
+		strings.Replace(explanationExpectedRunProjectionSQL, ",0,1025)", ",0,1024)", 1),
 		strings.Replace(explanationExpectedRunProjectionSQL, `CAST(JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String)`, `JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR)`, 1),
 	} {
 		if _, err := explanationRunProjectionRows(query, args, f.rows["runs"]); err == nil {

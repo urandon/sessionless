@@ -242,9 +242,15 @@ func (service *Service) SubmitMessage(
 		if err != nil {
 			return webcontract.CreateMessageResponse{}, err
 		}
+		kind := webcontract.ComputeSubscription
+		entitlement, quota := domain.EntitlementUnknown, domain.ProviderQuotaUnknown
+		if run.Run.LocalCapacityAssociation != nil {
+			kind, entitlement, quota = webcontract.ComputeLocalDevelopment, "", ""
+		}
 		return messageResponse(existing, webcontract.ComputeConnection{
-			Provider: run.Provider, Entitlement: domain.EntitlementUnknown,
-			Quota: domain.ProviderQuotaUnknown, ObservedAt: run.Run.UpdatedAt,
+			Kind:     kind,
+			Provider: run.Provider, Entitlement: entitlement,
+			Quota: quota, ObservedAt: run.Run.UpdatedAt,
 		}), nil
 	}
 	connections, err := service.resources.ResolveComputeConnectionsForUser(
@@ -256,6 +262,10 @@ func (service *Service) SubmitMessage(
 	}
 	if len(connections) != 1 {
 		return webcontract.CreateMessageResponse{}, ErrComputeUnavailable
+	}
+	compute, err := projectComputeConnection(connections[0])
+	if err != nil {
+		return webcontract.CreateMessageResponse{}, err
 	}
 	input.SubscriptionConnectionID = connections[0].ID
 	var claimed []domain.UploadIntent
@@ -310,10 +320,7 @@ func (service *Service) SubmitMessage(
 		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		return webcontract.CreateMessageResponse{}, err
 	}
-	return messageResponse(result, webcontract.ComputeConnection{
-		Provider: connections[0].Provider, Entitlement: connections[0].Entitlement,
-		Quota: connections[0].Quota, ObservedAt: connections[0].ObservedAt,
-	}), nil
+	return messageResponse(result, compute), nil
 }
 
 // ComputeStatus returns only the participant-authorized, credential-free
@@ -345,16 +352,33 @@ func (service *Service) ComputeStatus(
 	case 0:
 		return webcontract.ComputeStatusResponse{Availability: webcontract.ComputeNotConfigured}, nil
 	case 1:
+		compute, err := projectComputeConnection(connections[0])
+		if err != nil {
+			return webcontract.ComputeStatusResponse{}, err
+		}
 		return webcontract.ComputeStatusResponse{
 			Availability: webcontract.ComputeReady,
-			Connection: &webcontract.ComputeConnection{
-				Provider: connections[0].Provider, Entitlement: connections[0].Entitlement,
-				Quota: connections[0].Quota, ObservedAt: connections[0].ObservedAt,
-			},
+			Connection:   &compute,
 		}, nil
 	default:
 		return webcontract.ComputeStatusResponse{Availability: webcontract.ComputeAmbiguous}, nil
 	}
+}
+
+func projectComputeConnection(c ports.ComputeConnectionState) (webcontract.ComputeConnection, error) {
+	if c.ObservedAt.IsZero() || c.Provider == "" {
+		return webcontract.ComputeConnection{}, ErrComputeUnavailable
+	}
+	if c.LocalCapacityAssociation != nil {
+		if c.LocalCapacityAssociation.Validate() != nil || c.ID != "" || c.Entitlement != "" || c.Quota != "" || c.Provider != "local_model" {
+			return webcontract.ComputeConnection{}, ErrComputeUnavailable
+		}
+		return webcontract.ComputeConnection{Kind: webcontract.ComputeLocalDevelopment, Provider: c.Provider, ObservedAt: c.ObservedAt}, nil
+	}
+	if c.ID.Validate() != nil || !c.Entitlement.Valid() || !c.Quota.Valid() {
+		return webcontract.ComputeConnection{}, ErrComputeUnavailable
+	}
+	return webcontract.ComputeConnection{Kind: webcontract.ComputeSubscription, Provider: c.Provider, Entitlement: c.Entitlement, Quota: c.Quota, ObservedAt: c.ObservedAt}, nil
 }
 
 func messageMutationDigest(request webcontract.CreateMessageRequest) (string, error) {

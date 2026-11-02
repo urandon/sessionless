@@ -180,14 +180,23 @@ disjoint and together cover the original complete non-session local prefix,
 including future families through the remainder. This keeps the ordinary
 test names, examples, and fuzz seed corpora in the first execution, and gives
 each prefixed family exactly one execution. Connected work uses two sequential
-uncached executions: `-run='^TestLocalSessionTerminal'`, then
-`-run='^TestLocalSession' -skip='^TestLocalSessionTerminal'`. The connected
+uncached executions: `-run='^TestLocalSession(Terminal|Worker)'`, then
+`-run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)'`. The connected
 selections are disjoint and together cover the original complete
 `^TestLocalSession` prefix. All six executions retain the race detector,
 `-count=1`, and the existing 15-minute per-binary bound. They do not drop tests,
 subtests, examples or fuzz seed corpora or shorten scenarios. Every execution
 covers the same complete package patterns: matching names exist outside the
 state-store package too.
+The first connected execution groups the complete terminal and worker families;
+the second retains every other connected family, including future prefixes.
+This redistributes cumulative runtime without adding a test execution or
+increasing either the per-binary or CI-job timeout. A timeout stack naming a
+late worker subtest is not proof that subtest is stuck: isolate it and measure
+the complete proposed partitions before accepting the redistribution. The
+source-policy test checks this disjoint union against both adversarial future
+names and the actual repository test-name corpus; only fresh full executions
+and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
 `make test-mcp-offline`: a separate uncached race/shuffle execution with a
 five-minute bound for the explicitly tagged synthetic MCP transport fixture.
@@ -223,9 +232,27 @@ local/release retains four. No test is omitted or duplicated. Race detection,
 This addresses an observed cumulative binary timeout, not an inference that
 the test named in its final stack was hung. Actual timings still qualify the split.
 Local/release `make test-ordinary` and `ci-core` retain the complete four-command
-ordinary contract. A parallel 30-minute `go-connected` job runs the two
-sequential normal executions over the same full package patterns, followed by
-the bounded additive MCP offline gate in `make test-connected`. It needs no Web build:
+ordinary contract. A parallel 30-minute `go-connected` job runs
+`make test-connected-ci`: complete Terminal and non-Terminal/non-Worker
+selections over the same full package patterns, without the additive MCP gate.
+The existing `go-local` job runs the complete connected Worker family through
+`make test-connected-worker-ci` after its two ordinary tail executions. CI thus
+uses three disjoint normal connected executions instead of the local two:
+Terminal, Worker, and the remaining complete Session prefix. Every test is
+selected once, including future families; each invocation still covers the
+same complete package patterns with race detection, count1 and a 15-minute
+binary bound. There is one more binary/package initialization, not shared
+process state or test-order dependence. The source-policy test checks both
+local and CI unions against adversarial names and the actual corpus. The existing
+`verify` job runs the unchanged `make test-mcp-offline` as a required step after
+`make ci-core-base` instead. All three Go jobs keep their 30-minute bound; the offline
+gate keeps its five-minute binary bound, race/shuffle/uncached flags and
+additive-only overlay guards. This redistributes work across the existing jobs,
+not test coverage or budgets. The source-policy test requires exactly one CI
+MCP invocation and all three complete CI connected partitions; a failure in any job
+still prevents all dependent native and image gates. Local/release
+`make test-connected` remains the two normal executions followed by MCP, with
+stop-on-failure ordering unchanged. The connected job needs no Web build:
 the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join all three Go jobs, preserving their original complete-unit-test predecessor.

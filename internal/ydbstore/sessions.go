@@ -789,6 +789,36 @@ func writeBindingTx(ctx context.Context, tx *stateTx, binding domain.FrontendBin
 }
 
 func activeSessionParticipants(ctx context.Context, tx *stateTx, sessionID domain.SessionID, maxRows uint64) ([]domain.SessionParticipant, error) {
+	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
+		if maxRows == ^uint64(0) {
+			return nil, q.budget.deny()
+		}
+		rows, err := q.QueryContext(ctx, ownedActiveSessionParticipantsSQL, tx.tenantID, sessionID, domain.SessionParticipantActive, maxRows+1)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var participants []domain.SessionParticipant
+		for rows.Next() {
+			var raw, tenant, session, user, status string
+			returned, err := scanOwnedCurrentRow(rows, &raw, &tenant, &session, &user, &status)
+			if q.budget.materialized(q.callback, returned) != nil {
+				return nil, domain.ErrMembershipDenied
+			}
+			if err != nil || uint64(len(participants)) >= maxRows || len(raw) > 8192 || len(tenant) > 160 || len(session) > 160 || len(user) > 160 || len(status) > 160 {
+				return nil, q.budget.deny()
+			}
+			var p domain.SessionParticipant
+			if decodeCurrentExecutionRecord(raw, &p, computeChoiceParticipantFields) != nil || p.Validate() != nil || p.TenantID != tx.tenantID || p.SessionID != sessionID || string(p.TenantID) != tenant || string(p.SessionID) != session || string(p.UserID) != user || string(p.Status) != status || p.Status != domain.SessionParticipantActive {
+				return nil, q.budget.deny()
+			}
+			participants = append(participants, p)
+		}
+		if rows.Err() != nil {
+			return nil, q.budget.deny()
+		}
+		return participants, nil
+	}
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		`SELECT record FROM session_participants
 		 WHERE tenant_id = $1 AND session_id = $2 AND status = $3 LIMIT $4`,
@@ -807,6 +837,11 @@ func activeSessionParticipants(ctx context.Context, tx *stateTx, sessionID domai
 	}
 	return participants, nil
 }
+
+const ownedActiveSessionParticipantsSQL = `SELECT SUBSTRING(CAST(record AS String),0,8193),
+ SUBSTRING(CAST(tenant_id AS String),0,161), SUBSTRING(CAST(session_id AS String),0,161),
+ SUBSTRING(CAST(user_id AS String),0,161), SUBSTRING(CAST(status AS String),0,161)
+ FROM session_participants WHERE tenant_id = $1 AND session_id = $2 AND status = $3 LIMIT $4`
 
 func insertActivityTx(ctx context.Context, tx *stateTx, session domain.Session, userID domain.UserID) error {
 	bucket, err := ydbpartition.BucketV1(string(session.ID))

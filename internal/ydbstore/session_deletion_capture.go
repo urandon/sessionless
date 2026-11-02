@@ -1104,6 +1104,17 @@ func validateDeletionCaptureScalars(table string, cells map[string]deletionCaptu
 	if mapping == "" {
 		return domain.ErrMembershipDenied
 	}
+	if run, ok := target.(*domain.Run); ok {
+		if run.Validate() != nil {
+			return domain.ErrMembershipDenied
+		}
+		if run.LocalCapacityAssociation != nil {
+			// Only the validated closed local arm omits the JSON subscription
+			// member. Its original SQL writer still stores a PRESENT empty Utf8;
+			// NULL, nonempty, mixed or explicit-null JSON remains invalid.
+			mapping = strings.Replace(mapping, "subscription_connection_id", "subscription_connection_id=~subscription_connection_id", 1)
+		}
+	}
 	return compareDeletionCapturePaths(cells, body, mapping)
 }
 

@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 
 import {
   ApiError,
+  type ComputeStatus,
   type ConditionalResult,
   type EventPage,
   type Identity,
@@ -54,6 +55,7 @@ function api(overrides: Partial<SessionDetailApi> = {}): SessionDetailApi {
     getComputeStatus: vi.fn().mockResolvedValue({
       availability: 'ready',
       connection: {
+        kind: 'subscription',
         provider: 'openai',
         entitlement: 'active',
         quota: 'available',
@@ -70,6 +72,7 @@ function api(overrides: Partial<SessionDetailApi> = {}): SessionDetailApi {
       run_id: 'run-1',
       created: true,
       compute: {
+        kind: 'subscription',
         provider: 'openai',
         entitlement: 'active',
         quota: 'available',
@@ -124,6 +127,7 @@ describe('SessionDetail', () => {
       getComputeStatus: vi.fn().mockResolvedValue({
         availability: 'ready',
         connection: {
+          kind: 'subscription',
           provider: 'openai',
           entitlement: 'active',
           quota: 'exhausted',
@@ -140,6 +144,80 @@ describe('SessionDetail', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
+  it('allows an owner-local model and sends with the returned local compute connection', async () => {
+    const localConnection: NonNullable<ComputeStatus['connection']> = {
+      kind: 'local_development',
+      provider: 'local_model',
+      observed_at: '2026-08-18T01:00:00Z',
+    };
+    const getComputeStatus = vi.fn().mockResolvedValue({
+      availability: 'ready',
+      connection: localConnection,
+    } satisfies ComputeStatus);
+    const createMessage = vi.fn().mockResolvedValue({
+      session_id: 'ses-1',
+      event_id: 'evt-local',
+      sequence: 2,
+      run_id: 'run-local',
+      created: true,
+      compute: localConnection,
+    });
+    const client = api({ getComputeStatus, createMessage });
+    render(SessionDetail, { client, sessionId: 'ses-1' });
+
+    expect(
+      await screen.findByText('Local model · runs on the owner’s machine'),
+    ).toBeInTheDocument();
+    const composer = await screen.findByLabelText('Message');
+    await fireEvent.input(composer, { target: { value: 'use my local model' } });
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(createMessage).toHaveBeenCalledOnce());
+    expect(getComputeStatus).toHaveBeenCalledTimes(2);
+    expect(createMessage).toHaveBeenCalledWith(
+      'ses-1',
+      expect.objectContaining({ text: 'use my local model' }),
+      expect.any(AbortSignal),
+    );
+    expect(await createMessage.mock.results[0]?.value).toMatchObject({
+      compute: { kind: 'local_development', provider: 'local_model' },
+    });
+  });
+
+  it.each([
+    [
+      'unknown kind',
+      { kind: 'unknown', provider: 'local_model', observed_at: '2026-08-18T01:00:00Z' },
+    ],
+    [
+      'mixed local/subscription fields',
+      {
+        kind: 'local_development',
+        provider: 'openai',
+        entitlement: 'active',
+        quota: 'available',
+        observed_at: '2026-08-18T01:00:00Z',
+      },
+    ],
+  ])('does not allow sending for %s compute data', async (_name, connection) => {
+    const createMessage = vi.fn();
+    const client = api({
+      getComputeStatus: vi.fn().mockResolvedValue({
+        availability: 'ready',
+        connection,
+      } as unknown as ComputeStatus),
+      createMessage,
+    });
+    render(SessionDetail, { client, sessionId: 'ses-1' });
+
+    const composer = await screen.findByLabelText('Message');
+    await fireEvent.input(composer, { target: { value: 'must stay blocked' } });
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(createMessage).not.toHaveBeenCalled();
+  });
+
   it('keeps the message idempotency key across an explicit retry', async () => {
     const createMessage = vi
       .fn()
@@ -151,6 +229,7 @@ describe('SessionDetail', () => {
         run_id: 'run-1',
         created: true,
         compute: {
+          kind: 'subscription',
           provider: 'openai',
           entitlement: 'active',
           quota: 'available',
@@ -213,6 +292,7 @@ describe('SessionDetail', () => {
         run_id: 'run-1',
         created: true,
         compute: {
+          kind: 'subscription',
           provider: 'openai',
           entitlement: 'active',
           quota: 'available',
@@ -834,6 +914,7 @@ describe('SessionDetail explanation lifecycle', () => {
             run_id: 'old-run',
             created: true,
             compute: {
+              kind: 'subscription',
               provider: 'openai',
               entitlement: 'active',
               quota: 'available',
@@ -849,6 +930,7 @@ describe('SessionDetail explanation lifecycle', () => {
           return {
             availability: 'ready',
             connection: {
+              kind: 'subscription',
               provider: 'openai',
               entitlement: 'active',
               quota: 'available',
@@ -954,6 +1036,7 @@ describe('SessionDetail explanation lifecycle', () => {
       const ready = {
         availability: 'ready' as const,
         connection: {
+          kind: 'subscription' as const,
           provider: 'openai',
           entitlement: 'active' as const,
           quota: 'available' as const,

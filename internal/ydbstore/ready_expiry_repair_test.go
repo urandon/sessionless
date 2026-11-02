@@ -103,7 +103,7 @@ func (t repairFixtureTx) Commit() error {
 }
 func (t repairFixtureTx) Rollback() error { t.f.rollbacks++; t.f.pending = nil; return nil }
 
-var repairCaps = regexp.MustCompile(`SUBSTRING\(CAST\([^)]* AS String\),0,([0-9]+)\)`)
+var repairCaps = regexp.MustCompile(`SUBSTRING\((?:CAST\([^)]* AS String\)|[a-z_]+),0,([0-9]+)\)`)
 
 func (f *repairSQLFixture) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
 	if e := f.check(ctx); e != nil {
@@ -113,9 +113,6 @@ func (f *repairSQLFixture) QueryContext(ctx context.Context, q string, args []dr
 	if f.failRead {
 		return nil, errors.New("SECRET read failure")
 	}
-	if !strings.Contains(q, " WHERE tenant_id=$1 AND ") || len(args) != 2 || args[0].Value != string(f.request.TenantID) {
-		return nil, errors.New("unscoped read")
-	}
 	parts := strings.Fields(q)
 	table := ""
 	for i, x := range parts {
@@ -124,8 +121,19 @@ func (f *repairSQLFixture) QueryContext(ctx context.Context, q string, args []dr
 			break
 		}
 	}
+	if table == "quota_expiry_v2" {
+		if !strings.Contains(q, "WHERE shard_bucket=$1 AND expires_at=$2 AND tenant_id=$3 AND quota_reservation_id=$4") || len(args) != 4 || args[2].Value != string(f.request.TenantID) || args[3].Value != f.request.ID {
+			return nil, errors.New("unscoped quota expiry read")
+		}
+		bucket, _ := ydbpartition.BucketV1(f.request.ID)
+		if args[0].Value != int64(bucket) || args[1].Value != f.rows["quota_reservations"][7] {
+			return nil, errors.New("wrong exact quota expiry key")
+		}
+	} else if !strings.Contains(q, " WHERE tenant_id=$1 AND ") || len(args) != 2 || args[0].Value != string(f.request.TenantID) {
+		return nil, errors.New("unscoped read")
+	}
 	switch table {
-	case "runs", "attempts", "leases", "lease_heads", "dispatch_outbox", "quota_reservations", "telegram_delivery_outbox", "session_deletions":
+	case "runs", "attempts", "leases", "lease_heads", "dispatch_outbox", "quota_reservations", "quota_expiry_v2", "telegram_delivery_outbox", "session_deletions":
 	default:
 		return nil, errors.New("unexpected table")
 	}

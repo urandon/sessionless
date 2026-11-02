@@ -350,6 +350,7 @@ func (service *Service) IngestBound(
 		RunID:                    plan.RunID,
 		AttemptID:                attemptID,
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
+		LocalCapacityAssociation: executionAuthority.Clone().LocalCapacityAssociation,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, plan.RunID)),
 		Artifacts:                artifacts, DispatchID: plan.DispatchID,
 		AllowedMCPServers:          append([]string(nil), input.AllowedMCPServers...),
@@ -476,6 +477,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		RunID:                      runID,
 		AttemptID:                  attemptID,
 		SubscriptionConnectionID:   input.SubscriptionConnectionID,
+		LocalCapacityAssociation:   executionAuthority.Clone().LocalCapacityAssociation,
 		ManifestID:                 domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, runID)),
 		Artifacts:                  artifacts,
 		DispatchID:                 dispatchID,
@@ -541,8 +543,10 @@ func validateInput(input UserInput) error {
 	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 {
 		return domain.ValidationError{Field: "user_input", Reason: "text or an attachment is required"}
 	}
-	if err := input.SubscriptionConnectionID.Validate(); err != nil {
-		return err
+	if input.SubscriptionConnectionID != "" {
+		if err := input.SubscriptionConnectionID.Validate(); err != nil {
+			return err
+		}
 	}
 	for _, attachment := range input.Attachments {
 		if strings.TrimSpace(attachment.MediaType) == "" {
@@ -567,8 +571,10 @@ func validateBoundInput(input BoundUserInput) error {
 	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 {
 		return domain.ValidationError{Field: "user_input", Reason: "text or an attachment is required"}
 	}
-	if err := input.SubscriptionConnectionID.Validate(); err != nil {
-		return err
+	if input.SubscriptionConnectionID != "" {
+		if err := input.SubscriptionConnectionID.Validate(); err != nil {
+			return err
+		}
 	}
 	for _, attachment := range input.Attachments {
 		if strings.TrimSpace(attachment.MediaType) == "" {

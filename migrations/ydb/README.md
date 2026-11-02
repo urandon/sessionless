@@ -449,6 +449,48 @@ and Goose/checksum histories under the migration safety protocol; do not blindly
 retry, ignore an already-exists error or advance metadata by hand. This change
 adds no automatic ambiguous-ADD recovery or destructive down operation.
 
+## Configured-local capacity extension
+
+Migrations `00133` and `00134` add nullable `local_capacity_association String`
+and `local_capacity_digest Utf8` to the existing `subscription_scheduler_slots`
+and `quota_expiry_v2` tables respectively. They are two files because each
+migration owns exactly one schema statement; each ALTER adds both columns.
+Original `00039`/`00026` CREATE bytes, primary keys, legacy subscription rows,
+retention and the 105 historical/101 active table counts remain unchanged.
+There is no default, data backfill, new table/index or TTL operation.
+
+The local record retains exact canonical JSON bytes, their lowercase SHA256
+digest and the existing physical `subscription_connection_id` Utf8 column's
+`local-v1/<sha256>` capacity address. This is a lookup key, never a domain
+subscription identity or an entitlement. Both new columns NULL select the
+genuine legacy arm; local rows require both plus complete byte/digest/key and
+original tenant/owner/resource correlation. Partial NULL or conflicting rows
+deny rather than being repaired, overwritten or interpreted as subscriptions.
+See the [accepted contract](../../docs/design/configured-local-inference.md#local-resource-capacity-without-a-fabricated-subscription).
+
+Before enabling local writers, under separate deployment/migration authority:
+
+1. Preserve the original subscription data and checksum history; inspect the
+   exact schema and apply both additive files only to the authorized target.
+2. Upgrade all canonical admission/slot/expiry writers and all control-plane,
+   worker, repair and reconciler readers, terminal-release and queued-expiry
+   consumers to the explicit arm. Inventory and drain every old executor before
+   local rows can appear; none may cast the physical local address into a
+   subscription identity. Preserve deployment/drain evidence.
+3. Verify complete genuine local admission, claim, terminal/replay release and
+   queued-only expiry with the original finite hold and association before
+   enabling the separately configured local writer. Do not release running or
+   unknown effects or reconstruct missing holds during this transition.
+
+The source DDL and offline policy checks do not apply migrations, implement the
+bounded runtime consumers, certify deployed drain or activate local execution.
+On an ambiguous ADD (DDL succeeded but its version was not recorded), stop and
+inspect the exact schema, file checksums and Goose/checksum histories under the
+existing safety protocol. Do not blindly replay, ignore already-exists errors,
+advance metadata by hand or run destructive down DDL. Disabling local writers
+does not make an old binary safe to read retained local rows; keep exact-arm
+consumers for their original release/retention lifecycle.
+
 References:
 
 - https://ydb.tech/docs/en/integrations/migration/goose

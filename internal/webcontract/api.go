@@ -380,11 +380,19 @@ type UploadCommitResponse struct {
 }
 
 type ComputeConnection struct {
+	Kind        ComputeConnectionKind     `json:"kind"`
 	Provider    string                    `json:"provider"`
-	Entitlement domain.EntitlementState   `json:"entitlement"`
-	Quota       domain.ProviderQuotaState `json:"quota"`
+	Entitlement domain.EntitlementState   `json:"entitlement,omitempty"`
+	Quota       domain.ProviderQuotaState `json:"quota,omitempty"`
 	ObservedAt  time.Time                 `json:"observed_at"`
 }
+
+type ComputeConnectionKind string
+
+const (
+	ComputeSubscription     ComputeConnectionKind = "subscription"
+	ComputeLocalDevelopment ComputeConnectionKind = "local_development"
+)
 
 type ComputeAvailability string
 

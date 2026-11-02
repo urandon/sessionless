@@ -824,6 +824,11 @@
     if (status.availability === 'ambiguous') return 'Choose one compute connection before sending.';
     const connection = status.connection;
     if (!connection) return 'Compute status is unavailable.';
+    if (connection.kind === 'local_development') {
+      return computeAllowsSend(status)
+        ? 'Local model · runs on the owner’s machine'
+        : 'Compute status is unavailable.';
+    }
     if (connection.entitlement !== 'active') return 'Compute subscription needs attention.';
     if (connection.quota === 'exhausted') return 'Compute quota is exhausted.';
     return `${connection.provider} · quota ${connection.quota}`;
@@ -847,8 +852,13 @@
   function computeAllowsSend(status: ComputeStatus | undefined): boolean {
     return (
       status?.availability === 'ready' &&
-      status.connection?.entitlement === 'active' &&
-      status.connection.quota !== 'exhausted'
+      ((status.connection?.kind === 'local_development' &&
+        status.connection.provider === 'local_model' &&
+        !('entitlement' in status.connection) &&
+        !('quota' in status.connection)) ||
+        (status.connection?.kind === 'subscription' &&
+          status.connection.entitlement === 'active' &&
+          status.connection.quota !== 'exhausted'))
     );
   }
 

@@ -124,5 +124,14 @@ func readOwnedAdmissionSources(ctx context.Context, q *ownedAuthorityQuery, sour
 	if source.ValidateAgainstCurrentSources(profile, spending, q.at) != nil {
 		return denied()
 	}
+	// Retain only this callback's complete exact-key DATA. The join has already
+	// charged and checked every original physical scalar against this record;
+	// a subsequent local resource check need not fetch the same head again.
+	// Existing Exec invalidation removes it before any write to the head table.
+	key, err := ownedProfileProjectionCacheKey(l)
+	if err != nil {
+		return denied()
+	}
+	q.cacheMetadata(key, ownedProfileCurrentSQL, pRaw, nil)
 	return ownedCurrentSnapshot{profile: profile, spending: spending}, nil
 }

@@ -24,11 +24,17 @@ const sessionMaterialBoundarySQL = `SELECT SUBSTRING(CAST(record AS String),0,81
 
 // The byte charge is made BEFORE parsing, including oversize detection bytes
 // and all projected scalars. Writers do not inherit the readonly choice budget;
-// passing nil here is not a claim that their total transaction work is bounded.
-// Selection integration must supply its operation-wide materialization charge.
+// An owned canonical callback supplies its ORIGINAL budget even when a generic
+// writer passes nil. Other writers/selection callers keep their existing charge.
 func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement string,
 	tenant domain.TenantID, session domain.SessionID, sequence uint64, charge func(int64) error,
 ) (sessioncontext.SessionMaterialPrefixV1, bool, error) {
+	badSource := func() (sessioncontext.SessionMaterialPrefixV1, bool, error) {
+		if q, ok := query.(*ownedAuthorityQuery); ok && charge == nil {
+			_ = q.budget.deny()
+		}
+		return sessioncontext.SessionMaterialPrefixV1{}, false, errSessionMaterialSource
+	}
 	var record, rowTenant, rowSession, lastID, digest string
 	var version, through uint64
 	args := []any{tenant, session}
@@ -37,9 +43,14 @@ func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement 
 	case sessionMaterialBoundarySQL:
 		args = append(args, sequence)
 	default:
-		return sessioncontext.SessionMaterialPrefixV1{}, false, errSessionMaterialSource
+		return badSource()
 	}
-	err := query.QueryRowContext(ctx, statement, args...).Scan(&record, &version, &through, &rowTenant, &rowSession, &lastID, &digest)
+	var err error
+	if q, ok := query.(*ownedAuthorityQuery); ok && charge == nil {
+		err = q.scanMetadata(ctx, statement, args, &record, &version, &through, &rowTenant, &rowSession, &lastID, &digest)
+	} else {
+		err = query.QueryRowContext(ctx, statement, args...).Scan(&record, &version, &through, &rowTenant, &rowSession, &lastID, &digest)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessioncontext.SessionMaterialPrefixV1{}, false, nil
 	}
@@ -53,12 +64,12 @@ func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement 
 	}
 	if len(record) > sessioncontext.MaxSessionMaterialPrefixBytesV1 || len(rowTenant) > 160 || len(rowSession) > 160 || len(lastID) > 160 || len(digest) != 64 ||
 		version != 1 || through != sequence || rowTenant != string(tenant) || rowSession != string(session) {
-		return sessioncontext.SessionMaterialPrefixV1{}, false, errSessionMaterialSource
+		return badSource()
 	}
 	prefix, err := sessioncontext.DecodeSessionMaterialPrefixV1([]byte(record))
 	if err != nil || prefix.Version != uint32(version) || prefix.ThroughSequence != through ||
 		prefix.TenantID != tenant || prefix.SessionID != session || string(prefix.LastEventID) != lastID || prefix.PrefixDigest != digest {
-		return sessioncontext.SessionMaterialPrefixV1{}, false, errSessionMaterialSource
+		return badSource()
 	}
 	return prefix, true, nil
 }

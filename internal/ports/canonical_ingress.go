@@ -106,6 +106,7 @@ type CanonicalUserEventCommit struct {
 	RunID                      domain.RunID
 	AttemptID                  domain.AttemptID
 	SubscriptionConnectionID   domain.SubscriptionConnectionID
+	LocalCapacityAssociation   *domain.LocalCapacityAssociationV1
 	ManifestID                 domain.ArtifactManifestID
 	Artifacts                  []domain.Artifact
 	DispatchID                 domain.DispatchOutboxID
@@ -131,6 +132,7 @@ type HarnessBindingRequest struct {
 }
 
 type ManagedExecutionAuthorityV2 struct {
+	LocalCapacityAssociation   *domain.LocalCapacityAssociationV1
 	ExecutionPlacementV2       domain.ExecutionPlacementV2
 	HarnessBinding             domain.HarnessBindingV2
 	SubstrateBinding           domain.SubstrateBindingV1
@@ -143,6 +145,7 @@ type ManagedExecutionAuthorityV2 struct {
 // carries neither. It is sealed once before the canonical transaction, not a
 // second admission or execution state machine.
 type ExecutionAuthorityV2 struct {
+	LocalCapacityAssociation   *domain.LocalCapacityAssociationV1
 	ExecutionPlacementV2       domain.ExecutionPlacementV2
 	HarnessBinding             domain.HarnessBindingV2
 	SubstrateBinding           *domain.SubstrateBindingV1
@@ -153,16 +156,25 @@ type ExecutionAuthorityV2 struct {
 func (authority ManagedExecutionAuthorityV2) ExecutionAuthority() ExecutionAuthorityV2 {
 	substrate := authority.SubstrateBinding
 	cost := authority.AdmissionCostCeiling.Clone()
-	return ExecutionAuthorityV2{
+	result := ExecutionAuthorityV2{
 		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
 		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
 		OwnedExecutionSourceRecord: authority.OwnedExecutionSourceRecord,
 	}
+	if authority.LocalCapacityAssociation != nil {
+		copy := *authority.LocalCapacityAssociation
+		result.LocalCapacityAssociation = &copy
+	}
+	return result
 }
 
 func (authority ExecutionAuthorityV2) Clone() ExecutionAuthorityV2 {
 	clone := authority
 	clone.HarnessBinding = authority.HarnessBinding.Clone()
+	if authority.LocalCapacityAssociation != nil {
+		copy := *authority.LocalCapacityAssociation
+		clone.LocalCapacityAssociation = &copy
+	}
 	if authority.SubstrateBinding != nil {
 		substrate := *authority.SubstrateBinding
 		clone.SubstrateBinding = &substrate
@@ -185,10 +197,14 @@ func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingReq
 	}
 	if authority.ExecutionPlacementV2.Kind == domain.ExecutionPlacementManaged {
 		return (ManagedExecutionAuthorityV2{
-			ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding,
+			LocalCapacityAssociation: authority.LocalCapacityAssociation,
+			ExecutionPlacementV2:     authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding,
 			SubstrateBinding: *authority.SubstrateBinding, AdmissionCostCeiling: *authority.AdmissionCostCeiling,
 			OwnedExecutionSourceRecord: authority.OwnedExecutionSourceRecord,
 		}).ValidateForScope(request)
+	}
+	if authority.LocalCapacityAssociation != nil {
+		return domain.ValidationError{Field: "execution_authority.local_capacity_association", Reason: "is only valid for the configured managed local arm"}
 	}
 	for _, validate := range []func() error{request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate, request.AttemptID.Validate, request.SubscriptionConnectionID.Validate} {
 		if err := validate(); err != nil {
@@ -224,11 +240,19 @@ func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBin
 	}
 	for _, validate := range []func() error{
 		request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate,
-		request.AttemptID.Validate, request.SubscriptionConnectionID.Validate,
+		request.AttemptID.Validate,
 	} {
 		if err := validate(); err != nil {
 			return err
 		}
+	}
+	if authority.LocalCapacityAssociation == nil {
+		if err := request.SubscriptionConnectionID.Validate(); err != nil {
+			return err
+		}
+	} else if request.SubscriptionConnectionID != "" || authority.LocalCapacityAssociation.ValidateForScope(request.TenantID, request.OwnerUserID, authority.HarnessBinding.Resource.ResourceID) != nil ||
+		authority.LocalCapacityAssociation.ValidateForOwnedSource(authority.OwnedExecutionSourceRecord, authority.ExecutionPlacementV2, authority.HarnessBinding, &authority.SubstrateBinding, &authority.AdmissionCostCeiling) != nil {
+		return domain.ValidationError{Field: "managed_execution_authority.local_capacity_association", Reason: "requires the exact exclusive local source"}
 	}
 	if request.At.IsZero() {
 		return domain.ValidationError{Field: "managed_execution_authority.at", Reason: "must not be zero"}
@@ -272,17 +296,30 @@ func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBin
 		if authority.HarnessBinding.Resource.ResourceID != string(request.SubscriptionConnectionID) {
 			return domain.ValidationError{Field: "managed_execution_authority.subscription_connection_id", Reason: "must match the selected subscription resource"}
 		}
+	} else if authority.LocalCapacityAssociation != nil {
+		// The explicit local arm was fully correlated above. Its association is
+		// DATA; Store must authenticate Source/current funding in its transaction.
 	} else if authority.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
 		authority.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
 		return domain.ValidationError{Field: "managed_execution_authority.provider_resource", Reason: "non-subscription resources are feature-disabled"}
 	}
-	if err := authority.HarnessBinding.ValidateAt(request.At.UTC()); err != nil {
+	validationAt := request.At.UTC()
+	if authority.LocalCapacityAssociation != nil {
+		// The frontend event time is not the later DB-observed Source issuance.
+		// Actual currentness is rejoined at the canonical transaction's DB time.
+		source, err := domain.DecodeAttemptExecutionSourceV1([]byte(authority.OwnedExecutionSourceRecord))
+		if err != nil {
+			return err
+		}
+		validationAt = source.IssuedAt
+	}
+	if err := authority.HarnessBinding.ValidateAt(validationAt); err != nil {
 		return err
 	}
-	if err := authority.SubstrateBinding.ValidateAt(request.At.UTC()); err != nil {
+	if err := authority.SubstrateBinding.ValidateAt(validationAt); err != nil {
 		return err
 	}
-	return authority.AdmissionCostCeiling.ValidateAt(request.At.UTC())
+	return authority.AdmissionCostCeiling.ValidateAt(validationAt)
 }
 
 type HarnessBinder interface {

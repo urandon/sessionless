@@ -45,11 +45,14 @@ type WebUploadStore interface {
 }
 
 type ComputeConnectionState struct {
-	ID          domain.SubscriptionConnectionID
-	Provider    string
-	Entitlement domain.EntitlementState
-	Quota       domain.ProviderQuotaState
-	ObservedAt  time.Time
+	ID domain.SubscriptionConnectionID
+	// LocalCapacityAssociation selects the mutually exclusive owner-local arm.
+	// It is server-derived metadata, never a subscription or execution grant.
+	LocalCapacityAssociation *domain.LocalCapacityAssociationV1
+	Provider                 string
+	Entitlement              domain.EntitlementState
+	Quota                    domain.ProviderQuotaState
+	ObservedAt               time.Time
 }
 
 type ComputeConnectionResolveRequest struct {

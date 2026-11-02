@@ -402,6 +402,13 @@ func terminalJSONMember(shape, key string) string {
 			return "derived"
 		case "terminal_custody":
 			return "custody"
+		case "local_capacity_association":
+			return "local_capacity"
+		}
+	case "local_capacity":
+		switch key {
+		case "version", "kind", "tenant_id", "owner_id", "resource_id":
+			return "required_scalar"
 		}
 	case "custody":
 		switch key {

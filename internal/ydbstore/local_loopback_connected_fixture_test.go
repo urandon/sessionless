@@ -245,7 +245,19 @@ func NewLocalLoopbackConnectedFixture(t *testing.T, endpoint string) *LocalLoopb
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID, SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
 	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, setupDuration: 10 * time.Second, endpoint: endpoint})
-	p := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
+	// Declare exact local retained DATA before the original outbox/parent seals.
+	// This older seeded-running peer is not canonical admission evidence.
+	association := domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1,
+		TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: actual.profile.Locator.ResourceID}
+	if association.ValidateForScope(actual.profile.Locator.TenantID, actual.profile.Locator.OwnerUserID, actual.profile.Resource.ResourceID) != nil || actual.profile.Locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		t.Fatal("loopback fixture requires its original exact Source resource")
+	}
+	state.Run.SubscriptionConnectionID, state.Reservation.SubscriptionConnectionID = "", ""
+	state.Run.LocalCapacityAssociation = &association
+	state.Job.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	state.Reservation.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	p := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, state: &state, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
+	declareLocalSessionCapacityRows(t, p)
 	issuer, e := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return p.graph.at }, strings.NewReader(strings.Repeat("C", 32)), 16)
 	if e != nil {
 		t.Fatal(e)

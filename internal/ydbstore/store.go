@@ -351,6 +351,7 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if found && (stored.SessionID != run.SessionID ||
 		stored.TriggerEventID != run.TriggerEventID ||
 		stored.SubscriptionConnectionID != run.SubscriptionConnectionID ||
+		!equalLocalCapacityV1(stored.LocalCapacityAssociation, run.LocalCapacityAssociation) ||
 		stored.IdempotencyKey != run.IdempotencyKey ||
 		!stored.CreatedAt.Equal(run.CreatedAt)) {
 		return domain.ValidationError{Field: "run", Reason: "immutable identity fields cannot change"}
@@ -551,6 +552,10 @@ func (tx *stateTx) PutQuotaReservation(
 	if err := reservation.ValidateForRun(run); err != nil {
 		return err
 	}
+	physical, err := encodeCapacityStorageV1(reservation.TenantID, reservation.SubscriptionConnectionID, reservation.LocalCapacityAssociation)
+	if err != nil {
+		return err
+	}
 	payload, err := marshal(reservation)
 	if err != nil {
 		return err
@@ -559,13 +564,42 @@ func (tx *stateTx) PutQuotaReservation(
 	if err != nil {
 		return err
 	}
-	previous, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-		`SELECT payload FROM quota_reservations
-		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-		reservation.TenantID, reservation.ID,
-	)
+	previous, found, err := readQuotaReservationStorageV1(ctx, tx, run, reservation.ID)
 	if err != nil {
 		return err
+	}
+	if found {
+		if err := validateQuotaReservationUpdateV1(previous, reservation); err != nil {
+			return err
+		}
+		present, err := readQuotaExpiryStorageV1(ctx, tx, previous)
+		if err != nil {
+			return err
+		}
+		if previous.LocalCapacityAssociation != nil {
+			// Local held history must retain its original exact projection; a
+			// terminal history must not have one. Neither absence nor collision
+			// can authorize rebuilding/deleting a different hold on a replay.
+			if present != (previous.Status == domain.ReservationHeld) {
+				return domain.ErrMembershipDenied
+			}
+			if previous.Status == reservation.Status {
+				return nil // exact local replay is read-only, including terminal
+			}
+		} else if present && previous.Status != domain.ReservationHeld {
+			return domain.ErrMembershipDenied
+		}
+	} else if reservation.LocalCapacityAssociation != nil && reservation.Status != domain.ReservationHeld {
+		return domain.ErrMembershipDenied
+	}
+	if !found || !previous.ExpiresAt.Equal(reservation.ExpiresAt) {
+		present, err := readQuotaExpiryStorageV1(ctx, tx, reservation)
+		if err != nil {
+			return err
+		}
+		if present {
+			return domain.ErrMembershipDenied // orphan/new-key collision, never repair
+		}
 	}
 	if found {
 		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
@@ -597,10 +631,10 @@ func (tx *stateTx) PutQuotaReservation(
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO quota_expiry_v2
 		 (shard_bucket, expires_at, tenant_id, quota_reservation_id,
-		  run_id, subscription_connection_id)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		  run_id, subscription_connection_id, local_capacity_association, local_capacity_digest)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID,
-		reservation.RunID, reservation.SubscriptionConnectionID,
+		reservation.RunID, physical.key, physical.association, physical.digest,
 	)
 	return err
 }

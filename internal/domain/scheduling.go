@@ -134,20 +134,21 @@ func (shape WorkloadShape) Validate() error {
 // SubscriptionSchedulerSlot is the single contention row for the MVP rule
 // that one subscription connection may own at most one reservation.
 type SubscriptionSchedulerSlot struct {
-	TenantID                 TenantID                 `json:"tenant_id"`
-	SubscriptionConnectionID SubscriptionConnectionID `json:"subscription_connection_id"`
-	State                    SchedulerState           `json:"state"`
-	ActiveRunID              RunID                    `json:"active_run_id,omitempty"`
-	ActiveReservationID      QuotaReservationID       `json:"active_reservation_id,omitempty"`
-	BlockedUntil             *time.Time               `json:"blocked_until,omitempty"`
-	UpdatedAt                time.Time                `json:"updated_at"`
+	TenantID                 TenantID                    `json:"tenant_id"`
+	SubscriptionConnectionID SubscriptionConnectionID    `json:"subscription_connection_id,omitempty"`
+	LocalCapacityAssociation *LocalCapacityAssociationV1 `json:"local_capacity_association,omitempty"`
+	State                    SchedulerState              `json:"state"`
+	ActiveRunID              RunID                       `json:"active_run_id,omitempty"`
+	ActiveReservationID      QuotaReservationID          `json:"active_reservation_id,omitempty"`
+	BlockedUntil             *time.Time                  `json:"blocked_until,omitempty"`
+	UpdatedAt                time.Time                   `json:"updated_at"`
 }
 
 func (slot SubscriptionSchedulerSlot) Validate() error {
 	if err := slot.TenantID.Validate(); err != nil {
 		return err
 	}
-	if err := slot.SubscriptionConnectionID.Validate(); err != nil {
+	if err := validateCapacityIdentity(slot.TenantID, slot.SubscriptionConnectionID, slot.LocalCapacityAssociation); err != nil {
 		return err
 	}
 	if !slot.State.Valid() {

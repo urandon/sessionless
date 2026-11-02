@@ -89,7 +89,8 @@ const computeChoiceAttachedConnectionSQL = `SELECT SUBSTRING(CAST(record AS Stri
  connected_at, last_checkpoint_at, presence_expires_at, auth_expires_at, revision
  FROM attached_worker_connections WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3`
 const computeChoiceAttachedSlotSQL = `SELECT SUBSTRING(CAST(state AS String),0,161),
- SUBSTRING(CAST(active_run_id AS String),0,161), SUBSTRING(CAST(active_reservation_id AS String),0,161), blocked_until, updated_at
+ SUBSTRING(CAST(active_run_id AS String),0,161), SUBSTRING(CAST(active_reservation_id AS String),0,161), blocked_until, updated_at,
+ SUBSTRING(CAST(subscription_connection_id AS String),0,161), SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
  FROM subscription_scheduler_slots WHERE tenant_id=$1 AND subscription_connection_id=$2`
 const computeChoiceAttachedCountersSQL = `SELECT queue_depth, active_runs, updated_at
  FROM tenant_scheduler_counters WHERE tenant_id=$1`
@@ -300,17 +301,22 @@ func computeChoiceAttachedOptionalTimeEqual(record time.Time, scalar sql.NullTim
 
 func readComputeChoiceAttachedSlot(ctx context.Context, query *computeChoiceQuery, auth computeChoiceAuth, pin computeChoiceAttachedPin) (*domain.SubscriptionSchedulerSlot, error) {
 	var state, run, reservation string
+	var stored capacityStorageV1
 	var blocked sql.NullTime
 	var updated time.Time
-	err := query.QueryRowContext(ctx, computeChoiceAttachedSlotSQL, pin.tenantID, pin.subscriptionID).Scan(&state, &run, &reservation, &blocked, &updated)
+	err := query.QueryRowContext(ctx, computeChoiceAttachedSlotSQL, pin.tenantID, pin.subscriptionID).Scan(&state, &run, &reservation, &blocked, &updated, &stored.key, &stored.association, &stored.digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, computeChoiceAttachedReadError(query, err)
 	}
-	if err := chargeComputeChoiceAttachedScalars(query, 2*8, state, run, reservation); err != nil {
+	if err := chargeComputeChoiceAttachedScalars(query, 2*8, state, run, reservation, stored.key, stored.association.String, stored.digest.String); err != nil {
 		return nil, err
+	}
+	subscription, local, err := decodeCapacityStorageV1(pin.tenantID, stored)
+	if err != nil || local != nil || subscription != pin.subscriptionID {
+		return nil, errComputeChoiceSource
 	}
 	slot := &domain.SubscriptionSchedulerSlot{TenantID: pin.tenantID, SubscriptionConnectionID: pin.subscriptionID, State: domain.SchedulerState(state), ActiveRunID: domain.RunID(run), ActiveReservationID: domain.QuotaReservationID(reservation), UpdatedAt: updated}
 	if blocked.Valid && !blocked.Time.Equal(time.Unix(0, 0)) {

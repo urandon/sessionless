@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -14,18 +15,24 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 // The legacy reader uses its actual SQL spelling, including the common bounded
-// Run point read. Only these five canonical worker-state point reads are
+// Run point read. Only these six canonical worker-state point reads are
 // supplied; any downstream principal/resource/lease query fails the test.
-type legacyProfileQueryFixture struct{ *ownedFinalScript }
+type legacyProfileQueryFixture struct {
+	*ownedFinalScript
+	job                 ports.WorkerJobState
+	quotaRow, expiryRow []driver.Value
+}
 
 var legacyProfileWorkerReads = map[string]string{
 	"SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM runs WHERE tenant_id = $1 AND run_id = $2": "runs",
 	"SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2":                                 "worker_jobs",
 	"SELECT payload FROM attempts WHERE tenant_id = $1 AND attempt_id = $2":                            "attempts",
-	"SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2":            "quota_reservations",
+	completionSQL(quotaReservationStorageSQLV1):                                                        "quota_reservations",
+	completionSQL(quotaExpiryStorageSQLV1):                                                             "quota_expiry_v2",
 	"SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2":            "artifact_manifests",
 }
 
@@ -33,11 +40,110 @@ func (f *legacyProfileQueryFixture) Connect(context.Context) (driver.Conn, error
 
 func (f *legacyProfileQueryFixture) QueryContext(_ context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
 	f.recordQuery(statement, args)
-	table, ok := legacyProfileWorkerReads[strings.Join(strings.Fields(statement), " ")]
-	if !ok {
+	values, matched, err := legacyProfileWorkerReadRow(statement, args, f.job, f.rows, f.quotaRow, f.expiryRow)
+	if err != nil {
+		return nil, err
+	}
+	if !matched {
 		return nil, errors.New("unexpected downstream SQL after legacy profile gate")
 	}
-	return &explanationFixtureRows{values: append([]driver.Value(nil), f.rows[table]...)}, nil
+	return &explanationFixtureRows{values: values}, nil
+}
+
+// The initial legacy physical row is declared before consumption. Subsequent
+// writes retain their actual SQL postimage instead of regenerating scalars
+// from a possibly changed JSON payload on each read.
+func legacyProfileQuotaRow(t *testing.T, job ports.WorkerJobState, retained time.Time) []driver.Value {
+	t.Helper()
+	r := job.Reservation
+	if r.LocalCapacityAssociation != nil || job.Run.LocalCapacityAssociation != nil || r.SubscriptionConnectionID == "" || r.ValidateForRun(job.Run) != nil || retained.Before(r.ExpiresAt) {
+		t.Fatal("genuine retained legacy quota required")
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []driver.Value{string(raw), string(r.ID), string(r.TenantID), string(r.RunID), string(r.SubscriptionConnectionID), string(r.Status), int64(r.CapacityUnits), r.HeldAt, r.ExpiresAt, retained}
+}
+
+// Closed SQL and complete point-key inventory shared by the two legacy
+// consumers. Absence belongs only to the exact optional legacy expiry key;
+// a present row still exposes both nullable local columns to production.
+type legacyProfileExpiryPoint struct{ key, row []driver.Value }
+
+func legacyProfileWorkerReadRow(statement string, args []driver.NamedValue, job ports.WorkerJobState, rows map[string][]driver.Value, quota, expiry []driver.Value, candidate ...legacyProfileExpiryPoint) ([]driver.Value, bool, error) {
+	table, matched := legacyProfileWorkerReads[completionSQL(statement)]
+	if !matched {
+		return nil, false, nil
+	}
+	want := []driver.Value{string(job.Run.TenantID), string(job.Run.ID)}
+	selectedExpiry := expiry
+	switch table {
+	case "attempts":
+		want[1] = string(job.Attempt.ID)
+	case "artifact_manifests":
+		want[1] = string(job.InputManifest.ID)
+	case "quota_reservations":
+		want[1] = string(job.Reservation.ID)
+	case "quota_expiry_v2":
+		bucket, err := ydbpartition.BucketV1(string(job.Reservation.ID))
+		if err != nil || len(quota) != 10 {
+			return nil, true, errors.New("legacy expiry requires retained ten-column quota")
+		}
+		expires, ok := quota[8].(time.Time)
+		if !ok {
+			return nil, true, errors.New("legacy quota physical expiry type")
+		}
+		want = []driver.Value{int64(bucket), expires, string(job.Run.TenantID), string(job.Reservation.ID)}
+		if len(candidate) > 1 {
+			return nil, true, errors.New("legacy fixture permits one declared candidate expiry point")
+		}
+		for _, point := range candidate {
+			if len(point.key) != 4 || point.key[0] != int64(bucket) || point.key[2] != string(job.Run.TenantID) || point.key[3] != string(job.Reservation.ID) {
+				return nil, true, errors.New("legacy candidate expiry must retain original physical scope")
+			}
+			at, ok := point.key[1].(time.Time)
+			if !ok || at.IsZero() {
+				return nil, true, errors.New("legacy candidate expiry timestamp")
+			}
+			if reflect.DeepEqual(localInstallationNamedValues(args), point.key) {
+				want = point.key
+				selectedExpiry = point.row
+			}
+		}
+	}
+	if !reflect.DeepEqual(localInstallationNamedValues(args), want) {
+		return nil, true, errors.New("legacy worker read requires exact original point key")
+	}
+	value := rows[table]
+	if table == "quota_reservations" {
+		if len(quota) != 10 {
+			return nil, true, errors.New("legacy quota projection must have ten columns")
+		}
+		value = quota
+	}
+	if table == "quota_expiry_v2" {
+		if len(selectedExpiry) != 0 && len(selectedExpiry) != 8 {
+			return nil, true, errors.New("legacy expiry projection must have eight columns")
+		}
+		value = selectedExpiry
+	}
+	value = append([]driver.Value(nil), value...)
+	limits := map[int]int{}
+	if table == "quota_reservations" {
+		limits = map[int]int{0: 32769, 1: 161, 2: 161, 3: 161, 4: 161, 5: 17}
+	}
+	if table == "quota_expiry_v2" {
+		limits = map[int]int{2: 161, 3: 161, 4: 161, 5: 161, 6: 32769, 7: 65}
+	}
+	for i, limit := range limits {
+		if len(value) > i {
+			if text, ok := value[i].(string); ok && len(text) > limit {
+				value[i] = text[:limit]
+			}
+		}
+	}
+	return value, true, nil
 }
 
 func ownedEffectRecordForLegacyGate(t *testing.T, at time.Time) (attemptEffectRecordV1, *serverlessharness.CapabilityIssuer) {
@@ -162,7 +268,7 @@ func TestCurrentServerlessInvocationAuthorityRejectsOwnedProfileBeforePrerequisi
 	} {
 		ratedFixturePut(t, graph.ratedSQLFixture, table, value)
 	}
-	db := sql.OpenDB(&legacyProfileQueryFixture{script})
+	db := sql.OpenDB(&legacyProfileQueryFixture{ownedFinalScript: script, job: state, quotaRow: legacyProfileQuotaRow(t, state, state.Reservation.ExpiresAt.Add(store.operationalRetention))})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
@@ -191,7 +297,7 @@ func TestCurrentServerlessInvocationAuthorityRejectsOwnedProfileBeforePrerequisi
 	}
 	statements := graph.statements[statementStart:]
 	if len(statements) != len(legacyProfileWorkerReads) {
-		t.Errorf("owned create-path SQL reads=%d want exactly five canonical worker-state reads; statements=%q", len(statements), statements)
+		t.Errorf("owned create-path SQL reads=%d want exactly six canonical worker-state reads; statements=%q", len(statements), statements)
 	}
 	for _, statement := range statements {
 		if _, ok := legacyProfileWorkerReads[strings.Join(strings.Fields(statement), " ")]; !ok {
@@ -203,6 +309,108 @@ func TestCurrentServerlessInvocationAuthorityRejectsOwnedProfileBeforePrerequisi
 	}
 	if graph.persistedWrites != persistedWritesBefore || graph.pendingWrites != pendingWritesBefore {
 		t.Errorf("owned create-path denial wrote state: persisted=%d pending=%d before=%d/%d", graph.persistedWrites, graph.pendingWrites, persistedWritesBefore, pendingWritesBefore)
+	}
+}
+
+func TestLegacyProfileWorkerCapacityProjection(t *testing.T) {
+	for _, fault := range []string{"legacy expiry absent", "legacy expiry present", "quota status", "quota run", "quota subscription", "quota expiry", "retention before expiry", "expiry run", "expiry subscription", "expiry association only", "expiry digest only", "local expiry collision"} {
+		t.Run(fault, func(t *testing.T) {
+			store, script, _, _ := newOwnedFinalScript(t)
+			job := currentWorkerAuthorityFixture(t)
+			quota := legacyProfileQuotaRow(t, job, job.Reservation.ExpiresAt.Add(time.Hour))
+			bucket, err := ydbpartition.BucketV1(string(job.Reservation.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			expiry := []driver.Value{int64(bucket), job.Reservation.ExpiresAt, string(job.Run.TenantID), string(job.Reservation.ID), string(job.Run.ID), string(job.Run.SubscriptionConnectionID), nil, nil}
+			switch fault {
+			case "legacy expiry absent":
+				expiry = nil
+			case "quota status":
+				quota[5] = string(domain.ReservationCommitted)
+			case "quota run":
+				quota[3] = "foreign-run"
+			case "quota subscription":
+				quota[4] = "foreign-subscription"
+			case "quota expiry":
+				quota[8] = job.Reservation.ExpiresAt.Add(time.Second)
+			case "retention before expiry":
+				quota[9] = job.Reservation.ExpiresAt.Add(-time.Second)
+			case "expiry run":
+				expiry[4] = "foreign-run"
+			case "expiry subscription":
+				expiry[5] = "foreign-subscription"
+			case "expiry association only":
+				expiry[6] = ""
+			case "expiry digest only":
+				expiry[7] = ""
+			case "local expiry collision":
+				local := &domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1, TenantID: job.Run.TenantID, OwnerUserID: job.Job.CredentialOwnerUserID, ResourceID: "local-resource"}
+				physical, err := encodeCapacityStorageV1(job.Run.TenantID, "", local)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expiry[5], expiry[6], expiry[7] = physical.key, physical.association.String, physical.digest.String
+			}
+			f := &legacyProfileQueryFixture{ownedFinalScript: script, job: job, quotaRow: quota, expiryRow: expiry}
+			db := sql.OpenDB(f)
+			db.SetMaxOpenConns(1)
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			store.db = db
+			beforeQuota, beforeExpiry := append([]driver.Value(nil), quota...), append([]driver.Value(nil), expiry...)
+			writes := script.persistedWrites
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			var got domain.QuotaReservation
+			var found bool
+			err = store.Transact(ctx, job.Run.TenantID, func(state ports.StateTx) error {
+				var err error
+				got, found, err = readWorkerQuotaReservationStorageV1(ctx, state.(*stateTx), job.Run, job.Reservation.ID)
+				return err
+			})
+			valid := fault == "legacy expiry absent" || fault == "legacy expiry present"
+			if valid {
+				if err != nil || !found || !reflect.DeepEqual(got, job.Reservation) {
+					t.Fatalf("retained legacy projection found=%t err=%v got=%+v", found, err, got)
+				}
+			} else if !errors.Is(err, domain.ErrMembershipDenied) || found || !reflect.DeepEqual(got, domain.QuotaReservation{}) {
+				t.Fatalf("invalid retained capacity was accepted: found=%t err=%v", found, err)
+			}
+			if !reflect.DeepEqual(f.quotaRow, beforeQuota) || !reflect.DeepEqual(f.expiryRow, beforeExpiry) || script.persistedWrites != writes || script.pendingWrites != 0 {
+				t.Fatal("capacity read repaired rows or wrote authority")
+			}
+		})
+	}
+}
+
+func TestLegacyProfileWorkerReadInventoryIsExact(t *testing.T) {
+	job := currentWorkerAuthorityFixture(t)
+	quota := legacyProfileQuotaRow(t, job, job.Reservation.ExpiresAt.Add(time.Hour))
+	for _, tc := range []struct {
+		name, sql string
+		args      []driver.Value
+		matched   bool
+	}{
+		{"foreign quota key", quotaReservationStorageSQLV1, []driver.Value{string(job.Run.TenantID), "foreign-reservation"}, true},
+		{"quota arity", quotaReservationStorageSQLV1, []driver.Value{string(job.Run.TenantID)}, true},
+		{"expiry arity", quotaExpiryStorageSQLV1, []driver.Value{int64(0), job.Reservation.ExpiresAt, string(job.Run.TenantID)}, true},
+		{"obsolete quota payload", `SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2`, []driver.Value{string(job.Run.TenantID), string(job.Reservation.ID)}, false},
+		{"downstream lease", `SELECT payload FROM leases WHERE tenant_id=$1 AND lease_id=$2`, []driver.Value{string(job.Run.TenantID), "lease-foreign"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := make([]driver.NamedValue, len(tc.args))
+			for i, value := range tc.args {
+				args[i] = driver.NamedValue{Ordinal: i + 1, Value: value}
+			}
+			row, matched, err := legacyProfileWorkerReadRow(tc.sql, args, job, nil, quota, nil)
+			if row != nil || matched != tc.matched || matched && err == nil {
+				t.Fatalf("closed inventory matched=%t err=%v row=%v", matched, err, row)
+			}
+		})
 	}
 }
 

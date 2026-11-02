@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 // Drives the actual allocating callbacks through database/sql. This is an
@@ -83,13 +84,13 @@ type generationAllocationWrite struct {
 // Columns, operation, argument count and every placeholder are checked, not a
 // permissive "accept any UPSERT" driver. Production owns all state transitions.
 var generationAllocationWrites = []generationAllocationWrite{
-	{"UPSERT", "subscription_scheduler_slots", "tenant_id,subscription_connection_id,state,active_run_id,active_reservation_id,blocked_until,updated_at", ""},
+	{"UPSERT", "subscription_scheduler_slots", "tenant_id,subscription_connection_id,state,active_run_id,active_reservation_id,blocked_until,updated_at,local_capacity_association,local_capacity_digest", ""},
 	{"UPSERT", "runs", "tenant_id,run_id,session_id,trigger_event_id,subscription_connection_id,status,created_at,updated_at,payload", "payload"},
 	{"UPSERT", "runs_by_session", "tenant_id,session_id,created_at,run_id,trigger_event_id,status", ""},
 	{"UPSERT", "run_idempotency", "tenant_id,idempotency_key,run_id,created_at,expire_at", ""},
 	{"UPSERT", "run_explanation_heads_v1", "tenant_id,run_id,revision,record", "record"},
 	{"UPSERT", "quota_reservations", "tenant_id,quota_reservation_id,run_id,subscription_connection_id,status,capacity_units,held_at,expires_at,retention_expire_at,payload", "payload"},
-	{"UPSERT", "quota_expiry_v2", "shard_bucket,expires_at,tenant_id,quota_reservation_id,run_id,subscription_connection_id", ""},
+	{"UPSERT", "quota_expiry_v2", "shard_bucket,expires_at,tenant_id,quota_reservation_id,run_id,subscription_connection_id,local_capacity_association,local_capacity_digest", ""},
 	{"UPSERT", "worker_jobs", "tenant_id,run_id,attempt_id,reservation_id,created_at,retention_expire_at,payload", "payload"},
 	{"UPSERT", "leases", "tenant_id,lease_id,run_id,attempt_id,worker_id,fence_token,acquired_at,expires_at,retention_expire_at,payload", "payload"},
 	{"UPSERT", "lease_expiry_v2", "shard_bucket,expires_at,tenant_id,run_id,lease_id,fence_token", ""},
@@ -139,6 +140,9 @@ func (f *generationAllocationSQL) ExecContext(ctx context.Context, query string,
 		row := make([]driver.Value, len(args))
 		for i, column := range columns {
 			row[i] = args[i].Value
+			if (column == "local_capacity_association" || column == "local_capacity_digest") && row[i] != nil {
+				return nil, fmt.Errorf("subscription fixture received non-NULL %s.%s", spec.table, column)
+			}
 			if want := f.scope(column); want != nil && row[i] != want {
 				return nil, fmt.Errorf("foreign %s.%s got=%v want=%v", spec.table, column, row[i], want)
 			}
@@ -153,6 +157,12 @@ func (f *generationAllocationSQL) ExecContext(ctx context.Context, query string,
 		}
 		if spec.table == "subscription_scheduler_slots" {
 			f.setTable(spec.table, append([]driver.Value(nil), row[2:]...))
+		}
+		if spec.table == "quota_reservations" {
+			f.setTable("quota_reservations_storage", []driver.Value{row[9], row[1], row[0], row[2], row[3], row[4], row[5], row[6], row[7], row[8]})
+		}
+		if spec.table == "quota_expiry_v2" {
+			f.setTable(spec.table, row)
 		}
 		if spec.table == "lease_heads" {
 			f.setTable(spec.table, append([]driver.Value(nil), row[2:7]...))
@@ -245,11 +255,19 @@ func newGenerationAllocationFixture(t *testing.T, freshScheduler bool) *generati
 	for _, query := range []string{`SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2`, `SELECT payload FROM quota_reservations WHERE tenant_id = $1 AND quota_reservation_id = $2`} {
 		put("quota_reservations", query, s.Reservation, string(g.auth.TenantID), string(s.Reservation.ID))
 	}
+	q.add("quota_reservations_storage", quotaReservationStorageSQLV1, []driver.Value{generationJSON(t, s.Reservation), string(s.Reservation.ID), string(g.auth.TenantID), string(s.Run.ID), string(s.Reservation.SubscriptionConnectionID), string(s.Reservation.Status), int64(s.Reservation.CapacityUnits), s.Reservation.HeldAt, s.Reservation.ExpiresAt, s.Reservation.ExpiresAt.Add(time.Hour)}, string(g.auth.TenantID), string(s.Reservation.ID))
+	bucket, err := ydbpartition.BucketV1(string(s.Reservation.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Genuine legacy history may have no retained expiry projection. A fresh
+	// scheduler creates the exact current eight-column row below through SQL.
+	q.add("quota_expiry_v2", quotaExpiryStorageSQLV1, nil, int64(bucket), s.Reservation.ExpiresAt, string(g.auth.TenantID), string(s.Reservation.ID))
 	for _, query := range []string{`SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2`, `SELECT payload FROM artifact_manifests WHERE tenant_id = $1 AND artifact_manifest_id = $2`} {
 		put("artifact_manifests", query, s.InputManifest, string(g.auth.TenantID), string(s.InputManifest.ID))
 	}
 	q.add("subscription", `SELECT entitlement_state, quota_state FROM subscription_connections WHERE tenant_id = $1 AND subscription_connection_id = $2`, []driver.Value{"active", "available"}, string(g.auth.TenantID), string(g.auth.SubscriptionConnectionID))
-	q.add("subscription_scheduler_slots", `SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at FROM subscription_scheduler_slots WHERE tenant_id = $1 AND subscription_connection_id = $2`, []driver.Value{string(domain.SchedulerReady), "", "", time.Unix(0, 0).UTC(), g.at}, string(g.auth.TenantID), string(g.auth.SubscriptionConnectionID))
+	q.add("subscription_scheduler_slots", `SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at, SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65) FROM subscription_scheduler_slots WHERE tenant_id = $1 AND subscription_connection_id = $2`, []driver.Value{string(domain.SchedulerReady), "", "", time.Unix(0, 0).UTC(), g.at, nil, nil}, string(g.auth.TenantID), string(g.auth.SubscriptionConnectionID))
 	q.add("tenant_scheduler_counters", `SELECT queue_depth, active_runs FROM tenant_scheduler_counters WHERE tenant_id = $1`, []driver.Value{int64(0), int64(0)}, string(g.auth.TenantID))
 	q.add("attached_worker_attempt_heads", `SELECT payload FROM attached_worker_attempt_heads WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3`, nil, string(g.auth.TenantID), string(g.auth.OwnerUserID), string(g.auth.WorkerID))
 	q.add("lease_heads", `SELECT lease_id,attempt_id,worker_id,fence_token,expires_at FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`, nil, string(g.auth.TenantID), string(s.Run.ID))
@@ -268,6 +286,7 @@ func newGenerationAllocationFixture(t *testing.T, freshScheduler bool) *generati
 		q.setTable("runs", []driver.Value{generationJSON(t, s.Run)})
 		q.setTable("worker_jobs", nil)
 		q.setTable("quota_reservations", nil)
+		q.setTable("quota_reservations_storage", nil)
 	}
 	db := sql.OpenDB(q)
 	db.SetMaxOpenConns(1)

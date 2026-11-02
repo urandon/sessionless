@@ -215,12 +215,8 @@ func executeTelegramCommandState(
 		).Scan(&provider, &entitlement, &quota); err != nil {
 			return "", err
 		}
-		var schedulerState string
-		if err := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT state FROM subscription_scheduler_slots
-			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-			request.TenantID, request.SubscriptionConnectionID,
-		).Scan(&schedulerState); err != nil {
+		schedulerState, err := readLegacySchedulerSlotStateTx(ctx, tx, request.SubscriptionConnectionID)
+		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf(
@@ -505,19 +501,15 @@ func (store *Store) EnsureTelegramIdentity(
 		); err != nil {
 			return err
 		}
-		var existingSlot string
-		slotErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT subscription_connection_id FROM subscription_scheduler_slots
-			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-			request.TenantID, request.SubscriptionConnectionID,
-		).Scan(&existingSlot)
+		_, slotErr := readLegacySchedulerSlotStateTx(ctx, tx, request.SubscriptionConnectionID)
 		switch {
 		case errors.Is(slotErr, sql.ErrNoRows):
 			if _, err := tx.sqlTx.ExecContext(ctx,
 				`INSERT INTO subscription_scheduler_slots
 				 (tenant_id, subscription_connection_id, state, active_run_id,
-				  active_reservation_id, blocked_until, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				  active_reservation_id, blocked_until, updated_at,
+				  local_capacity_association, local_capacity_digest)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL)`,
 				request.TenantID, request.SubscriptionConnectionID,
 				domain.SchedulerReauthRequired, "", "",
 				time.Unix(0, 0).UTC(), request.ObservedAt,
@@ -607,6 +599,11 @@ func setSchedulerSlotState(
 	blockedUntil *time.Time,
 	at time.Time,
 ) error {
+	if _, err := readLegacySchedulerSlotStateTx(ctx, tx, connectionID); errors.Is(err, sql.ErrNoRows) {
+		return nil // Preserve the existing legacy missing-slot no-op.
+	} else if err != nil {
+		return err
+	}
 	blocked := time.Unix(0, 0).UTC()
 	if blockedUntil != nil {
 		blocked = *blockedUntil
@@ -618,6 +615,32 @@ func setSchedulerSlotState(
 		state, blocked, at, tx.tenantID, connectionID,
 	)
 	return err
+}
+
+// Legacy Telegram operations have no local-capacity authority. A row at the
+// subscription-labelled address must select the exact genuine subscription
+// arm; neither a local record nor partial NULL metadata may be overwritten.
+func readLegacySchedulerSlotStateTx(ctx context.Context, tx *stateTx, connectionID domain.SubscriptionConnectionID) (string, error) {
+	if connectionID.Validate() != nil {
+		return "", ErrSubscriptionConnectionConflict
+	}
+	var stored capacityStorageV1
+	var state string
+	err := tx.sqlTx.QueryRowContext(ctx,
+		`SELECT subscription_connection_id, state,
+		 SUBSTRING(local_capacity_association,0,32769), SUBSTRING(CAST(local_capacity_digest AS String),0,65)
+		 FROM subscription_scheduler_slots
+		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+		tx.tenantID, connectionID,
+	).Scan(&stored.key, &state, &stored.association, &stored.digest)
+	if err != nil {
+		return "", err
+	}
+	subscription, local, err := decodeCapacityStorageV1(tx.tenantID, stored)
+	if err != nil || local != nil || subscription != connectionID {
+		return "", ErrSubscriptionConnectionConflict
+	}
+	return state, nil
 }
 
 func validateTelegramIdentity(request ports.TelegramIdentityRequest) error {

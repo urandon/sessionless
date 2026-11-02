@@ -287,7 +287,19 @@ func newFreshRunFromCommittedHistory(t *testing.T, installation *LocalSessionCon
 	// be in the future of the parent/current snapshot. Earlier canonical Run
 	// creation remains unchanged; no lifetime or grant field is rewritten.
 	at = time.Now().UTC().Truncate(time.Microsecond)
+	// Fresh process and funding do not turn this installed local resource into
+	// the legacy subscription supplied by currentWorkerAuthorityFixture.
+	association := domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1,
+		TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: profile.Locator.ResourceID}
+	if association.ValidateForScope(profile.Locator.TenantID, profile.Locator.OwnerUserID, profile.Resource.ResourceID) != nil || profile.Locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		t.Fatal("fresh historical fixture requires the original local installation resource")
+	}
+	state.Run.SubscriptionConnectionID, state.Reservation.SubscriptionConnectionID = "", ""
+	state.Run.LocalCapacityAssociation = &association
+	state.Job.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
+	state.Reservation.LocalCapacityAssociation = state.Run.Clone().LocalCapacityAssociation
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: at, state: &state, sources: &ownedFinalSources{profile: profile, spending: spending}})
+	declareLocalSessionCapacityRows(t, parent)
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("N", 32)), 16)
 	if err != nil {
 		t.Fatal(err)

@@ -219,7 +219,7 @@ test-connected: prepare
 	$(MAKE) test-mcp-offline
 
 # CI runs Terminal and the remainder here, and the complete Worker family in
-# the existing local-tail job. Local/release ordering stays unchanged above.
+# verify after core and offline MCP. Local/release ordering stays unchanged above.
 .PHONY: test-connected-ci test-connected-worker-ci
 test-connected-ci: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)

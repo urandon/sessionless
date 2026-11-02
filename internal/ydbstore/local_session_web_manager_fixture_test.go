@@ -165,6 +165,8 @@ type webManagerSQL struct {
 	priorFailure             *retainedDeletionGraphFixture
 	priorRecords             map[string]string
 	priorAttempt             string
+	modelTailFault           string
+	modelTailFaults          int
 }
 
 func (f *webManagerSQL) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -251,6 +253,38 @@ func (f *webManagerSQL) QueryContext(ctx context.Context, s string, args []drive
 		f.callTrace = append(f.callTrace, flat)
 	}
 	f.lastQuery = flat
+	if f.modelTailFault != "" && f.manager != nil {
+		effects := f.manager.seed.peer.effects
+		if len(effects.operations) == 3 {
+			last := effects.operations[2]
+			observed := len(last) == 11 && last[5] == uint64(1) && last[6] == uint64(1) && last[7] != nil
+			if observed && s == ownedOperationReadSQL && len(args) == 3 && args[2].Value == int64(3) && f.modelTailFault == "missing_readback" {
+				f.modelTailFaults++
+				return &explanationFixtureRows{}, nil
+			}
+			if observed && s == localCompactionOperationsSQL && (f.modelTailFault == "missing_tail" || f.modelTailFault == "changed_tail") {
+				f.modelTailFaults++
+				rows := append([][]driver.Value(nil), effects.operations...)
+				if f.modelTailFault == "missing_tail" {
+					rows = rows[:2]
+				} else {
+					rows[2] = append([]driver.Value(nil), rows[2]...)
+					var o domain.AttemptOperationObservationV1
+					if json.Unmarshal([]byte(rows[2][7].(string)), &o) != nil {
+						return nil, errors.New("original MODEL tail fault data")
+					}
+					o.Reason = domain.AttemptOperationReasonTransportUnknownV1
+					raw, e := json.Marshal(o)
+					digest, de := o.Digest()
+					if e != nil || de != nil {
+						return nil, errors.New("changed MODEL tail must remain valid DATA")
+					}
+					rows[2][7], rows[2][8] = string(raw), string(digest)
+				}
+				return &compactionSourceRows{rows: rows}, nil
+			}
+		}
+	}
 	if f.priorFailure != nil && f.manager != nil && s == localTerminalHistoryRunsSQL(len(args)-3) {
 		if err := f.manager.seed.loop.countStatement(ctx); err != nil {
 			return nil, err
@@ -949,6 +983,21 @@ func (s *LocalWebManagerSeed) BeginNextAfterKnownFailure(t *testing.T, manager *
 	f.sessionPeer = nil
 	f.canonical = true
 }
+
+// A closed storage peer fault after an ACTUAL MODEL2 observation was committed.
+// It never supplies an authenticated replacement or mutates production state.
+func (s *LocalWebManagerSeed) SetModelTailObservationFault(t *testing.T, mode string) {
+	t.Helper()
+	if mode != "missing_readback" && mode != "missing_tail" && mode != "changed_tail" {
+		t.Fatal("closed original MODEL tail fault")
+	}
+	if s.peer.modelTailFault != "" {
+		t.Fatal("MODEL tail fault already selected")
+	}
+	s.peer.modelTailFault = mode
+}
+func (s *LocalWebManagerSeed) ModelTailObservationFaults() int { return s.peer.modelTailFaults }
+func (s *LocalWebManagerSeed) EndModelTailObservationFault()   { s.peer.modelTailFault = "" }
 
 // Corrupt only canonical history DATA after the genuine first F1 committed.
 // The original failed Run/F1 marker/capsule/frontier and funding remain exact;

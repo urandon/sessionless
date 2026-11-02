@@ -111,6 +111,77 @@ func retainedFixture(t *testing.T) (domain.ConfiguredInferenceProfileV1, domain.
 	return c, p, g, e, v
 }
 
+func TestRetainedUnknownModelNoticeCannotBecomeCovered(t *testing.T) {
+	// Pure canonical/retained DATA contract, not an original failure producer,
+	// MODEL call, semantic compaction or live profile qualification.
+	c, p := generationFixture(t)
+	records := generationRecords(t)
+	replacePayload(&records[8], `{"schema":"sessionless.run-terminal-notice.v1","code":"model_outcome_unknown","cancelled":false}`)
+	g, err := compactioncontext.BuildGenerationV1(c, c.Limits, p, strings.Repeat("1", 64), records, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := g.BuildRetainedV1(retainedEvidence(t, c, p, g, 1, nil, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, mb := v.SummaryBody(), v.ManifestBody()
+	defer clear(sb)
+	defer clear(mb)
+	var fields struct {
+		Cut json.RawMessage `json:"cut"`
+	}
+	if json.Unmarshal(mb, &fields) != nil {
+		t.Fatal("retained cut DATA")
+	}
+	var cut struct {
+		Sources []struct {
+			SourceID  string               `json:"source_id"`
+			Canonical *domain.SessionEvent `json:"canonical"`
+			Operation json.RawMessage      `json:"operation"`
+		} `json:"sources"`
+		Cut       uint32   `json:"cut"`
+		Protected []uint32 `json:"protected"`
+		Covered   []uint32 `json:"covered"`
+		Suffix    []uint32 `json:"suffix"`
+	}
+	if json.Unmarshal(fields.Cut, &cut) != nil {
+		t.Fatal("retained cut decode")
+	}
+	index, found := uint32(0), false
+	for i, source := range cut.Sources {
+		if source.Canonical != nil && source.Canonical.ID == records[8].Event.ID {
+			index, found = uint32(i), true
+		}
+	}
+	if !found {
+		t.Fatal("protected UNKNOWN notice source missing")
+	}
+	removed := false
+	for i, n := range cut.Protected {
+		if n == index {
+			cut.Protected = append(cut.Protected[:i], cut.Protected[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		t.Fatal("UNKNOWN notice was not protected originally")
+	}
+	cut.Covered = append(cut.Covered, index)
+	changed, err := json.Marshal(cut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rebind public DATA hashes too: denial must not be a stale-object hash.
+	mb = bytes.Replace(mb, fields.Cut, changed, 1)
+	sb, mb = replaceRetainedCore(t, sb, mb, "cut_digest", retainedHash(changed))
+	plan, sb, mb := retainedMutated(t, v, sb, mb)
+	if _, err := compactioncontext.DecodeRetainedV1(c, p, plan, sb, mb, nil); err == nil {
+		t.Fatal("protected UNKNOWN stop used as covered/completed compaction DATA")
+	}
+}
+
 func TestRetainedExactRoundtripAndCopiedAccessors(t *testing.T) {
 	c, p, g, e, v := retainedFixture(t)
 	if v.Plan().Validate() != nil || len(v.SummaryBody()) > 32<<10 || len(v.ManifestBody()) > 128<<10 || !bytes.Equal(v.SummaryText(), e.Summary) || v.ValidateForGeneration(g) != nil {

@@ -10,7 +10,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 )
 
-func (m *Manager) finishLocalKnownMCPFailure(ctx context.Context, message ports.ReceivedMessage, loaded ports.WorkerJobState, lease *invocationLease, watchdog *leaseWatchdog, cancelExecution, cancelWatchdog context.CancelFunc, failure *providerloopsession.PreparedLocalFailureV1) (Outcome, error) {
+func (m *Manager) finishLocalFailure(ctx context.Context, message ports.ReceivedMessage, loaded ports.WorkerJobState, lease *invocationLease, watchdog *leaseWatchdog, cancelExecution, cancelWatchdog context.CancelFunc, failure *providerloopsession.PreparedLocalFailureV1) (Outcome, error) {
 	session := m.config.LocalOwnedSession
 	fail := func(cause error) (Outcome, error) {
 		cancelExecution()
@@ -51,7 +51,7 @@ func (m *Manager) finishLocalKnownMCPFailure(ctx context.Context, message ports.
 	cancelExecution() // consumed execution parent edge must detach before ACK
 	// joined_retained deliberately emits no cleanup-success/erasure signal.
 	got, found, err := m.state.LoadWorkerJob(completion, loaded.Run.TenantID, loaded.Run.ID)
-	if err != nil || !found || got.Run.ID != loaded.Run.ID || got.Attempt.ID != loaded.Attempt.ID || got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed || got.Run.TerminalFailure == nil || got.Run.TerminalFailure.Stop != domain.KnownMCPServiceErrorV1 || got.Run.TerminalFailure.Cleanup != "joined_retained" {
+	if err != nil || !found || got.Run.ID != loaded.Run.ID || got.Attempt.ID != loaded.Attempt.ID || got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed || got.Run.TerminalFailure == nil || !domain.TerminalFailureSchemaStopValid(got.Run.TerminalFailure.CapsuleSchema, got.Run.TerminalFailure.Stop) || got.Run.TerminalFailure.Cleanup != "joined_retained" {
 		return fail(errors.Join(errors.New("known MCP failure canonical result unavailable"), err))
 	}
 	if err := m.config.ProjectionWakePublisher.PublishFrontendProjectionWake(completion, got.Run.TenantID, got.Run.ID, got.Run.UpdatedAt); err != nil {

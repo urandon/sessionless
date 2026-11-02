@@ -26,11 +26,15 @@ func localFailureSeal(run domain.Run, events []localCapsuleEventV1) (string, err
 	if run.TerminalFailure == nil || run.TerminalFailure.ValidateForRun(run) != nil {
 		return "", domain.ErrMembershipDenied
 	}
-	d, err := localFailureDigest(events)
+	version := uint32(1)
+	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v2" {
+		version = 2
+	}
+	d, err := localFailureVersionDigest(version, events)
 	if err != nil || d != run.TerminalFailure.EventsDigest {
 		return "", domain.ErrMembershipDenied
 	}
-	hash, err := localFailureDigest(struct {
+	hash, err := localFailureVersionDigest(version, struct {
 		Domain   string
 		Status   domain.RunStatus
 		Metadata domain.RunTerminalFailureV1
@@ -58,7 +62,7 @@ func (h *LocalFailureV1) readMaterials(ctx context.Context) (*ports.CanonicalEve
 	if err != nil || metadata != h.metadata {
 		return nil, domain.ErrMembershipDenied
 	}
-	p, err := knownMCPFailurePlan(h.run, h.snapshot.Job.Job.Limits, c)
+	p, err := localFailurePlan(h.run, h.snapshot.Job.Job.Limits, c)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +224,7 @@ func (h *LocalFailureV1) Complete(ctx context.Context) error {
 		// No q authority reads may follow a canonical write.
 		tx := &stateTx{store: h.entry.owner.store, sqlTx: q.tx, tenantID: run.TenantID}
 		h.commitAttempted = true // irreversible BEFORE any possible canonical write
-		return failWorkerWithAuthorityTx(ctx, tx, tx, run, h.snapshot.Job.Attempt, h.snapshot.Job.Reservation, domain.RunFailed, domain.AttemptFailed, h.entry.parent.Authority.Lease.ID, h.entry.parent.Authority.Lease.FenceToken, q.at, domain.KnownMCPServiceErrorV1, nil, func(failed domain.Run) error {
+		return failWorkerWithAuthorityTx(ctx, tx, tx, run, h.snapshot.Job.Attempt, h.snapshot.Job.Reservation, domain.RunFailed, domain.AttemptFailed, h.entry.parent.Authority.Lease.ID, h.entry.parent.Authority.Lease.FenceToken, q.at, h.metadata.Stop, nil, func(failed domain.Run) error {
 			events := make([]localCapsuleEventV1, len(h.drafts))
 			for i, d := range h.drafts {
 				events[i] = localCapsuleEventV1{ID: d.ID, Kind: d.Kind, IdempotencyKey: d.IdempotencyKey, Payload: d.Payload, DisplayText: d.DisplayText}
@@ -229,7 +233,7 @@ func (h *LocalFailureV1) Complete(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			return appendCanonicalFinalizationTx(ctx, tx, failed, domain.RunFailed, marker, h.drafts, materials, q.at, canonicalFailureNotice(domain.KnownMCPServiceErrorV1, false))
+			return appendCanonicalFinalizationTx(ctx, tx, failed, domain.RunFailed, marker, h.drafts, materials, q.at, canonicalFailureNotice(h.metadata.Stop, false))
 		}, h)
 	})
 	if replayErr != nil {

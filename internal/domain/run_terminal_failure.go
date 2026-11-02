@@ -7,6 +7,13 @@ import (
 )
 
 const KnownMCPServiceErrorV1 = "mcp_service_error"
+const ModelOutcomeUnknownV2 = "model_outcome_unknown"
+
+// The compact commitment keeps its original shape. Each admitted capsule schema
+// selects exactly one stop language; a crossed/unknown pair is never a fallback.
+func TerminalFailureSchemaStopValid(schema, stop string) bool {
+	return schema == "sessionless.terminal-failure-custody.v1" && stop == KnownMCPServiceErrorV1 || schema == "sessionless.terminal-failure-custody.v2" && stop == ModelOutcomeUnknownV2
+}
 
 // RunTerminalFailureV1 is retained correspondence DATA, never a producer,
 // dispatch grant, measured bill or physical erasure receipt. The first writer
@@ -30,7 +37,7 @@ func (v RunTerminalFailureV1) ValidateForRun(run Run) error {
 	deny := func() error {
 		return ValidationError{Field: "run.terminal_failure", Reason: "requires exact known-error retained correspondence"}
 	}
-	if v.Version != 1 || v.Scope.Validate() != nil || v.Plan.Validate() != nil || v.Plan.Scope != v.Scope || v.Scope.TenantID != run.TenantID || v.Scope.SessionID != run.SessionID || v.Scope.RunID != run.ID || v.CapturedAt.IsZero() || v.CapturedAt.Nanosecond()%1000 != 0 || v.CapturedAt.Before(run.CreatedAt) || v.CapturedAt.After(run.UpdatedAt) || v.CapsuleSchema != "sessionless.terminal-failure-custody.v1" || v.Stop != KnownMCPServiceErrorV1 || v.Cleanup != "joined_retained" || run.Status != RunFailed || run.TerminalCustody == nil || run.TerminalCustody.Plan != v.Plan || run.TerminalCustody.Correspondence != nil || run.TerminalCustody.LocalEvidence != nil {
+	if v.Version != 1 || v.Scope.Validate() != nil || v.Plan.Validate() != nil || v.Plan.Scope != v.Scope || v.Scope.TenantID != run.TenantID || v.Scope.SessionID != run.SessionID || v.Scope.RunID != run.ID || v.CapturedAt.IsZero() || v.CapturedAt.Nanosecond()%1000 != 0 || v.CapturedAt.Before(run.CreatedAt) || v.CapturedAt.After(run.UpdatedAt) || !TerminalFailureSchemaStopValid(v.CapsuleSchema, v.Stop) || v.Cleanup != "joined_retained" || run.Status != RunFailed || run.TerminalCustody == nil || run.TerminalCustody.Plan != v.Plan || run.TerminalCustody.Correspondence != nil || run.TerminalCustody.LocalEvidence != nil {
 		return deny()
 	}
 	if v.CapturedAt != v.CapturedAt.UTC().Truncate(time.Microsecond) || run.StartedAt != nil && v.CapturedAt.Before(*run.StartedAt) || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) {

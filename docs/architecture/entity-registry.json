@@ -2782,7 +2782,7 @@
     {
       "table": "run_finalizations",
       "migration": "00059_create_run_finalizations.sql",
-      "role": "Canonical exactly-once terminal marker. Original V1 and local_v2 formats remain strict; local_f1 binds the separate known-service-error frontier, full reserved/UNKNOWN accounting, canonical pair plus fixed notice and joined_retained custody, not erasure or send authority.",
+      "role": "Canonical exactly-once terminal marker. Original V1 and local_v2 formats remain strict; local_f1 binds either strict failure-capsule/accounting V1 known MCP service error or V2 known MCP prefix plus authenticated UNKNOWN MODEL tail, full reserved/UNKNOWN accounting, canonical pair plus fixed notice and joined_retained custody, not erasure or send authority.",
       "primaryKey": [
         "tenant_id",
         "run_id"
@@ -2859,7 +2859,7 @@
     {
       "table": "runs",
       "migration": "00007_create_runs.sql",
-      "role": "Canonical Run payload with one immutable terminal Plan and optional strict terminal_failure V1 correspondence. Generic writers preserve metadata; known MCP service_error retains original ordinary bodies and UNKNOWN full debit without success evidence, a second capsule, ledger or larger 32KiB payload allowance.",
+      "role": "Canonical Run payload with one immutable terminal Plan and optional strict terminal_failure V1-shaped correspondence selecting exact capsule/stop variants. Generic writers preserve metadata; known MCP service_error or a complete authenticated UNKNOWN MODEL tail after known MCP retains actual original bodies and full debit without success evidence, an invented response, a second capsule, ledger or larger 32KiB payload allowance.",
       "primaryKey": [
         "tenant_id",
         "run_id"

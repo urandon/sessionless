@@ -43,7 +43,7 @@ func TestTerminalFailureAliasesShareGateWithoutBurningLoser(t *testing.T) {
 				go func() {
 					defer close(joined)
 					if failureActive {
-						done <- owner.WriteKnownMCPFailureV1(ctx, run, drafts, bodies)
+						done <- owner.WriteFailureEventsV1(ctx, run, drafts, bodies)
 					} else {
 						_, err := s.Write(ctx, []byte("original ordinary body"))
 						done <- err
@@ -52,7 +52,7 @@ func TestTerminalFailureAliasesShareGateWithoutBurningLoser(t *testing.T) {
 				synctest.Wait()
 				alias := *owner
 				before, _, _, _, _ := b.counts()
-				if err := alias.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies); !errors.Is(err, operationbody.ErrBusy) {
+				if err := alias.WriteFailureEventsV1(t.Context(), run, drafts, bodies); !errors.Is(err, operationbody.ErrBusy) {
 					t.Error("failure alias inspected/bypassed active slot outside original gate", err)
 				}
 				if after, _, _, _, _ := b.counts(); after != before {
@@ -64,11 +64,11 @@ func TestTerminalFailureAliasesShareGateWithoutBurningLoser(t *testing.T) {
 					t.Fatal("original writer", err)
 				}
 				if !failureActive {
-					if err := owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies); err != nil {
+					if err := owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies); err != nil {
 						t.Fatal("busy loser burned unused batch/notice", err)
 					}
 				}
-				if err := alias.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies); err == nil {
+				if err := alias.WriteFailureEventsV1(t.Context(), run, drafts, bodies); err == nil {
 					t.Error("used shared batch/notice reopened")
 				}
 				want := 4
@@ -143,13 +143,13 @@ func TestTerminalFailureCompletePrefixSharesOriginalEightEventCap(t *testing.T) 
 		drafts = append(drafts, draft)
 		bodies = append(bodies, event.Payload)
 	}
-	if owner.WriteCapsule(t.Context(), custody, capsule) != nil || owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies) != nil {
+	if owner.WriteCapsule(t.Context(), custody, capsule) != nil || owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies) != nil {
 		t.Fatal("complete bounded DATA batch rejected")
 	}
 	if puts, opens, closes, deletes, _ := b.counts(); puts != 10 || opens != 10 || closes != 10 || deletes != 0 {
 		t.Fatal("multi-pair physical batch repeated/erased", puts, opens, closes, deletes)
 	}
-	if owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies) == nil {
+	if owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies) == nil {
 		t.Fatal("multi-pair original batch replayed")
 	}
 }
@@ -173,12 +173,12 @@ func TestTerminalFailureSameBatchNoticeAndRetainedAliasFence(t *testing.T) {
 	if err := owner.WriteCapsule(t.Context(), custody, capsule); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies); err != nil {
+	if err := owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies); err != nil {
 		t.Fatal("original F1 physical batch", err)
 	}
 	alias := *owner
 	copyStore := *s
-	if alias.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies) == nil || alias.WriteCanonicalEventsV2(t.Context(), run, drafts, bodies) == nil || alias.WriteFailureNotice(t.Context(), drafts[2], bodies[2]) == nil {
+	if alias.WriteFailureEventsV1(t.Context(), run, drafts, bodies) == nil || alias.WriteCanonicalEventsV2(t.Context(), run, drafts, bodies) == nil || alias.WriteFailureNotice(t.Context(), drafts[2], bodies[2]) == nil {
 		t.Error("batch or protected notice reset across arms/aliases")
 	}
 	receipt, err := owner.FenceRetainedBodies(t.Context(), refs)
@@ -228,14 +228,14 @@ func TestTerminalFailureInvalidNoticeBurnsWithoutExtraEffects(t *testing.T) {
 			if mode == "partial_put" {
 				b.putFault = "lost_ack"
 			}
-			if owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies) == nil {
+			if owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies) == nil {
 				t.Fatal("invalid/uncertain F1 batch accepted")
 			}
 			after, _, _, _, _ := b.counts()
 			if mode != "partial_put" && after != before {
 				t.Fatal("invalid whole batch wrote events")
 			}
-			if owner.WriteKnownMCPFailureV1(t.Context(), run, drafts, bodies) == nil {
+			if owner.WriteFailureEventsV1(t.Context(), run, drafts, bodies) == nil {
 				t.Error("failed physical publication retried")
 			}
 		})

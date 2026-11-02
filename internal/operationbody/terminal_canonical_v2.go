@@ -87,9 +87,12 @@ func (t *TerminalOutputV1) writeCanonicalEvents(ctx context.Context, run domain.
 			}
 			toolBytes += uint64(len(body))
 		} else if failure {
-			notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, domain.KnownMCPServiceErrorV1)
-			matches := e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID && uint64(len(body)) <= t.owner.failure.limit
-			clear(notice.Payload)
+			matches := false
+			for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2} {
+				notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, stop)
+				matches = matches || e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID && uint64(len(body)) <= t.owner.failure.limit
+				clear(notice.Payload)
+			}
 			if !matches {
 				return ErrBody
 			}

@@ -71,3 +71,23 @@ func TestRunTerminalFailureStrictNestedJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestRunTerminalFailureModelUnknownRequiresExactVersionedPair(t *testing.T) {
+	for _, schema := range []string{"sessionless.terminal-failure-custody.v1", "sessionless.terminal-failure-custody.v2", "sessionless.terminal-failure-custody.v3"} {
+		for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2, "arbitrary_transport_error"} {
+			run := failureRunData(t)
+			run.TerminalFailure.CapsuleSchema, run.TerminalFailure.Stop = schema, stop
+			want := schema == "sessionless.terminal-failure-custody.v1" && stop == domain.KnownMCPServiceErrorV1 || schema == "sessionless.terminal-failure-custody.v2" && stop == domain.ModelOutcomeUnknownV2
+			if (run.Validate() == nil) != want {
+				t.Fatal("crossed or unknown failure format/stop language", schema, stop)
+			}
+			if want {
+				raw, err := json.Marshal(run)
+				var restored domain.Run
+				if err != nil || json.Unmarshal(raw, &restored) != nil || restored.Validate() != nil || restored.TerminalFailure.Version != 1 || !domain.EqualRunTerminalFailureV1(restored.TerminalFailure, run.TerminalFailure) {
+					t.Fatal("same compact V1 commitment lost strict capsule variant")
+				}
+			}
+		}
+	}
+}

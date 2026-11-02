@@ -33,6 +33,16 @@ func (p *FailurePlanV1) Release() {
 }
 
 func EncodeKnownMCPServiceFailureV1(runID domain.RunID, limits domain.ProductLimits, pair []ports.ExecutionToolEvent) (out *FailurePlanV1, err error) {
+	return encodeToolPrefixFailure(runID, limits, pair, domain.KnownMCPServiceErrorV1)
+}
+
+func EncodeModelAfterMCPFailureV2(runID domain.RunID, limits domain.ProductLimits, pair []ports.ExecutionToolEvent) (*FailurePlanV1, error) {
+	return encodeToolPrefixFailure(runID, limits, pair, domain.ModelOutcomeUnknownV2)
+}
+
+// Only the two fixed exported encoders select a stop. No error text or caller
+// backend output becomes terminal authority through this DATA codec.
+func encodeToolPrefixFailure(runID domain.RunID, limits domain.ProductLimits, pair []ports.ExecutionToolEvent, stop string) (out *FailurePlanV1, err error) {
 	if runID.Validate() != nil || len(pair) < 2 || len(pair) > 8 || len(pair)%2 != 0 {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -74,7 +84,7 @@ func EncodeKnownMCPServiceFailureV1(runID domain.RunID, limits domain.ProductLim
 		encoded += uint64(len(e.Payload))
 		p.events = append(p.events, e)
 	}
-	notice, e := EncodeFailureV1(runID, false, domain.KnownMCPServiceErrorV1)
+	notice, e := EncodeFailureV1(runID, false, stop)
 	if e != nil {
 		return nil, e
 	}

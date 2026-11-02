@@ -503,6 +503,239 @@ func TestLocalSessionCredentialedMCPOfflineWebCanonicalManager(t *testing.T) {
 func TestLocalSessionCredentialedMCPOfflineWebKnownServiceError(t *testing.T) {
 	runKnownServiceErrorWeb(t, false)
 }
+
+// The ordinary original engine sends MODEL2 only after an authenticated durable
+// successful MCP result. A malformed HTTP200 is a persisted UNKNOWN outcome,
+// never a fabricated service_error or assistant response. The known tool pair
+// must survive Registry sanitization and the original failure transaction.
+func TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure(t *testing.T) {
+	runModelAfterMCPFailureWeb(t, false, "")
+}
+func TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailureFreshHistory(t *testing.T) {
+	runModelAfterMCPFailureWeb(t, true, "")
+}
+func TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailureChangedHistory(t *testing.T) {
+	runModelAfterMCPFailureWeb(t, true, "capsule_missing_tail")
+}
+func TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailureCommitLoss(t *testing.T) {
+	for _, fault := range []string{"rollback", "ambiguous"} {
+		t.Run(fault, func(t *testing.T) { runModelAfterMCPFailureWeb(t, false, fault) })
+	}
+}
+func TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailureIncompleteTail(t *testing.T) {
+	for _, fault := range []string{"missing_readback", "missing_tail", "changed_tail", "response_taint"} {
+		t.Run(fault, func(t *testing.T) { runModelAfterMCPFailureWeb(t, false, fault) })
+	}
+}
+
+type modelTailLostPutBlobs struct {
+	ports.BlobStore
+	ordinary, uncertain int
+}
+
+func (b *modelTailLostPutBlobs) Put(ctx context.Context, tenant domain.TenantID, key string, r io.Reader) (domain.BlobRef, error) {
+	ref, err := b.BlobStore.Put(ctx, tenant, key, r)
+	if strings.Contains(key, "/attempt-operations-v1/") {
+		b.ordinary++
+		if b.ordinary == 6 && err == nil {
+			b.uncertain++
+			return domain.BlobRef{}, errors.New("controlled MODEL2 response PUT lost acknowledgement")
+		}
+	}
+	return ref, err
+}
+
+func runModelAfterMCPFailureWeb(t *testing.T, next bool, fault string) {
+	if fault != "" && fault != "rollback" && fault != "ambiguous" && fault != "missing_readback" && fault != "missing_tail" && fault != "changed_tail" && fault != "response_taint" && !(next && fault == "capsule_missing_tail") {
+		t.Fatal("closed MODEL2 failure fault")
+	}
+	wantCalls := 2
+	if next {
+		wantCalls = 3
+	}
+	model := newOfflineModelChainPeer(t, wantCalls)
+	seed := ydbstore.NewLocalWebManagerSeed(t, model.endpoint())
+	profile, err := seed.Source.Configuration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.configure(t, profile.ModelID)
+	if fault != "response_taint" {
+		model.malformedFinal(t, profile.ModelID)
+	}
+	blobs := &canonicalManagerBlobs{canonicalTerminalBlobs: &canonicalTerminalBlobs{sessionCompactionBlobs: newSessionCompactionBlobs(), owner: t}}
+	h := newWebManagerHandler(t, seed, blobs, newWebManagerAuth(seed.Tenant, seed.Owner))
+	cookie, csrf := webManagerLogin(t, h)
+	path := "/api/web/v1/sessions/" + string(seed.Session) + "/messages"
+	response := webManagerRequest(h, http.MethodPost, path, `{"text":"known tool then failed model","idempotency_key":"web-model-after-tool-failure"}`, cookie, csrf)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("genuine Web admission status=%d SQL=%s", response.Code, seed.LastError())
+	}
+	managerSeed := seed.AdmitManager(t)
+	if fault == "rollback" || fault == "ambiguous" {
+		managerSeed.LoseNextTerminalCommit(t, fault)
+	}
+	if fault == "missing_readback" || fault == "missing_tail" || fault == "changed_tail" {
+		seed.SetModelTailObservationFault(t, fault)
+	}
+	blobs.seed = managerSeed.LocalCanonicalTerminalSeed
+	var storage ports.BlobStore = blobs
+	tainted := &modelTailLostPutBlobs{BlobStore: blobs}
+	if fault == "response_taint" {
+		storage = tainted
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	invocation, err := providerloopsession.NewLocalV1(ctx, providerloopsession.LocalConfigV1{Source: seed.Source, DB: seed.DB, StoreOptions: seed.Options, Prepare: managerSeed.Prepare, Operate: managerSeed.Operate, Backend: managerSeed.Backend, Substrate: managerSeed.Substrate, Blobs: storage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := invocation.Close(); err != nil {
+			t.Error("original model-failure session join", err)
+		}
+	})
+	mcp := newOfflineMCPPeer(t, managerSeed.Grant.Descriptor, 4, nil, false)
+	if err := invocation.ConfigureMCPOfflineNetwork(mcp.lookup, mcp.dial, mcp.roots); err != nil {
+		t.Fatal(err)
+	}
+	state, err := invocation.WorkerState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := &canonicalManagerQueue{message: ports.ReceivedMessage{Envelope: queuecontract.Envelope{Schema: queuecontract.SchemaV1, MessageID: "web-model-failure-delivery", Kind: queuecontract.KindDispatchRun, TenantID: seed.Tenant, SubjectID: string(managerSeed.Loaded.Run.ID), EnqueuedAt: managerSeed.Loaded.Job.CreatedAt}}}
+	var retryError error
+	manager, err := worker.New(worker.Config{ScratchRoot: t.TempDir(), WorkerID: managerSeed.Claim.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, LocalOwnedSession: invocation, ProjectionWakePublisher: q, DeliveryWakePublisher: q, RetryObserver: func(err error) { retryError = err }}, localManagerClock{}, q, state, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.beforeAck = func() error {
+		got := managerSeed.TerminalSnapshot(t)
+		if got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed || got.Reservation.Status != domain.ReservationReleased || got.Finalizations != 1 || got.Run.TerminalFailure == nil || got.Run.TerminalFailure.Stop != domain.ModelOutcomeUnknownV2 || got.Run.TerminalCustody == nil || got.Run.TerminalCustody.LocalEvidence != nil || got.Run.TerminalCustody.Correspondence != nil || got.LeasePresent || got.ActiveRuns != 0 || q.wake != q.ack+1 || blobs.deletes != 0 || blobs.absences != 0 {
+			return errors.New("MODEL failure ACK before truthful canonical failure/joined-retained release/wake")
+		}
+		if _, err := invocation.WorkerState(); err == nil {
+			return errors.New("MODEL failure ACK before original session close")
+		}
+		return nil
+	}
+	outcome, runErr := manager.RunOnce(ctx)
+	// Restore only the controlled read peer after the actual original owner
+	// has stopped; persisted reservation/observation bytes are never repaired.
+	seed.EndModelTailObservationFault()
+	mcp.wait(t)
+	model.waitCompleted(t, 2)
+	if !next {
+		model.wait(t, false)
+	}
+	reservations, observations := managerSeed.OperationReadback(t)
+	wantReason := domain.AttemptOperationReasonMalformedV1
+	if fault == "response_taint" {
+		wantReason = domain.AttemptOperationReasonWorkerLostV1
+	}
+	if model.completedCalls() != 2 || len(reservations) != 3 || len(observations) != 3 || reservations[2].Operation.Kind != domain.AttemptOperationModelV1 || observations[1].Outcome != domain.AttemptOperationCompletedV1 || observations[1].Reason != domain.AttemptOperationReasonNoneV1 || observations[2].Outcome != domain.AttemptOperationAcceptedOutcomeUnknownV1 || observations[2].Reason != wantReason || observations[2].ResponseRef != "" || observations[2].ResponseDigest != "" || observations[2].ResponseBytes != 0 {
+		t.Fatalf("actual sent MODEL2/authenticated UNKNOWN tail missing: completed=%d reservations=%d observations=%+v", model.completedCalls(), len(reservations), observations)
+	}
+	// The original decoder extracts the independent valid provider report
+	// before rejecting finish_reason or writing its normalized response body.
+	// UNKNOWN outcome/absent validated response must not erase that report.
+	usage := observations[2].Usage
+	if usage.State != domain.AttemptOperationUsageProviderReportedV1 || usage.InputTokens == nil || *usage.InputTokens != 1 || usage.OutputTokens == nil || *usage.OutputTokens != 1 || usage.AmountMicrounits != nil {
+		t.Fatal("actual UNKNOWN MODEL tail lost independent provider-reported usage")
+	}
+	got := managerSeed.TerminalSnapshot(t)
+	if fault == "missing_readback" || fault == "missing_tail" || fault == "changed_tail" || fault == "response_taint" || fault == "rollback" {
+		if runErr != nil || retryError == nil || outcome != worker.OutcomeRetried || q.ack != 0 || q.wake != 0 || q.retry != 1 || got.Run.Status != domain.RunRunning || got.Run.TerminalFailure != nil || got.Finalizations != 0 || len(got.Events) != 0 {
+			t.Fatalf("uncertain MODEL2 tail was salvaged into partial canonical failure: fault=%s outcome=%s err=%v retry=%v", fault, outcome, runErr, retryError)
+		}
+		if fault == "response_taint" && tainted.uncertain != 1 {
+			t.Fatal("response PUT uncertainty was not exercised")
+		}
+		if (fault == "missing_readback" || fault == "missing_tail" || fault == "changed_tail") && seed.ModelTailObservationFaults() == 0 {
+			t.Fatal("original persisted tail fault was not exercised")
+		}
+		puts := blobs.puts
+		if again, err := manager.RunOnce(ctx); err != nil || again != worker.OutcomeRetried || blobs.puts != puts || model.completedCalls() != 2 {
+			t.Fatal("uncertain tail redelivery performed another effect", again, err)
+		}
+		return
+	}
+	if runErr != nil || retryError != nil || outcome != worker.OutcomeFailed || q.ack != 1 || q.retry != 0 || q.wake != 1 || got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed || got.Run.TerminalFailure == nil || len(got.Events) != 3 || got.Finalizations != 1 {
+		t.Fatalf("known durable MCP prefix lost after actually sent MODEL2 UNKNOWN: outcome=%s err=%v retry=%v events=%d finalizations=%d metadata=%t", outcome, runErr, retryError, len(got.Events), got.Finalizations, got.Run.TerminalFailure != nil)
+	}
+	if got.Events[0].Kind != domain.SessionEventToolCall || got.Events[1].Kind != domain.SessionEventToolResult || got.Events[2].Kind != domain.SessionEventSystemNotice || got.Manifest.ID != "" || got.EvidenceRecord != "" || got.Run.TerminalFailure.Version != 1 || got.Run.TerminalFailure.CapsuleSchema != "sessionless.terminal-failure-custody.v2" || got.Run.TerminalFailure.Stop != domain.ModelOutcomeUnknownV2 || !strings.HasPrefix(got.FinalDigest, "local_f1:") || blobs.eventWrites != 3 || blobs.capsulePuts != 1 || blobs.deletes != 0 {
+		t.Fatal("MODEL2 failure changed original slots/marker or invented success/erasure")
+	}
+	// The known-success pair must retain the ordinary success wire, not acquire
+	// an error wrapper just because the later actual MODEL response was invalid.
+	pair := []ports.ExecutionToolEvent{
+		{Kind: domain.SessionEventToolCall, CallID: "offline-call-1", ToolName: "search_openai_docs", Payload: []byte(`{"call_id":"offline-call-1","name":"search_openai_docs","arguments":{"query":"public docs"}}`)},
+		{Kind: domain.SessionEventToolResult, CallID: "offline-call-1", ToolName: "search_openai_docs", Payload: []byte(`{"call_id":"offline-call-1","is_error":false,"content":["offline public docs result"]}`)},
+	}
+	expected, err := canonicaloutput.EncodeCompletionV1(got.Run.ID, managerSeed.Loaded.Job.Limits, ports.ExecutionResult{ToolEvents: pair}, "unused-success-manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer expected.Release()
+	notice, err := canonicaloutput.EncodeFailureV1(got.Run.ID, false, domain.ModelOutcomeUnknownV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(notice.Payload)
+	wantEvents := append(expected.Events()[:2], notice)
+	for i, event := range got.Events {
+		blobs.mu.Lock()
+		payload := bytes.Clone(blobs.objects[string(event.TenantID)+"\x00"+event.Payload.Key])
+		blobs.mu.Unlock()
+		same := event.ID == wantEvents[i].ID && bytes.Equal(payload, wantEvents[i].Payload)
+		clear(payload)
+		if !same {
+			t.Fatal("actual MODEL failure changed successful canonical pair or fixed notice", i)
+		}
+	}
+	if fault == "ambiguous" && got.LostACKs != 1 {
+		t.Fatal("exact ambiguous F2 commit was not observed")
+	}
+	var capsule struct {
+		Schema     string                                  `json:"schema"`
+		Version    uint32                                  `json:"version"`
+		Accounting ports.OwnedOperationFailureAccountingV2 `json:"accounting"`
+		Bodies     []domain.BlobRef                        `json:"retained_bodies"`
+		Operations []struct {
+			Reservation domain.AttemptOperationReservationV1 `json:"reservation"`
+			Observation domain.AttemptOperationObservationV1 `json:"observation"`
+			Normalized  json.RawMessage                      `json:"normalized"`
+		} `json:"operations"`
+	}
+	blobs.mu.Lock()
+	retained := bytes.Clone(blobs.objects[string(seed.Tenant)+"\x00"+got.Run.TerminalCustody.Plan.Capsule.Key])
+	blobs.mu.Unlock()
+	defer clear(retained)
+	if json.Unmarshal(retained, &capsule) != nil || capsule.Schema != "sessionless.terminal-failure-custody.v2" || capsule.Version != 2 || len(capsule.Operations) != 3 || !bytes.Equal(capsule.Operations[2].Normalized, []byte("null")) || capsule.Accounting.Version != 2 || capsule.Accounting.AggregateDebit != reservations[2].AggregateDebit || capsule.Accounting.ComponentAmounts != reservations[2].ComponentAmounts || len(capsule.Bodies) != 5 || bytes.Contains(retained, []byte("unvalidated model bytes")) {
+		t.Fatal("F2 lost complete original UNKNOWN tail/debits or invented response")
+	}
+	for i, op := range capsule.Operations {
+		if !reflect.DeepEqual(op.Reservation, reservations[i]) || !reflect.DeepEqual(op.Observation, observations[i]) || !reflect.DeepEqual(capsule.Accounting.Operations[i].Usage, observations[i].Usage) {
+			t.Fatal("F2 capsule/accounting changed authentic frontier", i)
+		}
+	}
+	for _, mode := range []string{"positive", "missing_observation", "missing_parent", "changed_marker", "changed_accounting", "missing_body"} {
+		if err := seed.CheckKnownFailureDeletion(t, managerSeed, blobs.sessionCompactionBlobs, mode); err != nil {
+			t.Fatal("F2 public retained deletion", mode, err)
+		}
+	}
+	puts, stats := blobs.puts, managerSeed.Stats()
+	if again, err := manager.RunOnce(ctx); err != nil || again != worker.OutcomeDuplicate || blobs.puts != puts || managerSeed.Stats() != stats || model.completedCalls() != 2 {
+		t.Fatal("committed F2 duplicate replayed an old effect", again, err)
+	}
+	if next {
+		if fault == "capsule_missing_tail" {
+			runNextAfterKnownFailure(t, seed, managerSeed, blobs, h, cookie, csrf, model, fault)
+		} else {
+			runNextAfterKnownFailure(t, seed, managerSeed, blobs, h, cookie, csrf, model)
+		}
+	}
+}
 func TestLocalSessionCredentialedMCPOfflineWebKnownServiceErrorFreshHistory(t *testing.T) {
 	runKnownServiceErrorWeb(t, true)
 }
@@ -698,9 +931,31 @@ func runKnownServiceErrorWeb(t *testing.T, next bool, commitFault ...string) {
 
 func runNextAfterKnownFailure(t *testing.T, seed *ydbstore.LocalWebManagerSeed, prior *ydbstore.LocalCanonicalManagerSeed, oldBlobs *canonicalManagerBlobs, h http.Handler, cookie, csrf *http.Cookie, model *offlineModelChainPeer, historyFault ...string) {
 	t.Helper()
+	priorCalls := model.completedCalls()
+	if priorCalls != 1 && priorCalls != 2 {
+		t.Fatal("closed prior MODEL count")
+	}
 	priorSnapshot := prior.TerminalSnapshot(t)
 	seed.BeginNextAfterKnownFailure(t, prior)
-	if len(historyFault) == 1 && historyFault[0] == "changed_notice" {
+	if len(historyFault) == 1 && historyFault[0] == "capsule_missing_tail" {
+		key := string(priorSnapshot.Run.TenantID) + "\x00" + priorSnapshot.Run.TerminalCustody.Plan.Capsule.Key
+		oldBlobs.mu.Lock()
+		original := bytes.Clone(oldBlobs.objects[key])
+		var fields map[string]json.RawMessage
+		var operations []json.RawMessage
+		if json.Unmarshal(original, &fields) != nil || json.Unmarshal(fields["operations"], &operations) != nil || len(operations) != 3 {
+			oldBlobs.mu.Unlock()
+			t.Fatal("actual V2 complete capsule before corruption")
+		}
+		changed, err := json.Marshal(operations[:2])
+		if err != nil {
+			oldBlobs.mu.Unlock()
+			t.Fatal(err)
+		}
+		oldBlobs.objects[key] = bytes.Replace(original, fields["operations"], changed, 1)
+		oldBlobs.mu.Unlock()
+		t.Cleanup(func() { oldBlobs.mu.Lock(); oldBlobs.objects[key] = original; oldBlobs.mu.Unlock() })
+	} else if len(historyFault) == 1 && historyFault[0] == "changed_notice" {
 		notice, err := canonicaloutput.EncodeFailureV1(priorSnapshot.Run.ID, false, "harness_failed")
 		if err != nil {
 			t.Fatal(err)
@@ -757,7 +1012,7 @@ func runNextAfterKnownFailure(t *testing.T, seed *ydbstore.LocalWebManagerSeed, 
 	outcome, err := manager.RunOnce(ctx)
 	if len(historyFault) == 1 {
 		reservations, observed := next.OperationReadback(t)
-		if err != nil || retried == nil || outcome != worker.OutcomeRetried || q.ack != 0 || q.retry != 1 || q.dead != 0 || model.completedCalls() != 1 || len(reservations) != 0 || len(observed) != 0 || blobs.puts != 0 {
+		if err != nil || retried == nil || outcome != worker.OutcomeRetried || q.ack != 0 || q.retry != 1 || q.dead != 0 || model.completedCalls() != priorCalls || len(reservations) != 0 || len(observed) != 0 || blobs.puts != 0 {
 			t.Fatalf("changed valid notice bypassed retained F1 before effect: outcome=%s err=%v retry=%v MODEL=%d reservations=%d puts=%d", outcome, err, retried, model.completedCalls(), len(reservations), blobs.puts)
 		}
 		return
@@ -766,12 +1021,12 @@ func runNextAfterKnownFailure(t *testing.T, seed *ydbstore.LocalWebManagerSeed, 
 		t.Fatalf("fresh original serving history outcome=%s err=%v retry=%v trace=%s SQL=%s", outcome, err, retried, next.TerminalTrace(), seed.LastError())
 	}
 	wires := model.wait(t, false)
-	if len(wires) != 2 {
+	if len(wires) != priorCalls+1 {
 		t.Fatal("fresh MODEL request count")
 	}
 	var wire globalClosureWire
 	var history globalClosureHistory
-	if json.Unmarshal(wires[1].body, &wire) != nil || len(wire.Messages) != 2 || json.Unmarshal([]byte(wire.Messages[1].Content), &history) != nil || history.Schema != "sessionless.history.v1" {
+	if json.Unmarshal(wires[priorCalls].body, &wire) != nil || len(wire.Messages) != 2 || json.Unmarshal([]byte(wire.Messages[1].Content), &history) != nil || history.Schema != "sessionless.history.v1" {
 		t.Fatal("actual fresh MODEL frozen history grammar")
 	}
 	for _, event := range prior.TerminalSnapshot(t).Events {

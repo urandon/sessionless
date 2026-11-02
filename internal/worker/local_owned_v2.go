@@ -59,8 +59,8 @@ func (manager *Manager) runLocalOwned(ctx context.Context, message ports.Receive
 		return fail(err)
 	}
 	if modelResult, err := session.RunWorkerLoop(executionCtx); err != nil {
-		if failure, known := session.KnownMCPFailure(); known == nil {
-			return manager.finishLocalKnownMCPFailure(ctx, message, loaded, leaseState, watchdog, cancelExecution, cancelWatchdog, failure)
+		if failure, known := session.Failure(); known == nil {
+			return manager.finishLocalFailure(ctx, message, loaded, leaseState, watchdog, cancelExecution, cancelWatchdog, failure)
 		}
 		manager.observeManagedModelStep(ctx, executionCtx, modelResult, err)
 		return fail(err)

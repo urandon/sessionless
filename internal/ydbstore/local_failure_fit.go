@@ -19,7 +19,8 @@ import (
 // This first arm is eligible only before a success candidate/batch exists, so
 // there is no simultaneously writable late-success assistant residue.
 func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, source *LocalCompactionSourceV1, op domain.AttemptOperationV1) error {
-	if op.Kind != domain.AttemptOperationMCPToolV1 {
+	modelTail := op.Kind == domain.AttemptOperationModelV1 && localTerminalNeedsV2(source.state.operations, op)
+	if op.Kind != domain.AttemptOperationMCPToolV1 && !modelTail {
 		return nil
 	}
 	deny := func() error { return ErrTerminalCapacity }
@@ -27,13 +28,15 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	if len(ops) == 0 || len(ops) >= 12 || op.Sequence != uint64(len(ops)+1) || source.state.snapshot.Job.Run.TerminalCustody != nil {
 		return deny()
 	}
-	previous := ops[len(ops)-1]
-	decoded, err := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, previous.Request, previous.Response, previous.Reservation.Operation.Kind)
-	if decoded.Call != nil {
-		defer clear(decoded.Call.Arguments)
-	}
-	if err != nil || decoded.Call == nil || decoded.Stop != configuredinference.StopToolV1 {
-		return deny()
+	if !modelTail {
+		previous := ops[len(ops)-1]
+		decoded, err := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, previous.Request, previous.Response, previous.Reservation.Operation.Kind)
+		if decoded.Call != nil {
+			defer clear(decoded.Call.Arguments)
+		}
+		if err != nil || decoded.Call == nil || decoded.Stop != configuredinference.StopToolV1 {
+			return deny()
+		}
 	}
 	d := strings.Repeat("0", 64)
 	pair, err := localTerminalCanonicalPairsUpperV2(entry.owner.configuration, ops, op)
@@ -45,25 +48,38 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 			clear(event.Payload)
 		}
 	}()
-	result, err := localFailureToolResult(domain.AttemptOperationDigestV1(d), domain.AttemptOperationReservationDigestV1(d), domain.AttemptOperationObservationDigestV1(d), []string{})
-	if err != nil {
-		return deny()
+	if !modelTail {
+		result, err := localFailureToolResult(domain.AttemptOperationDigestV1(d), domain.AttemptOperationReservationDigestV1(d), domain.AttemptOperationObservationDigestV1(d), []string{})
+		if err != nil {
+			return deny()
+		}
+		defer clear(result)
+		clear(pair[len(pair)-1].Payload)
+		pair[len(pair)-1].Payload = result
 	}
-	defer clear(result)
-	clear(pair[len(pair)-1].Payload)
-	pair[len(pair)-1].Payload = result
 	run := source.state.snapshot.Job.Run
-	plan, err := canonicaloutput.EncodeKnownMCPServiceFailureV1(run.ID, source.state.snapshot.Job.Job.Limits, pair)
+	var plan *canonicaloutput.FailurePlanV1
+	if modelTail {
+		plan, err = canonicaloutput.EncodeModelAfterMCPFailureV2(run.ID, source.state.snapshot.Job.Job.Limits, pair)
+	} else {
+		plan, err = canonicaloutput.EncodeKnownMCPServiceFailureV1(run.ID, source.state.snapshot.Job.Job.Limits, pair)
+	}
 	if err != nil {
 		return deny()
 	}
 	defer plan.Release()
 	n := min(op.ResultBytes, uint64(64<<10))
+	if modelTail {
+		n = 4
+	} // exact explicit absent normalized response: null
 	if n < 4 {
 		return deny()
 	}
 	var encoded uint64
-	c := localFailureCapsuleV1{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: entry.parent.Clone(), Source: entry.source.Clone(), FrontierDigest: d, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", CapturedAt: localTerminalSizeTime, Derived: run.Clone().DerivedContext}
+	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: entry.parent.Clone(), Source: entry.source.Clone(), FrontierDigest: d, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", CapturedAt: localTerminalSizeTime, Derived: run.Clone().DerivedContext}
+	if modelTail {
+		c.Schema, c.Version, c.Stop = "sessionless.terminal-failure-custody.v2", 2, domain.ModelOutcomeUnknownV2
+	}
 	c.ProfileDigest, err = entry.owner.configuration.Digest()
 	if err != nil {
 		return deny()
@@ -74,7 +90,7 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 			return deny()
 		}
 		size := uint64(len(event.Payload))
-		if i == len(pair)-1 {
+		if i == len(pair)-1 && !modelTail {
 			size += n
 		}
 		if size > sessionmaterial.MaxPayloadBytesV1 {
@@ -90,7 +106,7 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	if encoded > maxToolBytes {
 		return deny()
 	}
-	c.Accounting = ports.OwnedOperationFailureAccountingV1{Version: 1, Scope: op.Scope, AccountingDigest: d, AggregateDebit: localTerminalUpperDebit(), ComponentAmounts: [4]uint64{math.MaxUint64, math.MaxUint64, math.MaxUint64, math.MaxUint64}}
+	c.Accounting = ports.OwnedOperationFailureAccountingV1{Version: c.Version, Scope: op.Scope, AccountingDigest: d, AggregateDebit: localTerminalUpperDebit(), ComponentAmounts: [4]uint64{math.MaxUint64, math.MaxUint64, math.MaxUint64, math.MaxUint64}}
 	var materials []localCapsuleOperationMaterial
 	for _, item := range ops {
 		materials = append(materials, localCapsuleOperationMaterial{reservation: item.Reservation, observation: item.Observation})
@@ -99,6 +115,15 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	future := localTerminalFutureMaterial(op, n)
 	future.observation.Reason = domain.AttemptOperationReasonServiceErrorV1
 	future.observation.Usage = domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageUnknownV1}
+	if modelTail {
+		future.observation.Outcome, future.observation.Reason = domain.AttemptOperationAcceptedOutcomeUnknownV1, domain.AttemptOperationReasonTransportUnknownV1
+		future.observation.ResponseRef, future.observation.ResponseDigest, future.observation.ResponseBytes = "", "", 0
+		number := uint64(math.MaxUint64)
+		// LENGTH only: longest state plus every possible metric, matching the
+		// existing upper accounting rows. This is never a valid/authenticated
+		// usage observation or an invented measured bill.
+		future.observation.Usage = domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageProviderReportedV1, InputTokens: &number, OutputTokens: &number, AmountMicrounits: &number}
+	}
 	materials = append(materials, future)
 	c.Operations = append(c.Operations, localFailureOperationV1{Reservation: future.reservation, Observation: future.observation, Normalized: json.RawMessage(`null`)})
 	upper := localTerminalAccountingUpperV3(entry.source, op.Scope, materials)
@@ -106,8 +131,15 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 		reason := domain.AttemptOperationReasonNoneV1
 		if i == len(materials)-1 {
 			reason = domain.AttemptOperationReasonServiceErrorV1
+			if modelTail {
+				reason = domain.AttemptOperationReasonTransportUnknownV1
+			}
 		}
-		c.Accounting.Operations = append(c.Accounting.Operations, ports.OwnedOperationFailureRowV1{Sequence: row.Sequence, Kind: row.Kind, OperationDigest: row.OperationDigest, ReservationDigest: row.ReservationDigest, ObservationDigest: row.ObservationDigest, Outcome: domain.AttemptOperationCompletedV1, Reason: reason, Reserved: row.Reserved, Usage: row.Usage, MCPSpendingDigest: row.MCPSpendingDigest})
+		outcome := domain.AttemptOperationCompletedV1
+		if modelTail && i == len(materials)-1 {
+			outcome = domain.AttemptOperationAcceptedOutcomeUnknownV1
+		}
+		c.Accounting.Operations = append(c.Accounting.Operations, ports.OwnedOperationFailureRowV1{Sequence: row.Sequence, Kind: row.Kind, OperationDigest: row.OperationDigest, ReservationDigest: row.ReservationDigest, ObservationDigest: row.ObservationDigest, Outcome: outcome, Reason: reason, Reserved: row.Reserved, Usage: row.Usage, MCPSpendingDigest: row.MCPSpendingDigest})
 	}
 	bodies, err := entry.terminalOutputs.SnapshotRetainedBodies(ctx)
 	if err != nil || len(bodies) == 0 {
@@ -144,7 +176,7 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 // Count the exact closed serializer plus a scalar bound for the canonical
 // normalized future response. The private placeholder is exactly JSON null;
 // it is never decoded, authenticated, persisted or returned as an observation.
-func localFailureProspectiveCapsuleBytes(c localFailureCapsuleV1, futureBytes, cap uint64) (uint64, error) {
+func localFailureProspectiveCapsuleBytes(c localFailureCapsule, futureBytes, cap uint64) (uint64, error) {
 	if len(c.Operations) == 0 || futureBytes < 4 || futureBytes > 64<<10 || string(c.Operations[len(c.Operations)-1].Normalized) != "null" {
 		return 0, ErrTerminalCapacity
 	}

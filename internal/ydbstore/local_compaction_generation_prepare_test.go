@@ -332,6 +332,29 @@ func TestLocalCompactionGenerationPrepareSourceCloseBeforePUT(t *testing.T) {
 	})
 }
 
+func TestLocalCompactionLifetimePreservesCallerCancellationCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, _ := prepareGenerationFixture(t)
+		caller, cancel := context.WithCancelCause(t.Context())
+		defer cancel(context.Canceled)
+		call, finish, err := f.entry.localCompactionLifetimeContext(caller)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer finish()
+		cause := errors.New("original caller stopped compaction")
+		cancel(cause)
+		synctest.Wait() // Quiesce the independent caller AfterFunc, not a sleep.
+		if !errors.Is(call.Err(), context.Canceled) || !errors.Is(context.Cause(call), cause) {
+			t.Fatalf("caller cancellation lost cause: err=%v cause=%v want=%v", call.Err(), context.Cause(call), cause)
+		}
+		life, err := f.actual.source.ExecutionLifetime()
+		if err != nil || life.Err() != nil {
+			t.Fatal("one caller cancellation revoked the original shared Source")
+		}
+	})
+}
+
 func TestLocalCompactionGenerationPreparePreservesOriginalBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, source := prepareGenerationFixture(t)

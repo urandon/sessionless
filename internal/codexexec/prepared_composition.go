@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -15,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 // PreparedAttachedWorkerRunnerV1 is an explicitly selected fixed composition,
@@ -92,7 +95,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) GoString() string { return owner.St
 
 func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
 	if owner == nil || owner.nativeSelected() && owner.nativeIdentityV2 != owner || ctx == nil || ctx.Err() != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageIdentity)
 	}
 	var nativeSession *attachedworkersession.Session
 	if owner.mediaConfig != nil || owner.nativeSelected() {
@@ -117,17 +120,20 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	}
 	if invocation.Validate() != nil || invocation.Credential == nil ||
 		invocation.VerifiedInput.ValidateFor(invocation.Identity) != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageVerifiedInput)
 	}
 	input, err := invocation.VerifiedInput.Clone()
 	if err != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageVerifiedInput)
 	}
 	defer input.Clear()
 	job := input.Job
 	if owner.nativeSelected() {
 		deadline, err := acceptedNativeRuntimeDeadlineV2(input, owner.nativeNowV2())
 		if err != nil {
+			if errors.Is(err, ErrContract) {
+				return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeFixed)
+			}
 			return attachedworkerdaemon.InvocationResult{}, err
 		}
 		var stopRuntime context.CancelFunc
@@ -142,19 +148,25 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		if owner.nativeConfigV3 != nil {
 			bundle, qualifyErr := owner.qualifyNativeGenerationV3(ctx, input, nativeSession)
 			if qualifyErr != nil {
+				if errors.Is(qualifyErr, ErrContract) {
+					return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeGeneration)
+				}
 				return attachedworkerdaemon.InvocationResult{}, qualifyErr
 			}
 			generationEvidence, descriptor = &bundle, owner.nativeProfileV3.descriptor
 		} else if owner.nativeConfigV2 != nil {
 			descriptor = owner.nativeProfileV2.descriptor
 			if validateNativeEnvelopeEvidenceV2(owner.nativeProfileV2, owner.nativeConfigV2.Evidence, job.HarnessBinding, owner.nativeNowV2()) != nil || verifyNativeArtifactsV2(ctx, owner.nativeProfileV2) != nil {
-				return attachedworkerdaemon.InvocationResult{}, ErrContract
+				return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageNativeFixed)
 			}
 		} else {
 			descriptor, descriptorErr = owner.mediaConfig.DescriptorV1()
 		}
-		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend || !preparedIngressEnvelope(input) {
-			return attachedworkerdaemon.InvocationResult{}, ErrContract
+		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDescriptor)
+		}
+		if ingressStage := preparedIngressContractStage(input); ingressStage != 0 {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(ingressStage)
 		}
 		media, err = prepareMediaInput(input)
 		if err != nil {
@@ -177,7 +189,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		job.WorkspaceSnapshot != nil || job.SkillBundle != nil || len(job.AllowedMCPServers) != 0 ||
 		invocation.Process.Executable != owner.config.Executable || invocation.Process.ExecutableDigest != owner.config.ExecutableDigest ||
 		!sameStrings(invocation.Process.Arguments, arguments) {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageUnsupportedInput)
 	}
 	var driver *Driver
 	if owner.nativeConfigV3 != nil {
@@ -188,6 +200,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		driver, err = NewPreparedAttachedWorkerDriverV1(owner.config, input.AcceptedAttempt, job.HarnessBinding.Resource, owner.supervisor)
 	}
 	if err != nil {
+		if errors.Is(err, ErrContract) {
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDriver)
+		}
 		return attachedworkerdaemon.InvocationResult{}, err
 	}
 	if media != nil && owner.mediaConfig != nil {
@@ -198,7 +213,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		}
 		boundary, ok := driver.boundary.(*PreparedProcessBoundaryV1)
 		if !ok {
-			return attachedworkerdaemon.InvocationResult{}, ErrContract
+			return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStageDriver)
 		}
 		boundary.mediaConfig = owner.mediaConfig
 	}
@@ -207,7 +222,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		ContextSnapshot: job.ContextSnapshot, ContextWindow: job.ContextWindow, ExecutionPlacementV2: job.ExecutionPlacementV2,
 		HarnessBinding: job.HarnessBinding.Clone(), SubstrateBinding: job.SubstrateBinding, AdmissionCostCeiling: job.AdmissionCostCeiling}
 	if driver.Preflight(ctx, executionIdentity(request)) != nil {
-		return attachedworkerdaemon.InvocationResult{}, ErrContract
+		return attachedworkerdaemon.InvocationResult{}, preparedContractFailure(preparedContractStagePreflight)
 	}
 	stage, err := stagePreparedHistory(owner.scratch, input.Context)
 	if err != nil {
@@ -261,6 +276,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	var runErr error
 	if owner.nativeConfigV3 != nil {
 		runErr = owner.checkNativeGenerationV3(runCtx, nativeSession, job.HarnessBinding.Resource)
+		if errors.Is(runErr, ErrContract) {
+			runErr = preparedContractFailure(preparedContractStageNativeGeneration)
+		}
 	}
 	if runErr == nil {
 		result, runErr = owner.outer.Run(runCtx, invocation)
@@ -292,18 +310,34 @@ func preparedTextEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) b
 }
 
 func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) bool {
+	return preparedIngressContractStage(input) == 0
+}
+
+func preparedIngressContractStage(input *attachedworkerdaemon.VerifiedAttachedInputV1) preparedContractStage {
 	if input == nil || input.CanonicalContext == nil || input.Job.ContextWindow == nil {
-		return false
+		return preparedContractStageIngressShape
 	}
 	if len(input.Artifacts) == 0 && len(input.Manifest.Artifacts) == 0 {
-		return true // Existing admitted history-only library inputs.
+		return 0 // Existing admitted history-only library inputs.
 	}
-	if len(input.Artifacts) != 1 || len(input.Manifest.Artifacts) != 1 {
-		return false
+	if len(input.Artifacts) == 0 || len(input.Artifacts) != len(input.Manifest.Artifacts) {
+		return preparedContractStageIngressManifest
 	}
-	artifact, ref := input.Artifacts[0], input.Manifest.Artifacts[0]
-	if artifact.Name != "message.json" || ref.Name != "message.json" || ref.MediaType != "application/json" {
-		return false
+	// The sealed materializer independently sorts body carriers by name. Its
+	// name/blob validation does not change the ingress manifest's ordered
+	// message+upload declaration. Join bodies by their immutable names, not by
+	// parallel slice positions; retain that original manifest order below.
+	bodies := make(map[string]attachedworkerdaemon.VerifiedAttachedArtifactV1, len(input.Artifacts))
+	for _, body := range input.Artifacts {
+		if _, duplicate := bodies[body.Name]; duplicate {
+			return preparedContractStageIngressManifest
+		}
+		bodies[body.Name] = body
+	}
+	artifact, messageFound := bodies["message.json"]
+	ref := input.Manifest.Artifacts[0]
+	if !messageFound || ref.Name != "message.json" || ref.MediaType != "application/json" {
+		return preparedContractStageIngressManifest
 	}
 	records, err := sessioncontext.DecodeJSONL(input.Context, input.Job.TenantID, input.Job.SessionID)
 	defer func() {
@@ -312,14 +346,42 @@ func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1
 		}
 	}()
 	if err != nil || len(records) == 0 {
-		return false
+		return preparedContractStageIngressRecords
 	}
 	trigger := records[len(records)-1]
 	event, job := trigger.Event, input.Job
-	return event.ID == job.TriggerEventID && event.Sequence == job.ContextWindow.ThroughSequence &&
+	if !(event.ID == job.TriggerEventID && event.Sequence == job.ContextWindow.ThroughSequence &&
 		event.TenantID == job.TenantID && event.SessionID == job.SessionID && event.Kind == domain.SessionEventUserMessage &&
 		event.AuthorUserID != nil && *event.AuthorUserID == job.CredentialOwnerUserID &&
-		event.RunID != nil && *event.RunID == job.RunID && ref.Blob == event.Payload && bytes.Equal(artifact.Body, trigger.Payload)
+		event.RunID != nil && *event.RunID == job.RunID && ref.Blob == event.Payload && bytes.Equal(artifact.Body, trigger.Payload)) ||
+		!strictJSONObject(trigger.Payload) {
+		return preparedContractStageIngressTrigger
+	}
+	// Reuse ingress's closed envelope validator: these must be exactly its
+	// ordered current-event uploads, not arbitrary independently valid blobs.
+	uploads := input.Manifest.Artifacts[1:]
+	prepared, err := sessionmaterial.PrepareV1(event, trigger.Payload, uploads)
+	if err != nil {
+		return preparedContractStageIngressSource
+	}
+	defer prepared.Release()
+	proof := input.CanonicalContext
+	if len(proof.Attachments) < len(uploads) {
+		return preparedContractStageIngressHistory
+	}
+	// ProjectCanonical/ValidateFor already bound the complete ordered history.
+	// Its last record is this trigger, so its uploads form only the final suffix;
+	// older attachments remain present and must not be mistaken for new uploads.
+	current := proof.Attachments[len(proof.Attachments)-len(uploads):]
+	for index, upload := range uploads {
+		body, bodyFound := bodies[upload.Name]
+		name := strings.TrimPrefix(upload.Name, fmt.Sprintf("attachment-%02d-", index+1))
+		qualified := sessioncontext.AttachmentRef{Name: fmt.Sprintf("%020d-%02d-%s", event.Sequence, index+1, name), MediaType: upload.MediaType, Blob: upload.Blob}
+		if !bodyFound || current[index].AttachmentRef != qualified || !bytes.Equal(body.Body, current[index].Body) {
+			return preparedContractStageIngressUploads
+		}
+	}
+	return 0
 }
 
 func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared attachedworkerdaemon.PreparedInvocationV1) (attachedworkerdaemon.AttemptResult, error) {

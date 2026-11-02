@@ -105,6 +105,8 @@ func TestLocalSessionTerminalCleanupConnected(t *testing.T) {
 			session, seed, peer, blobs := newCleanupSession(t, "", text, limits...)
 			for i := 0; i < steps; i++ {
 				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
+					t.Logf("original step%d err=%v attempted=%t", i, err, result.Model.SendAttempted)
+					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original step%d err=%v attempted=%t stats=%+v", i, err, result.Model.SendAttempted, seed.Stats())
 				}
 			}

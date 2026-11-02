@@ -19,6 +19,73 @@ import (
 var _ ports.AttachedWorkerUXReadStore = (*Store)(nil)
 var _ ports.AttachedWorkerSealedInputAuthorizer = (*Store)(nil)
 
+type attachedWorkerOfferConflictStage string
+
+const (
+	attachedWorkerOfferStageLeaseReplay     attachedWorkerOfferConflictStage = "lease_replay_without_attempt"
+	attachedWorkerOfferStageProtocolReducer attachedWorkerOfferConflictStage = "protocol_offer_reducer"
+	attachedWorkerOfferStageDerivedFence    attachedWorkerOfferConflictStage = "derived_fence_mismatch"
+	attachedWorkerOfferStageStatusDenied    attachedWorkerOfferConflictStage = "offer_status_denied"
+	attachedWorkerOfferStageStatusNotFound  attachedWorkerOfferConflictStage = "offer_status_not_found"
+	attachedWorkerOfferStageStatusConflict  attachedWorkerOfferConflictStage = "offer_status_conflict"
+	attachedWorkerOfferStageStatusExpired   attachedWorkerOfferConflictStage = "offer_status_expired"
+	attachedWorkerOfferStageStatusFenced    attachedWorkerOfferConflictStage = "offer_status_fenced"
+	attachedWorkerOfferStageStatusOther     attachedWorkerOfferConflictStage = "offer_status_other"
+	attachedWorkerOfferStageMembership      attachedWorkerOfferConflictStage = "offer_membership"
+	attachedWorkerOfferStageContext         attachedWorkerOfferConflictStage = "offer_context"
+	attachedWorkerOfferStageProtocolLoad    attachedWorkerOfferConflictStage = "offer_protocol_authority"
+	attachedWorkerOfferStageProtocolLink    attachedWorkerOfferConflictStage = "offer_protocol_connection"
+	attachedWorkerOfferStageProtocolIdle    attachedWorkerOfferConflictStage = "offer_protocol_attempt"
+	attachedWorkerOfferStageTTL             attachedWorkerOfferConflictStage = "offer_lease_ttl"
+	attachedWorkerOfferStagePlacement       attachedWorkerOfferConflictStage = "offer_placement"
+	attachedWorkerOfferStageWorkerScope     attachedWorkerOfferConflictStage = "offer_worker_scope"
+	attachedWorkerOfferStageWorkerState     attachedWorkerOfferConflictStage = "offer_worker_state"
+	attachedWorkerOfferStageLinkScope       attachedWorkerOfferConflictStage = "offer_connection_scope"
+	attachedWorkerOfferStageGeneration      attachedWorkerOfferConflictStage = "offer_connection_generation"
+	attachedWorkerOfferStageLinkState       attachedWorkerOfferConflictStage = "offer_connection_state"
+	attachedWorkerOfferStageCapability      attachedWorkerOfferConflictStage = "offer_capability"
+	attachedWorkerOfferStageAuthExpiry      attachedWorkerOfferConflictStage = "offer_auth_expiry"
+	attachedWorkerOfferStagePresence        attachedWorkerOfferConflictStage = "offer_presence_expiry"
+	attachedWorkerOfferStageJobIdentity     attachedWorkerOfferConflictStage = "offer_job_identity"
+	attachedWorkerOfferStageRunState        attachedWorkerOfferConflictStage = "offer_run_state"
+	attachedWorkerOfferStageAttemptState    attachedWorkerOfferConflictStage = "offer_attempt_state"
+	attachedWorkerOfferStageQuotaState      attachedWorkerOfferConflictStage = "offer_reservation_state"
+	attachedWorkerOfferStageQuotaExpiry     attachedWorkerOfferConflictStage = "offer_reservation_expiry"
+)
+
+type attachedWorkerOfferConflictDiagnostic struct {
+	stage attachedWorkerOfferConflictStage
+}
+
+func (diagnostic attachedWorkerOfferConflictDiagnostic) Error() string {
+	return ErrAttachedWorkerAttemptConflict.Error() + ": stage=" + string(diagnostic.stage)
+}
+
+func (diagnostic attachedWorkerOfferConflictDiagnostic) Unwrap() error {
+	return ErrAttachedWorkerAttemptConflict
+}
+
+func attachedWorkerOfferConflictAt(stage attachedWorkerOfferConflictStage) error {
+	return attachedWorkerOfferConflictDiagnostic{stage: stage}
+}
+
+func attachedWorkerOfferStatusStage(status ports.AttachedWorkerExecutionStatus) attachedWorkerOfferConflictStage {
+	switch status {
+	case ports.AttachedWorkerExecutionDenied:
+		return attachedWorkerOfferStageStatusDenied
+	case ports.AttachedWorkerExecutionNotFound:
+		return attachedWorkerOfferStageStatusNotFound
+	case ports.AttachedWorkerExecutionConflict:
+		return attachedWorkerOfferStageStatusConflict
+	case ports.AttachedWorkerExecutionExpired:
+		return attachedWorkerOfferStageStatusExpired
+	case ports.AttachedWorkerExecutionFenced:
+		return attachedWorkerOfferStageStatusFenced
+	default:
+		return attachedWorkerOfferStageStatusOther
+	}
+}
+
 func (store *Store) LoadAttachedWorkerAttempt(
 	ctx context.Context,
 	tenantID domain.TenantID,
@@ -186,7 +253,7 @@ func (store *Store) OfferAttachedWorkerAttempt(ctx context.Context, request port
 		return result, err
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
-		return store.offerAttachedWorkerAttemptTx(ctx, state.(*stateTx), request, &result)
+		return store.offerAttachedWorkerAttemptTx(ctx, state.(*stateTx), request, &result, nil)
 	})
 	return result, err
 }
@@ -194,13 +261,24 @@ func (store *Store) OfferAttachedWorkerAttempt(ctx context.Context, request port
 // offerAttachedWorkerAttemptTx composes the protocol offer, canonical lease,
 // connection snapshot, attempt ledger, and deadline with an existing scheduler
 // transaction. Callers must validate request before entering the transaction.
-func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateTx, request ports.AttachedWorkerAttemptOffer, result *ports.AttachedWorkerAttemptResult) error {
+func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateTx, request ports.AttachedWorkerAttemptOffer, result *ports.AttachedWorkerAttemptResult, diagnostic *attachedWorkerOfferConflictStage) error {
+	// The scheduler may observe a closed denial stage inside this same callback.
+	// It is not part of the public result and cannot authorize or alter a denial.
+	if diagnostic != nil {
+		*diagnostic = ""
+	}
+	deny := func(stage attachedWorkerOfferConflictStage) {
+		result.Status = ports.AttachedWorkerExecutionDenied
+		if diagnostic != nil {
+			*diagnostic = stage
+		}
+	}
 	member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
 	if err != nil {
 		return err
 	}
 	if !member {
-		result.Status = ports.AttachedWorkerExecutionDenied
+		deny(attachedWorkerOfferStageMembership)
 		return nil
 	}
 	existing, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
@@ -234,18 +312,25 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 	}
 	canonicalContextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job, loaded.InputManifest)
 	if err != nil {
-		result.Status = ports.AttachedWorkerExecutionDenied
+		deny(attachedWorkerOfferStageContext)
 		return nil
 	}
 	placement := loaded.Job.ExecutionPlacementV2
-	if !attachedWorkerOfferEligible(request, worker, connection, loaded, placement, at, expiresAt) {
-		result.Status = ports.AttachedWorkerExecutionDenied
+	if stage := attachedWorkerOfferEligibilityStage(request, worker, connection, loaded, placement, at, expiresAt); stage != "" {
+		deny(stage)
 		return nil
 	}
 	protocolConfig, readySnapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
-	if err != nil || readySnapshot.Connection != attachedworkerprotocol.ConnectionReady ||
-		readySnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
-		result.Status = ports.AttachedWorkerExecutionDenied
+	if err != nil {
+		deny(attachedWorkerOfferStageProtocolLoad)
+		return nil
+	}
+	if readySnapshot.Connection != attachedworkerprotocol.ConnectionReady {
+		deny(attachedWorkerOfferStageProtocolLink)
+		return nil
+	}
+	if readySnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+		deny(attachedWorkerOfferStageProtocolIdle)
 		return nil
 	}
 	if err := store.validateAttachedResourceGenerationAdmissionTx(ctx, tx, request.OwnerUserID,
@@ -261,7 +346,7 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 	if replayedLease {
 		// A canonical lease without the matching durable attempt is an
 		// incomplete/divergent transaction and is never repaired silently.
-		return ErrAttachedWorkerAttemptConflict
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageLeaseReplay)
 	}
 	fenceToken, err := domain.NewAttachedWorkerFenceTokenV1(request.TenantID, request.OwnerUserID,
 		request.WorkerID, request.RunID, request.AttemptID, request.LeaseID, lease.FenceToken)
@@ -276,8 +361,11 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 			LeaseGeneration: lease.FenceToken, NowUnixMicro: at.UnixMicro(), ExpiresAtUnixMicro: expiresAt.UnixMicro(),
 			ContextDigest: contextDigest, PolicyDigest: policyDigest,
 		})
-	if err != nil || frame.LeaseOffer == nil || frame.LeaseOffer.Binding.FenceToken != string(fenceToken) {
-		return ErrAttachedWorkerAttemptConflict
+	if err != nil {
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageProtocolReducer)
+	}
+	if frame.LeaseOffer == nil || frame.LeaseOffer.Binding.FenceToken != string(fenceToken) {
+		return attachedWorkerOfferConflictAt(attachedWorkerOfferStageDerivedFence)
 	}
 	framePayload, err := attachedworkerprotocol.EncodeBatchV1(attachedworkerprotocol.BatchV1{
 		Version: protocolConfig.Auth.Version, Frames: []attachedworkerprotocol.FrameV1{frame},
@@ -1818,18 +1906,45 @@ func attachedWorkerTerminalMaterializationDigest(status domain.AttachedWorkerTer
 }
 
 func attachedWorkerOfferEligible(request ports.AttachedWorkerAttemptOffer, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, loaded ports.WorkerJobState, placement domain.ExecutionPlacementV2, at, expiresAt time.Time) bool {
+	return attachedWorkerOfferEligibilityStage(request, worker, connection, loaded, placement, at, expiresAt) == ""
+}
+
+func attachedWorkerOfferEligibilityStage(request ports.AttachedWorkerAttemptOffer, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, loaded ports.WorkerJobState, placement domain.ExecutionPlacementV2, at, expiresAt time.Time) attachedWorkerOfferConflictStage {
 	wantTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(loaded.Job.Limits)
-	return err == nil && request.LeaseTTL == wantTTL && placement.Kind == domain.ExecutionPlacementAttachedWorker &&
-		placement.OwnerUserID == request.OwnerUserID && placement.WorkerID == request.WorkerID &&
-		worker.TenantID == request.TenantID && worker.OwnerUserID == request.OwnerUserID && worker.ID == request.WorkerID &&
-		worker.DesiredState == domain.AttachedWorkerDesiredActive && worker.ObservedState == domain.AttachedWorkerObservedOnline &&
-		connection.TenantID == request.TenantID && connection.OwnerUserID == request.OwnerUserID && connection.WorkerID == request.WorkerID &&
-		connection.EnrollmentGeneration == worker.EnrollmentGeneration && connection.ConnectionGeneration == worker.ConnectionGeneration &&
-		connection.State == domain.AttachedWorkerConnectionOnline && connection.CapabilityDigest == placement.CapabilityDigest && connection.AuthExpiresAt.After(expiresAt) &&
-		connection.PresenceExpiresAt.After(at) &&
-		loaded.Run.ID == request.RunID && loaded.Attempt.ID == request.AttemptID && loaded.Reservation.ID == request.ReservationID &&
-		loaded.Run.Status == domain.RunQueued && loaded.Attempt.Status == domain.AttemptCreated &&
-		loaded.Reservation.Status == domain.ReservationHeld && loaded.Reservation.ExpiresAt.After(at)
+	switch {
+	case err != nil || request.LeaseTTL != wantTTL:
+		return attachedWorkerOfferStageTTL
+	case placement.Kind != domain.ExecutionPlacementAttachedWorker || placement.OwnerUserID != request.OwnerUserID || placement.WorkerID != request.WorkerID:
+		return attachedWorkerOfferStagePlacement
+	case worker.TenantID != request.TenantID || worker.OwnerUserID != request.OwnerUserID || worker.ID != request.WorkerID:
+		return attachedWorkerOfferStageWorkerScope
+	case worker.DesiredState != domain.AttachedWorkerDesiredActive || worker.ObservedState != domain.AttachedWorkerObservedOnline:
+		return attachedWorkerOfferStageWorkerState
+	case connection.TenantID != request.TenantID || connection.OwnerUserID != request.OwnerUserID || connection.WorkerID != request.WorkerID:
+		return attachedWorkerOfferStageLinkScope
+	case connection.EnrollmentGeneration != worker.EnrollmentGeneration || connection.ConnectionGeneration != worker.ConnectionGeneration:
+		return attachedWorkerOfferStageGeneration
+	case connection.State != domain.AttachedWorkerConnectionOnline:
+		return attachedWorkerOfferStageLinkState
+	case connection.CapabilityDigest != placement.CapabilityDigest:
+		return attachedWorkerOfferStageCapability
+	case !connection.AuthExpiresAt.After(expiresAt):
+		return attachedWorkerOfferStageAuthExpiry
+	case !connection.PresenceExpiresAt.After(at):
+		return attachedWorkerOfferStagePresence
+	case loaded.Run.ID != request.RunID || loaded.Attempt.ID != request.AttemptID || loaded.Reservation.ID != request.ReservationID:
+		return attachedWorkerOfferStageJobIdentity
+	case loaded.Run.Status != domain.RunQueued:
+		return attachedWorkerOfferStageRunState
+	case loaded.Attempt.Status != domain.AttemptCreated:
+		return attachedWorkerOfferStageAttemptState
+	case loaded.Reservation.Status != domain.ReservationHeld:
+		return attachedWorkerOfferStageQuotaState
+	case !loaded.Reservation.ExpiresAt.After(at):
+		return attachedWorkerOfferStageQuotaExpiry
+	default:
+		return ""
+	}
 }
 
 func attachedWorkerExecutionAuthorityCurrent(worker domain.AttachedWorker, connection domain.AttachedWorkerConnection) bool {

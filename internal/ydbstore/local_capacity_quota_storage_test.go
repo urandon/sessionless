@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -26,6 +27,17 @@ type quotaCapacitySQLFixture struct {
 	commits, rollbacks       int
 	queriesThisTx, failWrite int
 	oldPayloadReads          int
+	sdkTimestampPrecision    bool
+}
+
+// Match the pinned SDK's time.Time -> Timestamp bind conversion, not a reader
+// tolerance. JSON string arguments remain unchanged and retain nanoseconds.
+func (f *quotaCapacitySQLFixture) CheckNamedValue(value *driver.NamedValue) error {
+	if at, ok := value.Value.(time.Time); ok && f.sdkTimestampPrecision {
+		value.Value = at.UTC().Truncate(time.Microsecond)
+		return nil
+	}
+	return driver.ErrSkip
 }
 
 func (f *quotaCapacitySQLFixture) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -254,6 +266,142 @@ func TestLocalCapacityQuotaWriterHeldReleaseAndReplay(t *testing.T) {
 	writes = f.writes
 	if err := quotaCapacityApply(t, store, r); err != nil || f.writes != writes {
 		t.Fatalf("terminal replay rewrote custody: writes=%d/%d err=%v", f.writes, writes, err)
+	}
+}
+
+func TestLocalCapacityQuotaTimestampPrecisionRoundTrip(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		t.Run(fmt.Sprintf("local=%t", local), func(t *testing.T) {
+			f, store, original := quotaCapacityFixture(t, local)
+			f.sdkTimestampPrecision = true
+			original.HeldAt = original.HeldAt.Add(581 * time.Nanosecond)
+			original.ExpiresAt = original.ExpiresAt.Add(777 * time.Nanosecond)
+			original.UpdatedAt = original.HeldAt
+			if err := quotaCapacityApply(t, store, original); err != nil {
+				t.Fatal("original writer", err)
+			}
+			raw := f.quota[0]
+			if !f.quota[7].(time.Time).Equal(original.HeldAt.UTC().Truncate(time.Microsecond)) || !f.quota[8].(time.Time).Equal(original.ExpiresAt.UTC().Truncate(time.Microsecond)) {
+				t.Fatal("fixture did not model the SDK physical timestamp projection")
+			}
+			tx, err := store.db.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback() })
+			got, found, err := readWorkerQuotaReservationStorageV1(t.Context(), &stateTx{store: store, sqlTx: tx, tenantID: original.TenantID}, f.run, original.ID)
+			if err != nil || !found || !reflect.DeepEqual(got, original) {
+				t.Fatalf("authentic nanos JSON/micros columns rejected or rewritten: found=%t err=%v", found, err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			writes := f.writes
+			if err := quotaCapacityApply(t, store, original); err != nil || local && f.writes != writes || f.quota[0] != raw {
+				t.Fatal("held replay rewrote original nanosecond history", err)
+			}
+			released := original.Clone()
+			released.Status, released.UpdatedAt = domain.ReservationReleased, original.UpdatedAt.Add(time.Second)
+			if err := quotaCapacityApply(t, store, released); err != nil || len(f.expiry) != 0 {
+				t.Fatal("release lost original physical expiry key", err)
+			}
+			var retained domain.QuotaReservation
+			if err := json.Unmarshal([]byte(f.quota[0].(string)), &retained); err != nil || !reflect.DeepEqual(retained, released) {
+				t.Fatal("release normalized canonical JSON timestamps", err)
+			}
+			writes = f.writes
+			if err := quotaCapacityApply(t, store, released); err != nil || local && f.writes != writes {
+				t.Fatal("terminal replay rewrote history", err)
+			}
+		})
+	}
+}
+
+func TestLocalCapacityQuotaTimestampPrecisionRejectsPhysicalMismatch(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		for _, fault := range []string{"held-before", "held-after", "expiry-before", "expiry-after", "index-before", "index-after", "physical-submicro"} {
+			t.Run(fmt.Sprintf("local=%t/%s", local, fault), func(t *testing.T) {
+				f, store, r := quotaCapacityFixture(t, local)
+				f.sdkTimestampPrecision = true
+				r.HeldAt, r.ExpiresAt, r.UpdatedAt = r.HeldAt.Add(581*time.Nanosecond), r.ExpiresAt.Add(777*time.Nanosecond), r.UpdatedAt.Add(581*time.Nanosecond)
+				if err := quotaCapacityApply(t, store, r); err != nil {
+					t.Fatal(err)
+				}
+				delta := time.Microsecond
+				if strings.HasSuffix(fault, "before") {
+					delta = -delta
+				}
+				switch {
+				case strings.HasPrefix(fault, "held-"):
+					f.quota[7] = f.quota[7].(time.Time).Add(delta)
+				case strings.HasPrefix(fault, "expiry-"):
+					f.quota[8] = f.quota[8].(time.Time).Add(delta)
+				case strings.HasPrefix(fault, "index-"):
+					for _, row := range f.expiry {
+						row[1] = row[1].(time.Time).Add(delta)
+					}
+				default:
+					f.quota[7] = r.HeldAt
+				}
+				beforeQuota, beforeExpiry, writes := append([]driver.Value(nil), f.quota...), cloneLocalInstallationRows(f.expiry), f.writes
+				tx, err := store.db.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = tx.Rollback() })
+				got, found, err := readWorkerQuotaReservationStorageV1(t.Context(), &stateTx{store: store, sqlTx: tx, tenantID: r.TenantID}, f.run, r.ID)
+				if !errors.Is(err, domain.ErrMembershipDenied) || found || !reflect.DeepEqual(got, domain.QuotaReservation{}) {
+					t.Fatalf("physical timestamp corruption accepted: found=%t err=%v", found, err)
+				}
+				if f.writes != writes || !reflect.DeepEqual(beforeQuota, f.quota) || !reflect.DeepEqual(beforeExpiry, f.expiry) {
+					t.Fatal("reader repaired corrupted storage")
+				}
+			})
+		}
+	}
+}
+
+func TestLocalCapacityQuotaTimestampPrecisionDoesNotExpireEarly(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		t.Run(fmt.Sprintf("local=%t", local), func(t *testing.T) {
+			f, store, r := quotaCapacityFixture(t, local)
+			f.sdkTimestampPrecision = true
+			r.ExpiresAt = r.ExpiresAt.Add(777 * time.Nanosecond)
+			if err := quotaCapacityApply(t, store, r); err != nil {
+				t.Fatal(err)
+			}
+			at := r.ExpiresAt.UTC().Truncate(time.Microsecond)
+			candidate := ports.ExpiredQuotaReservation{TenantID: r.TenantID, ReservationID: r.ID, RunID: r.RunID, SubscriptionConnectionID: r.SubscriptionConnectionID, LocalCapacityAssociation: r.LocalCapacityAssociation, ExpiresAt: at}
+			beforeQuota, beforeExpiry, writes := append([]driver.Value(nil), f.quota...), cloneLocalInstallationRows(f.expiry), f.writes
+			expired, err := store.ExpireQuotaReservation(t.Context(), candidate, at)
+			if err != nil || expired {
+				t.Fatalf("projected expiry rejected or ran before original JSON deadline: expired=%t err=%v", expired, err)
+			}
+			if f.writes != writes || !reflect.DeepEqual(beforeQuota, f.quota) || !reflect.DeepEqual(beforeExpiry, f.expiry) {
+				t.Fatal("early expiry changed original hold")
+			}
+			for _, check := range []struct {
+				name   string
+				expiry time.Time
+			}{
+				{name: "candidate-before", expiry: at.Add(-time.Microsecond)},
+				{name: "candidate-after", expiry: at.Add(time.Microsecond)},
+				{name: "candidate-submicro", expiry: at.Add(time.Nanosecond)},
+			} {
+				t.Run(check.name, func(t *testing.T) {
+					changed := candidate
+					changed.ExpiresAt = check.expiry
+					expired, err := store.ExpireQuotaReservation(t.Context(), changed, r.ExpiresAt.Add(time.Second))
+					var mismatch domain.ValidationError
+					if expired || !errors.As(err, &mismatch) || mismatch.Field != "quota expiry candidate" {
+						t.Fatalf("forged physical candidate did not fail its exact correlation: expired=%t err=%v", expired, err)
+					}
+					if f.writes != writes || !reflect.DeepEqual(beforeQuota, f.quota) || !reflect.DeepEqual(beforeExpiry, f.expiry) {
+						t.Fatal("forged expiry candidate changed original hold")
+					}
+				})
+			}
+		})
 	}
 }
 

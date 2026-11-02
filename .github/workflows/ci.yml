@@ -62,6 +62,9 @@ jobs:
       - name: Run repository CI contract
         run: make ci-core-base
 
+      - name: Run additive offline MCP connected fixtures
+        run: make test-mcp-offline
+
   go-local:
     name: Go ordinary local-tail verification
     runs-on: ubuntu-latest
@@ -130,7 +133,7 @@ jobs:
           cache: "${{ !startsWith(github.event.head_commit.message, 'ci(cold-go): ') }}"
 
       - name: Run connected-session tests over all packages
-        run: make test-connected
+        run: make test-connected-ci
 
   web-browser:
     name: Web browser and accessibility

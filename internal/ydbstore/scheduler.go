@@ -501,11 +501,15 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 			return err
 		}
 		var offer ports.AttachedWorkerAttemptResult
-		if err := store.offerAttachedWorkerAttemptTx(ctx, tx, offerRequest, &offer); err != nil {
+		var diagnostic attachedWorkerOfferConflictStage
+		if err := store.offerAttachedWorkerAttemptTx(ctx, tx, offerRequest, &offer, &diagnostic); err != nil {
 			return err
 		}
 		if offer.Status != ports.AttachedWorkerExecutionApplied && offer.Status != ports.AttachedWorkerExecutionReplayed {
-			return ErrAttachedWorkerAttemptConflict
+			if offer.Status == ports.AttachedWorkerExecutionDenied && diagnostic != "" {
+				return attachedWorkerOfferConflictAt(diagnostic)
+			}
+			return attachedWorkerOfferConflictAt(attachedWorkerOfferStatusStage(offer.Status))
 		}
 		// The canonical attached-worker lease may outlive the ordinary queue
 		// reservation hold. Keep quota fenced through the exact fixed lease;

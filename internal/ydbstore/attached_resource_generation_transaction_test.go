@@ -306,7 +306,7 @@ func (f *generationAllocationFixture) offerAttempt(t *testing.T) (ports.Attached
 	t.Helper()
 	var result ports.AttachedWorkerAttemptResult
 	err := f.transact(t, func(ctx context.Context, tx *stateTx) error {
-		return f.store.offerAttachedWorkerAttemptTx(ctx, tx, f.offer, &result)
+		return f.store.offerAttachedWorkerAttemptTx(ctx, tx, f.offer, &result, nil)
 	})
 	return result, err
 }

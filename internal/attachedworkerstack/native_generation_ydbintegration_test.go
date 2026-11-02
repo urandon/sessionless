@@ -786,11 +786,37 @@ func (f *joinedGenerationScenario) canonicalOutbox(generation uint64, externalEv
 
 func (f *joinedGenerationScenario) admitOutbox(store *ydbstore.Store, outbox domain.DispatchOutbox, reservationOrdinal uint64) (ports.DispatchAdmissionResult, error) {
 	f.t.Helper()
-	if err := f.wire.sample(f.ctx); err != nil {
+	// Choose a serial schedule for this controlled peer: its idle heartbeats
+	// mutate the same connection row that real admission reads and updates.
+	// This proves composition, not contention/retry behavior. Keep the actual
+	// sampled DB clock and Store transaction; never pause/rebuild the Session.
+	f.wire.mu.Lock()
+	defer f.wire.mu.Unlock()
+	if err := f.ctx.Err(); err != nil {
+		return ports.DispatchAdmissionResult{}, err
+	}
+	if err := f.wire.sampleLocked(f.ctx); err != nil {
 		f.t.Fatal(err)
 	}
 	at := f.installation.Now()
 	return store.AdmitDispatch(f.ctx, joinedGenerationAdmissionRequest(f.worker.TenantID, outbox, reservationOrdinal, at))
+}
+
+// Offline use of the actual admission wrapper: pre-canceled admission must
+// release its turn without sampling a DB or touching a Store.
+// There is intentionally no configured database, installation or authority.
+func TestJoinedGenerationCanceledAdmissionReleasesControlledTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	wire := &joinedGenerationWire{}
+	scenario := &joinedGenerationScenario{t: t, ctx: ctx, wire: wire}
+	if _, err := scenario.admitOutbox(nil, domain.DispatchOutbox{}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled admission must stop before DB sampling: %v", err)
+	}
+	if !wire.mu.TryLock() {
+		t.Fatal("canceled admission retained the controlled peer turn")
+	}
+	wire.mu.Unlock()
 }
 
 func (f *joinedGenerationScenario) ingest(generation uint64) ports.WorkerJobState {

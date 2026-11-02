@@ -23,7 +23,8 @@ const words = (value) => orderedWords(value).sort();
 const ciCoreBasePrerequisites = '$(subst test-ordinary,test-ordinary-ci-base,$(CI_CORE_CHECKS))';
 const coldGoPrefix = 'ci(cold-go): ';
 const coldGoPredicate = "startsWith(github.event.head_commit.message, 'ci(cold-go): ')";
-const goJobs = ['verify', 'go-local', 'go-connected', 'ydb', 'ydb-security-isolated', 'local-stand'];
+const goJobs = ['verify', 'go-local', 'go-connected', 'go-runtime', 'ydb', 'ydb-security-isolated', 'local-stand'];
+const goPredecessors = ['verify', 'go-connected', 'go-local', 'go-runtime'];
 const pinnedGo = `uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -147,18 +148,22 @@ function verify({ make, ci, release }) {
   const core = job(ci, 'verify');
   const connected = job(ci, 'go-connected');
   const local = job(ci, 'go-local');
+  const runtime = job(ci, 'go-runtime');
   const security = job(ci, 'ydb-security-isolated');
-  assert.equal([...ci.split('\njobs:\n')[1].matchAll(/^  [\w-]+:\n/gm)].length, 10, 'ten required jobs');
+  assert.deepEqual([...ci.split('\njobs:\n')[1].matchAll(/^  ([\w-]+):\n/gm)].map(match => match[1]),
+    ['verify', 'go-local', 'go-connected', 'go-runtime', 'web-browser', 'ydb', 'ydb-security-isolated', 'local-stand', 'terraform', 'cloudflare-edge', 'images'], 'eleven required jobs');
   assert.match(core, /^    timeout-minutes: 30$/m);
   assert.doesNotMatch(core, /^    (?:needs|permissions|env):/m, 'core base is parallel, inherits read-only policy');
   assert.match(connected, /^    timeout-minutes: 30$/m, 'connected 30-minute bound');
   assert.match(connected, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(connected, /^    (?:needs|permissions|env):/m, 'connected is parallel, inherits read-only policy');
   assert.match(ci, /^permissions:\n  contents: read\n/m, 'read-only workflow');
+  assert.equal(ci.match(/^env:\n((?:  [^\n]*\n)+)/m)?.[1],
+    '  GOCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-build\n  GOMODCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-mod\n', 'only shared Go caches in workflow environment');
   assert.equal(step(connected, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact connected checkout');
   const actualGoJobs = [...ci.split('\njobs:\n')[1].matchAll(/^  ([\w-]+):\n/gm)]
     .map(match => match[1]).filter(name => /uses: actions\/setup-go@/.test(job(ci, name)));
-  assert.deepEqual(actualGoJobs, goJobs, 'all six host Go jobs have the cold-cache contract');
+  assert.deepEqual(actualGoJobs, goJobs, 'all seven host Go jobs have the cold-cache contract');
   for (const name of goJobs) {
     const value = job(ci, name);
     assert.equal(step(value, 'Set up pinned Go'), pinnedGo, `${name} exact cold Go cache control`);
@@ -175,15 +180,23 @@ function verify({ make, ci, release }) {
   assert.equal(step(local, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact local tail checkout');
   assert.equal(step(local, 'Set up pinned Go'), step(connected, 'Set up pinned Go'), 'same pinned local tail Go/cache setup');
   assert.equal(step(local, 'Run ordinary local-tail tests over all packages'), 'run: make test-ordinary-ci-tail', 'complete local tail invocation');
-  assert.equal(step(core, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
+  assert.match(runtime, /^    name: Go MCP and connected-worker verification$/m, 'runtime job name');
+  assert.match(runtime, /^    timeout-minutes: 30$/m, 'runtime 30-minute bound');
+  assert.match(runtime, /^    runs-on: ubuntu-latest$/m, 'runtime platform');
+  assert.doesNotMatch(runtime, /^    (?:needs|permissions|env|services|container|defaults|strategy):/m, 'runtime is parallel, offline, inherits read-only policy');
+  assert.equal(step(runtime, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact runtime checkout');
+  assert.deepEqual([...runtime.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages'], 'exact runtime steps and MCP-before-Worker order');
+  assert.equal(step(runtime, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
   assert.equal([...ci.matchAll(/^        run: make test-connected-worker-ci$/gm)].length, 1, 'one required CI connected Worker execution');
-  assert.ok(core.indexOf('      - name: Run additive offline MCP connected fixtures\n') < core.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows complete core and MCP');
-  assert.equal([...core.matchAll(/^      - name:/gm)].length, 8, 'bounded core and worker steps');
+  assert.equal([...ci.matchAll(/\bmake test-connected-worker-ci\b/g)].length, 1, 'no alternate or duplicate CI Worker invocation');
+  assert.deepEqual([...core.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Set up pinned Node.js', 'Set up pinned npm', 'Run repository CI contract'], 'core-only verification steps');
   assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
-    assert.match(job(ci, name), /^    needs: \[verify, go-connected, go-local\]$/m, `${name} joins all three Go jobs`);
+    assert.match(job(ci, name), /^    needs: \[verify, go-connected, go-local, go-runtime\]$/m, `${name} joins all four Go jobs`);
   }
   for (const [name, container] of [['ydb', 'sessionless-ydb'], ['ydb-security-isolated', 'sessionless-security-ydb']]) {
     const text = job(ci, name);
@@ -208,9 +221,10 @@ function verify({ make, ci, release }) {
   assert.ok(ydb.indexOf(localRuntimeStepName) < ydb.indexOf('Capture failed YDB Local state'));
   assert.equal(step(core, 'Run repository CI contract'), 'run: make ci-core-base', 'complete CI base invocation');
   const mcpStepName = 'Run additive offline MCP connected fixtures';
-  assert.equal(step(core, mcpStepName), 'run: make test-mcp-offline', 'required complete CI offline MCP invocation');
-  assert.ok(core.indexOf('      - name: Run repository CI contract\n') < core.indexOf(`      - name: ${mcpStepName}\n`), 'MCP follows complete core base');
+  assert.equal(step(runtime, mcpStepName), 'run: make test-mcp-offline', 'required complete CI offline MCP invocation');
   assert.equal([...ci.matchAll(/^        run: make test-mcp-offline$/gm)].length, 1, 'one required CI offline MCP execution');
+  assert.equal([...ci.matchAll(/\bmake test-mcp-offline\b/g)].length, 1, 'no alternate or duplicate CI MCP invocation');
+  assert.equal([...ci.matchAll(/\bmake ci-core-base\b/g)].length, 1, 'one complete CI core invocation');
   const offlineName = 'Run offline worker and egress security contracts';
   assert.equal(step(security, offlineName),
     'run: env -u YDB_CONNECTION_STRING -u YDB_ANONYMOUS_CREDENTIALS make attached-worker-security-gate serverless-egress-conformance');
@@ -221,8 +235,8 @@ function verify({ make, ci, release }) {
   const needs = images.match(/^    needs:\n((?:      - [\w-]+\n)+)/m);
   assert.ok(needs, 'explicit image prerequisites');
   assert.deepEqual([...needs[1].matchAll(/- ([\w-]+)/g)].map((m) => m[1]).sort(),
-    words('verify go-connected go-local ydb ydb-security-isolated local-stand terraform cloudflare-edge web-browser'));
-  for (const name of ['verify', 'go-connected', 'go-local', 'ydb', 'ydb-security-isolated', 'local-stand', 'terraform', 'images']) {
+    words('verify go-connected go-local go-runtime ydb ydb-security-isolated local-stand terraform cloudflare-edge web-browser'));
+  for (const name of ['verify', 'go-connected', 'go-local', 'go-runtime', 'ydb', 'ydb-security-isolated', 'local-stand', 'terraform', 'images']) {
     const value = job(ci, name);
     assert.doesNotMatch(value, /^    (?:if|continue-on-error):/m, `${name} cannot bypass job failure`);
     assert.doesNotMatch(value, /^        continue-on-error:/m, `${name} cannot ignore step failure`);
@@ -301,7 +315,7 @@ test('joined generation qualification keeps exact selection, order and independe
   }
 });
 
-test('CI MCP redistribution preserves the local gate and both required executions', () => {
+test('dedicated runtime MCP keeps the complete local gate and required executions', () => {
   const mcpName = 'Run additive offline MCP connected fixtures';
   const mcpStep = `      - name: ${mcpName}\n        run: make test-mcp-offline\n`;
   const coreStep = '      - name: Run repository CI contract\n        run: make ci-core-base\n';
@@ -332,7 +346,7 @@ test('CI MCP redistribution preserves the local gate and both required execution
   }
 });
 
-test('CI worker redistribution remains required, complete and sequential', () => {
+test('dedicated runtime Worker remains required, complete and sequential', () => {
   const workerStep = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
   const tailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
   const coreStep = '      - name: Run repository CI contract\n        run: make ci-core-base\n';
@@ -363,6 +377,52 @@ test('CI worker redistribution remains required, complete and sequential', () =>
     assert.notEqual(make, original.make);
     assert.throws(() => verify({ ...original, make }));
   }
+});
+
+test('runtime job stays parallel, Go-only, bounded and MCP-before-Worker', () => {
+  const runtime = job(original.ci, 'go-runtime');
+  const before = `  go-runtime:\n${runtime}`;
+  const mcp = '      - name: Run additive offline MCP connected fixtures\n        run: make test-mcp-offline\n';
+  const worker = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
+  for (const [name, mutate, expected] of [
+    ['missing job', () => '', /unique go-runtime job/],
+    ['renamed job', value => value.replace('  go-runtime:', '  other-runtime:'), /unique go-runtime job/],
+    ['serialized job', value => value.replace('    steps:', '    needs: verify\n    steps:'), /runtime is parallel/],
+    ['database environment', value => value.replace('    steps:', '    env:\n      YDB_CONNECTION_STRING: grpc:\/\/localhost:2136/local\n    steps:'), /runtime is parallel/],
+    ['write permission', value => value.replace('    steps:', '    permissions:\n      contents: write\n    steps:'), /runtime is parallel/],
+    ['service', value => value.replace('    steps:', '    services:\n      database:\n        image: ydbplatform/local-ydb\n    steps:'), /runtime is parallel/],
+    ['container', value => value.replace('    steps:', '    container: ubuntu:latest\n    steps:'), /runtime is parallel/],
+    ['strategy', value => value.replace('    steps:', '    strategy:\n      fail-fast: false\n    steps:'), /runtime is parallel/],
+    ['defaults', value => value.replace('    steps:', '    defaults:\n      run:\n        shell: bash\n    steps:'), /runtime is parallel/],
+    ['different platform', value => value.replace('runs-on: ubuntu-latest', 'runs-on: macos-latest'), /runtime platform/],
+    ['wider budget', value => value.replace('timeout-minutes: 30', 'timeout-minutes: 45'), /runtime 30-minute bound/],
+    ['missing budget', value => value.replace('    timeout-minutes: 30\n', ''), /runtime 30-minute bound/],
+    ['Node setup', value => value.replace(mcp, '      - name: Unneeded Node\n        uses: actions/setup-node@v6\n\n' + mcp), /exact runtime steps/],
+    ['reversed groups', value => value.replace(mcp + '\n' + worker, worker + '\n' + mcp), /exact runtime steps/],
+    ['extra core group', value => value.replace(worker, worker + '\n      - name: Extra core\n        run: make ci-core-base\n'), /exact runtime steps/],
+    ['wrong checkout', value => value.replace('actions/checkout@v6', 'actions/checkout@v5'), /cold Go guard immediately after checkout/],
+    ['conditional job', value => value.replace('    steps:', '    if: false\n    steps:'), /go-runtime cannot bypass job failure/],
+    ['ignored job', value => value.replace('    steps:', '    continue-on-error: true\n    steps:'), /go-runtime cannot bypass job failure/],
+  ]) {
+    const after = mutate(before);
+    assert.notEqual(after, before, `runtime ${name} mutation must be effective`);
+    assert.throws(() => verify({ ...original, ci: original.ci.replace(before, after) }), expected, name);
+  }
+  for (const [name, stepText] of [['MCP', mcp], ['Worker', worker]]) {
+    for (const [fault, mutate] of [
+      ['step environment', value => value.replace('        run:', '        env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local\n        run:')],
+      ['background command', value => value.replace(/(make [^\n]+)/, '$1 &')],
+      ['ignored failure', value => value.replace(/(make [^\n]+)/, '$1 || true')],
+      ['step timeout', value => value.replace('        run:', '        timeout-minutes: 60\n        run:')],
+    ]) {
+      const changed = mutate(stepText);
+      assert.notEqual(changed, stepText, `${name} ${fault} mutation must be effective`);
+      assert.throws(() => verify({ ...original, ci: original.ci.replace(stepText, changed) }), /complete .*invocation/, `${name} ${fault}`);
+    }
+  }
+  const leaked = original.ci.replace('env:\n', 'env:\n  YDB_CONNECTION_STRING: grpc://localhost:2136/local\n');
+  assert.notEqual(leaked, original.ci);
+  assert.throws(() => verify({ ...original, ci: leaked }), /only shared Go caches in workflow environment/);
 });
 
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {
@@ -768,15 +828,15 @@ for (const [name, commands, prerequisites, expected] of [
   }
 }
 for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
-  for (const missing of ['verify', 'go-connected', 'go-local']) {
+  for (const missing of goPredecessors) {
     mutations.push([`${name} loses ${missing} join`, 'ci',
       `  ${name}:\n${job(original.ci, name)}`,
-      `  ${name}:\n${job(original.ci, name).replace('needs: [verify, go-connected, go-local]', `needs: [${['verify', 'go-connected', 'go-local'].filter(value => value !== missing).join(', ')}]`)}`,
-      new RegExp(`${name} joins all three Go jobs`)]);
+      `  ${name}:\n${job(original.ci, name).replace('needs: [verify, go-connected, go-local, go-runtime]', `needs: [${goPredecessors.filter(value => value !== missing).join(', ')}]`)}`,
+      new RegExp(`${name} joins all four Go jobs`)]);
   }
 }
+mutations.push(['image loses direct runtime join', 'ci', '      - go-runtime\n', '']);
 for (const name of goJobs) {
-  const before = `  ${name}:\n${job(original.ci, name)}`;
   for (const [fault, mutate, expected] of [
     ['missing cache flag', value => value.replace(`          cache: "\${{ !${coldGoPredicate} }}"\n`, ''), /exact cold Go cache control/],
     ['unquoted cache expression', value => value.replace(`cache: "\${{ !${coldGoPredicate} }}"`, `cache: \${{ !${coldGoPredicate} }}`), /exact cold Go cache control/],
@@ -795,9 +855,12 @@ for (const name of goJobs) {
     ['late guard', value => value.replace(`      - name: ${coldGoStepName}\n`, '      - name: Premature repository command\n        run: make build\n\n      - name: '+coldGoStepName+'\n'), /cold Go guard immediately after checkout/],
     ['guard after setup', value => value.replace(`      - name: ${coldGoStepName}\n        ${coldGoStep}\n\n      - name: Set up pinned Go\n        ${pinnedGo}\n`, `      - name: Set up pinned Go\n        ${pinnedGo}\n\n      - name: ${coldGoStepName}\n        ${coldGoStep}\n`), /cold Go guard immediately after checkout/],
   ]) {
-    const after = mutate(before);
-    assert.notEqual(after, before, `${name} ${fault} mutation must be effective`);
-    mutations.push([`${name} ${fault}`, 'ci', before, after, expected]);
+    test(`reject ${name} ${fault}`, () => {
+      const before = `  ${name}:\n${job(original.ci, name)}`;
+      const after = mutate(before);
+      assert.notEqual(after, before, `${name} ${fault} mutation must be effective`);
+      assert.throws(() => verify({ ...original, ci: original.ci.replace(before, after) }), expected);
+    });
   }
 }
 for (const [name, file, before, after, expected] of mutations) {

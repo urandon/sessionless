@@ -405,6 +405,14 @@ owned-current-ydb-gate: prepare
 	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m \
 		-run '^TestOwnedCurrentYDB' ./internal/ydbstore
 
+.PHONY: local-runtime-ydb-gate
+# Existing disposable CI database only; synthetic model, never a live profile.
+local-runtime-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_LOCAL_RUNTIME_YDB_GATE=1 SESSIONLESS_LOCAL_RUNTIME_YDB_DISPOSABLE=1 \
+		go test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
+		-run '^TestLocalRuntimeYDB' ./test/ydbintegration
+
 .PHONY: web-auth-ydb-gate
 web-auth-ydb-gate: prepare
 	go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \

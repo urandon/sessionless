@@ -56,6 +56,11 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
 ];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
+const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
+const localRuntimeGateRecipe = [
+  '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
+  'SESSIONLESS_LOCAL_RUNTIME_YDB_GATE=1 SESSIONLESS_LOCAL_RUNTIME_YDB_DISPOSABLE=1 \\\n\t\tgo test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \\\n\t\t-run \'^TestLocalRuntimeYDB\' ./test/ydbintegration',
+].join('\n\t');
 const generationGateRecipe = [
   '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
   'SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \\\n\t\tgo test -race -count=3 -shuffle=on -timeout=5m \\\n\t\t-run \'^TestAttachedResourceGenerationYDB\' ./internal/ydbstore',
@@ -173,6 +178,12 @@ function verify({ make, ci, release }) {
     'env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric\n        run: make attached-resource-generation-ydb-gate', 'genuine data transactions, no fake transaction DSN');
   assert.ok(ydb.indexOf(generationStepName) > ydb.indexOf('Prove inline-output transactional claim and write custody'));
   assert.ok(ydb.indexOf(generationStepName) < ydb.indexOf('Capture failed YDB Local state'));
+  assert.deepEqual(target(make, 'local-runtime-ydb-gate'), ['prepare']);
+  assert.equal(recipe(make, 'local-runtime-ydb-gate'), localRuntimeGateRecipe, 'bounded disposable local runtime selector');
+  assert.equal(step(ydb, localRuntimeStepName),
+    'env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric\n        run: make local-runtime-ydb-gate', 'local runtime genuine data transactions');
+  assert.ok(ydb.indexOf(localRuntimeStepName) > ydb.indexOf(generationStepName));
+  assert.ok(ydb.indexOf(localRuntimeStepName) < ydb.indexOf('Capture failed YDB Local state'));
   assert.equal(step(core, 'Run repository CI contract'), 'run: make ci-core-base', 'complete CI base invocation');
   const offlineName = 'Run offline worker and egress security contracts';
   assert.equal(step(security, offlineName),
@@ -203,6 +214,28 @@ test('generation SQL qualification cannot lose its guards, coverage or real tran
   ]) assert.throws(() => verify({ ...original, make }));
   const nativeStep = step(job(original.ci, 'ydb'), generationStepName);
   assert.throws(() => verify({ ...original, ci: original.ci.replace(nativeStep, nativeStep.replace('go_query_mode=data&', 'go_query_mode=scripting&go_fake_tx=scripting&')) }));
+});
+
+test('local runtime SQL proof retains its finite remote-only contract', () => {
+  for (const [from, to] of [
+    ['@test "$(GITHUB_ACTIONS)" = true', '@true'],
+    ['SESSIONLESS_LOCAL_RUNTIME_YDB_GATE=1 ', ''],
+    ['SESSIONLESS_LOCAL_RUNTIME_YDB_DISPOSABLE=1 ', ''],
+    [' -v', ''], [' -race', ''], ['-count=3', '-count=1'],
+    ['-shuffle=on', '-shuffle=off'], ['-timeout=5m', '-timeout=10m'],
+    [' -tags=ydbintegration', ''], ['^TestLocalRuntimeYDB', '^TestOther'],
+    ['./test/ydbintegration', './internal/ydbstore'],
+  ]) {
+    const changed = localRuntimeGateRecipe.replace(from, to);
+    assert.notEqual(changed, localRuntimeGateRecipe, `effective mutation ${from}`);
+    assert.throws(() => verify({ ...original, make: original.make.replace(localRuntimeGateRecipe, changed) }));
+  }
+  const nativeStep = step(job(original.ci, 'ydb'), localRuntimeStepName);
+  for (const changed of [
+    nativeStep.replace('go_query_mode=data&', 'go_query_mode=scripting&go_fake_tx=scripting&'),
+    nativeStep.replace('run: make local-runtime-ydb-gate', 'run: make local-runtime-ydb-gate || true'),
+    `if: false\n        ${nativeStep}`,
+  ]) assert.throws(() => verify({ ...original, ci: original.ci.replace(nativeStep, changed) }));
 });
 
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {

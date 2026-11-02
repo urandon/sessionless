@@ -295,6 +295,31 @@ path; its [Dockerfile](https://github.com/ydb-platform/ydb/blob/8187ce049bed9e63
 defines the expected command. The observer invokes neither healthcheck nor DDL:
 it only observes the image's existing Docker health state.
 
+## Local runtime SQL composition
+
+`make local-runtime-ydb-gate` runs only in ordinary disposable GitHub CI, inside
+the existing YDB job and its unchanged 25-minute limit. Its explicit gate and
+disposable flags select a three-repeat race/shuffle run with a five-minute
+package bound; the test rejects non-loopback DSNs, scripting and fake
+transactions. With its gate off it skips before reading the DSN or operator
+files. Do not run it against a developer's local or shared database.
+
+This composition uses the real operator installation/receipt, canonical Yandex
+Web ingress, Store, per-message runtime and YMQ decoder. Only identity/model
+HTTP and blob storage are controlled peers. It checks one completed message A,
+then a batch containing A's terminal duplicate and a new productive B, with
+fresh invocation ownership and unchanged A history. It does not prove real
+Yandex/model/browser/cloud execution, useful MCP/search or full MVP acceptance.
+The fixture must establish its own real empty-backlog startup prerequisites,
+never forge markers or rely on another test's side effects. Tenant-scoped rows
+and exact identity/challenge/session/audit keys are cleaned with independent
+bounded contexts. No production test hook, raw funding seed, profile renewal,
+per-Run database repair or wider execution bound is permitted.
+
+The recipe and true-transaction CI step are covered by the partition policy's
+guard/selector/timeout/ignored-failure mutations; those static checks do not
+replace actual non-skipped exact-head native SQL results.
+
 ## Review checklist
 
 Before accepting a test change, verify:

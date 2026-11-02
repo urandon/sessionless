@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 // Deliberately checks this repository's fixed, indentation-sensitive format,
 // not arbitrary YAML/Make syntax. Structural changes require explicit review.
@@ -42,8 +43,8 @@ for cache_dir in "$GOCACHE" "$GOMODCACHE"; do
   fi
 done`;
 const coldGoStep = `if: "${coldGoPredicate}"\n        shell: bash\n        run: |\n${coldGoShell.split('\n').map(line => `          ${line}`).join('\n')}`;
-const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
-const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
+const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)";
+const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)";
 const ordinary = [
   "go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
@@ -255,20 +256,46 @@ test('offline MCP overlay adds only two absent test fixture files', () => {
     assert.match(read(source), /^\/\/go:build sessionless_mcp_offline\n/m, 'fixture is also explicitly build-tagged');
   }
 });
+function connectedSelections(name) {
+  return [
+    /^TestLocalSession(Terminal|Worker)/.test(name),
+    /^TestLocalSession/.test(name) && !/^TestLocalSession(Terminal|Worker)/.test(name),
+  ];
+}
 test('connected selectors are disjoint and cover the original complete prefix', () => {
   for (const name of [
     'TestLocalSession', 'TestLocalSessionTerminal',
     'TestLocalSessionTerminalCleanupStorageFaultsConnected',
     'TestLocalSessionRetainedDeletionConnected',
-    'TestLocalSessionWorkerPreflightOriginalPositiveReadOnly',
+    'TestLocalSessionWorker', 'TestLocalSessionWorkerPreflightOriginalPositiveReadOnly',
+    'TestLocalSessionWorkerTerminal', 'TestLocalSessionTerminalWorker',
+    'TestLocalSessionWorkerFutureFamily',
     'TestLocalSessionFutureFamily', 'TestOther', 'ExampleLocalSession', 'FuzzLocalSession',
   ]) {
     const allConnected = /^TestLocalSession/.test(name);
-    const terminal = /^TestLocalSessionTerminal/.test(name);
-    const other = allConnected && !terminal;
-    assert.equal(Number(terminal) + Number(other), Number(allConnected), name);
-    assert.equal(Number(!allConnected) + Number(terminal) + Number(other), 1, name);
+    const selected = connectedSelections(name).filter(Boolean).length;
+    assert.equal(selected, Number(allConnected), name);
+    assert.equal(Number(!allConnected) + selected, 1, name);
   }
+});
+test('connected partition covers the actual repository test-name corpus', () => {
+  const counts = [0, 0];
+  function inspect(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) inspect(path);
+      else if (entry.isFile() && entry.name.endsWith('_test.go')) {
+        for (const match of readFileSync(path, 'utf8').matchAll(/^func ((?:Test|Fuzz)\w+|Example\w*)\(/gm)) {
+          const name = match[1];
+          const selected = connectedSelections(name);
+          assert.equal(selected.filter(Boolean).length, Number(/^TestLocalSession/.test(name)), `${path}:${name}`);
+          selected.forEach((value, index) => { counts[index] += Number(value); });
+        }
+      }
+    }
+  }
+  for (const root of ['cmd', 'internal', 'migrations']) inspect(fileURLToPath(new URL(`../${root}`, import.meta.url)));
+  assert.ok(counts.every(count => count > 0), `actual nonempty connected partitions: ${counts}`);
 });
 test('ordinary selectors and connected selectors partition the complete test-name corpus', () => {
   const names = [
@@ -277,7 +304,8 @@ test('ordinary selectors and connected selectors partition the complete test-nam
     'TestLocalCompactionFutureFamily', 'TestLocalPreparedModelTwoCompactionsOriginalChain',
     'TestOwned', 'TestOwnedFutureFamily', 'TestPrivate', 'TestPrivateFutureFamily',
     'TestLocalSession', 'TestLocalSessionFutureFamily', 'TestLocalSessionTerminal',
-    'TestLocalSessionCompaction', 'TestLocalSessionTerminalCompaction',
+    'TestLocalSessionCompaction', 'TestLocalSessionTerminalCompaction', 'TestLocalSessionWorker',
+    'TestLocalSessionWorkerFuture', 'TestLocalSessionWorkerTerminal',
     'Example', 'ExampleLocalSession', 'ExampleLocalCompaction', 'Fuzz', 'FuzzPrivateBytes',
     'FuzzLocalCompaction',
   ];
@@ -287,8 +315,7 @@ test('ordinary selectors and connected selectors partition the complete test-nam
       /^Test(?:Owned|Private)/.test(name),
       /^TestLocalCompaction/.test(name),
       /^TestLocal/.test(name) && !/^TestLocal(Session|Compaction)/.test(name),
-      /^TestLocalSessionTerminal/.test(name),
-      /^TestLocalSession/.test(name) && !/^TestLocalSessionTerminal/.test(name),
+      ...connectedSelections(name),
     ];
     assert.equal(selected.filter(Boolean).length, 1, `${name} selected exactly once`);
   }
@@ -424,10 +451,11 @@ const mutations = [
   ['missing offline MCP join', 'make', '\t$(MAKE) test-mcp-offline\n', '', /exact sequential connected partition/],
   ['offline MCP replaces production', 'make', 'test ! -e internal/localloopback/mcp_offline_fixture.go', 'true', /exact additive offline MCP gate/],
   ['offline MCP loses race', 'make', 'go test -race -count=1 -shuffle=190351', 'go test -count=1 -shuffle=190351', /exact additive offline MCP gate/],
-  ['overlapping connected halves', 'make', connectedOther, connectedOther.replace(" -skip='^TestLocalSessionTerminal'", ''), /exact sequential connected partition/],
-  ['gap in terminal half', 'make', connectedTerminal, connectedTerminal.replace("^TestLocalSessionTerminal", '^TestLocalSessionTerminalCleanup'), /exact sequential connected partition/],
-  ['gap in other half', 'make', connectedOther, connectedOther.replace("-skip='^TestLocalSessionTerminal'", "-skip='^TestLocalSession'"), /exact sequential connected partition/],
-  ['reversed connected halves', 'make', `${connectedTerminal}\n\t${connectedOther}`, `${connectedOther}\n\t${connectedTerminal}`, /exact sequential connected partition/],
+  ['overlapping connected partitions', 'make', connectedOther, connectedOther.replace(" -skip='^TestLocalSession(Terminal|Worker)'", ''), /exact sequential connected partition/],
+  ['gap in terminal half', 'make', connectedTerminal, connectedTerminal.replace('(Terminal|Worker)', 'Terminal'), /exact sequential connected partition/],
+  ['gap in other half', 'make', connectedOther, connectedOther.replace("-skip='^TestLocalSession(Terminal|Worker)'", "-skip='^TestLocalSession'"), /exact sequential connected partition/],
+  ['gap in worker family', 'make', connectedTerminal, connectedTerminal.replace('(Terminal|Worker)', '(Terminal|WorkerEntry)'), /exact sequential connected partition/],
+  ['reversed connected partitions', 'make', `${connectedTerminal}\n\t${connectedOther}`, `${connectedOther}\n\t${connectedTerminal}`, /exact sequential connected partition/],
   ['parallel connected halves', 'make', connectedTerminal, `${connectedTerminal} &`, /exact sequential connected partition/],
   ['missing connected job', 'ci', '  go-connected:\n', '  removed-connected:\n', /unique go-connected job/],
   ['serialized connected job', 'ci', '  go-connected:\n', '  go-connected:\n    needs: verify\n', /connected is parallel/],

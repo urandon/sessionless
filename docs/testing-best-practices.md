@@ -180,14 +180,23 @@ disjoint and together cover the original complete non-session local prefix,
 including future families through the remainder. This keeps the ordinary
 test names, examples, and fuzz seed corpora in the first execution, and gives
 each prefixed family exactly one execution. Connected work uses two sequential
-uncached executions: `-run='^TestLocalSessionTerminal'`, then
-`-run='^TestLocalSession' -skip='^TestLocalSessionTerminal'`. The connected
+uncached executions: `-run='^TestLocalSession(Terminal|Worker)'`, then
+`-run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)'`. The connected
 selections are disjoint and together cover the original complete
 `^TestLocalSession` prefix. All six executions retain the race detector,
 `-count=1`, and the existing 15-minute per-binary bound. They do not drop tests,
 subtests, examples or fuzz seed corpora or shorten scenarios. Every execution
 covers the same complete package patterns: matching names exist outside the
 state-store package too.
+The first connected execution groups the complete terminal and worker families;
+the second retains every other connected family, including future prefixes.
+This redistributes cumulative runtime without adding a test execution or
+increasing either the per-binary or CI-job timeout. A timeout stack naming a
+late worker subtest is not proof that subtest is stuck: isolate it and measure
+the complete proposed partitions before accepting the redistribution. The
+source-policy test checks this disjoint union against both adversarial future
+names and the actual repository test-name corpus; only fresh full executions
+and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
 `make test-mcp-offline`: a separate uncached race/shuffle execution with a
 five-minute bound for the explicitly tagged synthetic MCP transport fixture.

@@ -88,7 +88,7 @@ func (t *TerminalOutputV1) writeCanonicalEvents(ctx context.Context, run domain.
 			toolBytes += uint64(len(body))
 		} else if failure {
 			matches := false
-			for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2} {
+			for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2, domain.MCPOutcomeUnknownV3} {
 				notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, stop)
 				matches = matches || e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID && uint64(len(body)) <= t.owner.failure.limit
 				clear(notice.Payload)

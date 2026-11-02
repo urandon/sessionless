@@ -229,12 +229,12 @@ func (g *localCompactionGenerationV1) readRetainedLocked(ctx context.Context, pl
 			return deny()
 		}
 		parent, err = decodeLocalRetainedGeneration(&g.entry.owner.configuration, "", parentPolicy, parentPlan, pb, mb, nil)
-		if err != nil {
+		if err != nil || g.source.validateRetainedCanonicalLocked(ctx, parent) != nil {
 			return deny()
 		}
 	}
 	decoded, err := decodeLocalRetainedGeneration(&g.entry.owner.configuration, "", *policy, plan, summary, manifest, parent)
-	if err != nil || decoded.ValidateForGeneration(g.program) != nil {
+	if err != nil || g.source.validateRetainedCanonicalLocked(ctx, decoded) != nil || decoded.ValidateForGeneration(g.program) != nil {
 		return deny()
 	}
 	expected, next, err := g.completedRetainedLocked(ctx)

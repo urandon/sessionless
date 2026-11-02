@@ -40,7 +40,11 @@ func EncodeModelAfterMCPFailureV2(runID domain.RunID, limits domain.ProductLimit
 	return encodeToolPrefixFailure(runID, limits, pair, domain.ModelOutcomeUnknownV2)
 }
 
-// Only the two fixed exported encoders select a stop. No error text or caller
+func EncodeMCPOutcomeUnknownFailureV3(runID domain.RunID, limits domain.ProductLimits, pair []ports.ExecutionToolEvent) (*FailurePlanV1, error) {
+	return encodeToolPrefixFailure(runID, limits, pair, domain.MCPOutcomeUnknownV3)
+}
+
+// Only the fixed exported encoders select a stop. No error text or caller
 // backend output becomes terminal authority through this DATA codec.
 func encodeToolPrefixFailure(runID domain.RunID, limits domain.ProductLimits, pair []ports.ExecutionToolEvent, stop string) (out *FailurePlanV1, err error) {
 	if runID.Validate() != nil || len(pair) < 2 || len(pair) > 8 || len(pair)%2 != 0 {

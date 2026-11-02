@@ -90,13 +90,19 @@ func (e *LocalInvocationEntryV1) ClaimFailure() (*LocalFailureV1, error) {
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	o := m.observation
-	if o.Validate() != nil || !reflect.DeepEqual(o.Reservation, m.reservation) || o.Observation.Outcome != domain.AttemptOperationCompletedV1 || o.Observation.Reason != domain.AttemptOperationReasonServiceErrorV1 || e.owner.store.attemptOperationIssuer.VerifyAttemptOperationObservation(o.Clone()) != nil {
+	if o.Validate() != nil || !reflect.DeepEqual(o.Reservation, m.reservation) || e.owner.store.attemptOperationIssuer.VerifyAttemptOperationObservation(o.Clone()) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	return e.claimFailureHolder(m.source, o, 1)
+	if o.Observation.Outcome == domain.AttemptOperationCompletedV1 && o.Observation.Reason == domain.AttemptOperationReasonServiceErrorV1 {
+		return e.claimFailureHolder(m.source, o, 1)
+	}
+	if m.originalForPhase(e, localCompactionBeforeSend) && localFailureUnknownResponseAbsent(o.Reservation, o.Observation) && o.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+		return e.claimFailureHolder(m.source, o, 3)
+	}
+	return nil, domain.ErrMembershipDenied
 }
 
-// Only ClaimFailure's two original private holders call this after their
+// Only ClaimFailure's original private holders call this after their
 // issuer-authenticated observation is retained under the original source gate.
 func (e *LocalInvocationEntryV1) claimFailureHolder(source *LocalCompactionSourceV1, terminal ports.AuthenticatedAttemptOperationObservationV1, version uint32) (*LocalFailureV1, error) {
 	p := e.parent.Authority.HarnessBinding.AgentLoopPolicy
@@ -147,7 +153,7 @@ func (h *LocalFailureV1) authenticatedRow(row ownedOperationRow, total uint64) b
 	r, o := row.reservation, *row.observation
 	var original ports.AuthenticatedAttemptOperationObservationV1
 	if r.Operation.Sequence == total {
-		if !reflect.DeepEqual(r, h.terminal.Reservation) || !reflect.DeepEqual(o, h.terminal.Observation) || (h.version == 1 && (r.Operation.Kind != domain.AttemptOperationMCPToolV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonServiceErrorV1)) || (h.version == 2 && (r.Operation.Kind != domain.AttemptOperationModelV1 || o.Outcome != domain.AttemptOperationAcceptedOutcomeUnknownV1 || !ports.FailureModelUnknownReasonV2(o.Reason))) || (h.version != 1 && h.version != 2) {
+		if !reflect.DeepEqual(r, h.terminal.Reservation) || !reflect.DeepEqual(o, h.terminal.Observation) || (h.version == 1 && (r.Operation.Kind != domain.AttemptOperationMCPToolV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonServiceErrorV1)) || (h.version == 2 && (r.Operation.Kind != domain.AttemptOperationModelV1 || o.Outcome != domain.AttemptOperationAcceptedOutcomeUnknownV1 || !ports.FailureModelUnknownReasonV2(o.Reason))) || (h.version == 3 && (r.Operation.Kind != domain.AttemptOperationMCPToolV1 || !localFailureUnknownResponseAbsent(r, o))) || (h.version != 1 && h.version != 2 && h.version != 3) {
 			return false
 		}
 		original = h.terminal
@@ -288,7 +294,7 @@ func (h *LocalFailureV1) capture(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		unknown := h.version == 2 && r.Operation.Sequence == snapshot.Accounting.Aggregate.Operations
+		unknown := (h.version == 2 || h.version == 3) && r.Operation.Sequence == snapshot.Accounting.Aggregate.Operations
 		var response []byte
 		if !unknown {
 			response, err = e.bodies.ReadAttemptOperationBody(ctx, r.Operation.Scope, o.ResponseRef, min(o.ResponseBytes, 64<<10))
@@ -299,7 +305,7 @@ func (h *LocalFailureV1) capture(ctx context.Context) error {
 		}
 		valid := localFailureBytes(request, r.Operation.RequestBytes, r.Operation.RequestDigest)
 		if unknown {
-			valid = valid && r.Operation.Kind == domain.AttemptOperationModelV1 && o.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && ports.FailureModelUnknownReasonV2(o.Reason) && o.ResponseRef == "" && o.ResponseDigest == "" && o.ResponseBytes == 0
+			valid = valid && localFailureUnknownResponseAbsent(r, o) && (h.version == 2 && r.Operation.Kind == domain.AttemptOperationModelV1 || h.version == 3 && r.Operation.Kind == domain.AttemptOperationMCPToolV1)
 		} else {
 			valid = valid && localFailureBytes(response, o.ResponseBytes, o.ResponseDigest)
 		}
@@ -310,6 +316,8 @@ func (h *LocalFailureV1) capture(ctx context.Context) error {
 				clear(decoded.Call.Arguments)
 			}
 			valid = valid && de == nil && ue == nil && reflect.DeepEqual(usage, o.Usage)
+		} else if unknown && r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			valid = valid && h.validateUnknownMCPRequest(r, o, request) == nil
 		} else if r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
 			tool, de := mcpadmission.DecodeSealedToolResultDataV1(r, o, response)
 			if len(h.ops) == 0 {
@@ -329,6 +337,8 @@ func (h *LocalFailureV1) capture(ctx context.Context) error {
 		rowData, err := ports.BuildOwnedOperationFailureRowV1(r, o, e.parent, e.source)
 		if h.version == 2 {
 			rowData, err = ports.BuildOwnedOperationFailureRowV2(r, o, e.parent, e.source)
+		} else if h.version == 3 {
+			rowData, err = ports.BuildOwnedOperationFailureRowV3(r, o, e.parent, e.source)
 		}
 		if err != nil {
 			return err

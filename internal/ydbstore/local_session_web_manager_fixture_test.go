@@ -167,6 +167,8 @@ type webManagerSQL struct {
 	priorAttempt             string
 	modelTailFault           string
 	modelTailFaults          int
+	mcpTailFault             string
+	mcpTailFaults            int
 }
 
 func (f *webManagerSQL) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -253,6 +255,44 @@ func (f *webManagerSQL) QueryContext(ctx context.Context, s string, args []drive
 		f.callTrace = append(f.callTrace, flat)
 	}
 	f.lastQuery = flat
+	if f.mcpTailFault != "" && f.manager != nil {
+		effects := f.manager.seed.peer.effects
+		if len(effects.operations) == 2 {
+			last := effects.operations[1]
+			var reservation domain.AttemptOperationReservationV1
+			var observation domain.AttemptOperationObservationV1
+			observed := len(last) == 11 && last[0] == uint64(2) && last[5] == uint64(1) && last[6] == uint64(1)
+			if observed {
+				rawReservation, rok := last[1].(string)
+				rawObservation, ook := last[7].(string)
+				observed = rok && ook && json.Unmarshal([]byte(rawReservation), &reservation) == nil && json.Unmarshal([]byte(rawObservation), &observation) == nil && reservation.Operation.Sequence == 2 && reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 && observation.ValidateForReservation(reservation) == nil && observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && observation.Reason == domain.AttemptOperationReasonTransportUnknownV1 && observation.ResponseRef == "" && observation.ResponseDigest == "" && observation.ResponseBytes == 0
+			}
+			if observed && s == ownedOperationReadSQL && len(args) == 3 && args[2].Value == int64(2) && f.mcpTailFault == "missing_readback" {
+				f.mcpTailFaults++
+				return &explanationFixtureRows{}, nil
+			}
+			if observed && s == localCompactionOperationsSQL && (f.mcpTailFault == "missing_tail" || f.mcpTailFault == "changed_tail") {
+				f.mcpTailFaults++
+				view := append([][]driver.Value(nil), effects.operations...)
+				if f.mcpTailFault == "missing_tail" {
+					view = view[:1]
+				} else {
+					view[1] = append([]driver.Value(nil), view[1]...)
+					// The actual persisted lost reply is transport_unknown. Choose
+					// DIFFERENT valid DATA and its matching DATA hash in this view
+					// only; never change the original row or re-sign its MAC.
+					observation.Reason = domain.AttemptOperationReasonWorkerLostV1
+					raw, re := json.Marshal(observation)
+					digest, de := observation.Digest()
+					if re != nil || de != nil || observation.ValidateForReservation(reservation) != nil || string(raw) == last[7] || string(digest) == last[8] {
+						return nil, errors.New("MCP read-view mutation must change valid observation DATA and digest")
+					}
+					view[1][7], view[1][8] = string(raw), string(digest)
+				}
+				return &compactionSourceRows{rows: view}, nil
+			}
+		}
+	}
 	if f.modelTailFault != "" && f.manager != nil {
 		effects := f.manager.seed.peer.effects
 		if len(effects.operations) == 3 {
@@ -998,6 +1038,20 @@ func (s *LocalWebManagerSeed) SetModelTailObservationFault(t *testing.T, mode st
 }
 func (s *LocalWebManagerSeed) ModelTailObservationFaults() int { return s.peer.modelTailFaults }
 func (s *LocalWebManagerSeed) EndModelTailObservationFault()   { s.peer.modelTailFault = "" }
+
+// Closed sequence-2 MCP read-view faults, enabled before the genuine loop but
+// inert until its original Store actually persists a request-only lost reply.
+// No observation, private owner or issuer authenticator is supplied by tests.
+func (s *LocalWebManagerSeed) SetMCPTailObservationFault(t *testing.T, mode string) {
+	t.Helper()
+	if (mode != "missing_readback" && mode != "missing_tail" && mode != "changed_tail") || s.peer.mcpTailFault != "" || s.peer.manager == nil || len(s.peer.manager.seed.peer.effects.operations) != 0 {
+		t.Fatal("closed MCP observation fault requires the untouched original Manager seed")
+	}
+	s.peer.mcpTailFault = mode
+}
+
+func (s *LocalWebManagerSeed) MCPTailObservationFaults() int { return s.peer.mcpTailFaults }
+func (s *LocalWebManagerSeed) EndMCPTailObservationFault()   { s.peer.mcpTailFault = "" }
 
 // Corrupt only canonical history DATA after the genuine first F1 committed.
 // The original failed Run/F1 marker/capsule/frontier and funding remain exact;

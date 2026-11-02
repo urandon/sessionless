@@ -93,6 +93,9 @@ func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery,
 			if metadata.CapsuleSchema == "sessionless.terminal-failure-custody.v2" {
 				candidate, e = ports.BuildOwnedOperationFailureRowV2(row.reservation, *row.observation, parent, source)
 				last = candidate.Kind == domain.AttemptOperationModelV1 && candidate.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && ports.FailureModelUnknownReasonV2(candidate.Reason)
+			} else if metadata.CapsuleSchema == "sessionless.terminal-failure-custody.v3" {
+				candidate, e = ports.BuildOwnedOperationFailureRowV3(row.reservation, *row.observation, parent, source)
+				last = candidate.Kind == domain.AttemptOperationMCPToolV1 && candidate.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && ports.FailureMCPUnknownReasonV3(candidate.Reason)
 			}
 			if e != nil || (sequence == accounting.Aggregate.Operations) != last {
 				return nil, q.budget.deny()

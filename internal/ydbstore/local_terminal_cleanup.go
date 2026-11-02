@@ -231,7 +231,7 @@ func (p *LocalPreparedOutputV1) verifyCleanupRetained(ctx context.Context) error
 		decoded, e := decodeLocalRetainedGeneration(&p.parent.entry.owner.configuration, "", *policy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
-		if e != nil {
+		if e != nil || p.parent.source.validateRetainedCanonicalLocked(ctx, decoded) != nil {
 			return domain.ErrMembershipDenied
 		}
 		previous = decoded

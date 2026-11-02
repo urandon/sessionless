@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
+	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
@@ -31,6 +33,31 @@ type localFailureHistoryV1 struct {
 	Accounting        ownedAttemptAccounting
 	Original, Retired domain.RegisteredAllocationV2
 	Seal              string
+}
+
+// Bounded transient classification from the already authenticated canonical
+// Session history, not a ledger, grant or another operation lifecycle. Wrapper,
+// Run/call identifiers and grant revisions do not change an unresolved effect.
+type localUnresolvedMCP struct {
+	tenant    domain.TenantID
+	owner     domain.UserID
+	session   domain.SessionID
+	resource  string
+	name      string
+	arguments string
+}
+
+func (s *LocalCompactionSourceV1) denyUnresolvedMCP(call mcpadmission.CallV1, grant mcpadmission.MCPToolGrantV1) error {
+	if s == nil || s.state == nil || s.state.history == nil || !s.state.history.failuresMaterialized || s.entry.source.Spending[2].ResourceID != grant.ResourceID || grant.TenantID != s.entry.parent.Scope.TenantID || grant.OwnerUserID != s.entry.parent.Scope.OwnerUserID {
+		return domain.ErrMembershipDenied
+	}
+	candidate := localUnresolvedMCP{tenant: grant.TenantID, owner: grant.OwnerUserID, session: s.entry.parent.Scope.SessionID, resource: grant.ResourceID, name: call.Name(), arguments: call.ArgumentsDigest()}
+	for _, prior := range s.state.history.unresolvedMCP {
+		if prior == candidate {
+			return domain.ErrMembershipDenied
+		}
+	}
+	return nil
 }
 
 func readHistoricalFailure(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (localFailureHistoryV1, error) {
@@ -96,6 +123,12 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 			clear(notice.Payload)
 			return nil, q.budget.deny()
 		}
+		mcpUnknownNotice, err := canonicaloutput.EncodeFailureV1(id, false, domain.MCPOutcomeUnknownV3)
+		if err != nil {
+			clear(notice.Payload)
+			clear(unknownNotice.Payload)
+			return nil, q.budget.deny()
+		}
 		var anchor domain.SessionEvent
 		anchors, matching, closedNotice := 0, 0, 0
 		for _, record := range records {
@@ -106,13 +139,14 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 				if bytes.Equal(notice.Payload, record.Payload) {
 					matching++
 				}
-				if bytes.Equal(notice.Payload, record.Payload) || bytes.Equal(unknownNotice.Payload, record.Payload) {
+				if bytes.Equal(notice.Payload, record.Payload) || bytes.Equal(unknownNotice.Payload, record.Payload) || bytes.Equal(mcpUnknownNotice.Payload, record.Payload) {
 					closedNotice++
 				}
 			}
 		}
 		clear(notice.Payload)
 		clear(unknownNotice.Payload)
+		clear(mcpUnknownNotice.Payload)
 		if run.TerminalFailure == nil && !marked {
 			// Ordinary legacy notices retain their old language. The newly closed
 			// known-error notice cannot masquerade as one without F1 correspondence.
@@ -194,7 +228,7 @@ func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsule, 
 		}{{op.Reservation.Operation.RequestRef, op.Reservation.Operation.RequestBytes, op.Reservation.Operation.RequestDigest}, {op.Observation.ResponseRef, op.Observation.ResponseBytes, op.Observation.ResponseDigest}} {
 			// The V2 plan validator has already proved the exact UNKNOWN MODEL
 			// tail and explicit normalized:null. It owns a request, no response.
-			if required.ref == "" && c.Version == 2 && op.Observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && required.bytes == 0 && required.digest == "" {
+			if required.ref == "" && (c.Version == 2 || c.Version == 3) && localFailureUnknownResponseAbsent(op.Reservation, op.Observation) && required.bytes == 0 && required.digest == "" {
 				continue
 			}
 			found := false
@@ -212,6 +246,34 @@ func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsule, 
 	return nil
 }
 
+// Every Source consumer uses its authenticated full current canonical view,
+// not caller flags or retained hashes, before exposing any retained context.
+// This is within the existing logical call/body budget; it starts no new call.
+func (s *LocalCompactionSourceV1) validateRetainedCanonicalLocked(ctx context.Context, retained *compactioncontext.RetainedV1) error {
+	if s == nil || s.state == nil || s.state.view == nil || s.state.history == nil || !s.state.history.failuresMaterialized || retained == nil {
+		return domain.ErrMembershipDenied
+	}
+	// Closed UNKNOWN notices without F3 metadata were already rejected during
+	// the original history rejoin. Do not add an unrelated full-view clone or
+	// debit to the old F1/F2/no-failure paths.
+	if len(s.state.history.unresolvedMCP) == 0 {
+		return nil
+	}
+	if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
+		return domain.ErrMembershipDenied
+	}
+	records := s.state.view.Records()
+	defer func() {
+		for _, record := range records {
+			clear(record.Payload)
+		}
+	}()
+	if retained.ValidateUnresolvedToolProtection(records) != nil {
+		return domain.ErrMembershipDenied
+	}
+	return nil
+}
+
 func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Context) error {
 	h := s.state.history
 	if h == nil {
@@ -220,15 +282,16 @@ func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Contex
 	if h.failuresMaterialized {
 		return nil
 	}
+	if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
+		return domain.ErrMembershipDenied
+	}
 	records := s.state.view.Records()
 	defer func() {
 		for _, r := range records {
 			clear(r.Payload)
 		}
 	}()
-	if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
-		return domain.ErrMembershipDenied
-	}
+	var unresolved []localUnresolvedMCP
 	for _, v := range h.failures {
 		profile, err := s.entry.owner.configuration.Digest()
 		if err != nil || profile != v.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest {
@@ -241,11 +304,24 @@ func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Contex
 		c, err := decodeLocalFailureCapsule(body)
 		clear(body)
 		valid := err == nil && validateFailureHistoryData(v, c, records) == nil
+		if valid && c.Version == 3 {
+			last := len(c.Operations) - 1
+			pair, err := localFailureUnknownMCPPair(c.ProfileDigest, c.Operations[last-1], c.Operations[last])
+			cost := c.Parent.Authority.AdmissionCostCeiling.MCPToolCost
+			valid = err == nil && len(pair) == 2 && cost != nil && cost.ResourceID == c.Source.Spending[2].ResourceID && cost.ScopedGrantDigest == c.Operations[last].Reservation.Operation.ToolGrantDigest && len(unresolved) < int(compactioncontext.MaxEventsV1)
+			if valid {
+				unresolved = append(unresolved, localUnresolvedMCP{tenant: c.Accounting.Scope.TenantID, owner: c.Accounting.Scope.OwnerUserID, session: c.Accounting.Scope.SessionID, resource: cost.ResourceID, name: pair[0].ToolName, arguments: c.Operations[last].Reservation.Operation.ArgumentsDigest})
+			}
+			for _, event := range pair {
+				clear(event.Payload)
+			}
+		}
 		clearLocalFailureNormalized(c)
 		if !valid {
 			return domain.ErrMembershipDenied
 		}
 	}
+	h.unresolvedMCP = unresolved
 	h.failuresMaterialized = true
 	return nil
 }

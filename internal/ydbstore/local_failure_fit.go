@@ -19,6 +19,19 @@ import (
 // This first arm is eligible only before a success candidate/batch exists, so
 // there is no simultaneously writable late-success assistant residue.
 func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, source *LocalCompactionSourceV1, op domain.AttemptOperationV1) error {
+	if err := entry.failureFitLocked(ctx, source, op, false); err != nil {
+		return err
+	}
+	if op.Kind == domain.AttemptOperationMCPToolV1 {
+		return entry.failureFitLocked(ctx, source, op, true)
+	}
+	return nil
+}
+
+// Both initial failure alternatives use the SAME serializers and original
+// inventory. They are selected before any terminal plan/batch can exist. No
+// failure path may replace a success capsule or coexist with its batch PUTs.
+func (entry *LocalInvocationEntryV1) failureFitLocked(ctx context.Context, source *LocalCompactionSourceV1, op domain.AttemptOperationV1, mcpUnknown bool) error {
 	modelTail := op.Kind == domain.AttemptOperationModelV1 && localTerminalNeedsV2(source.state.operations, op)
 	if op.Kind != domain.AttemptOperationMCPToolV1 && !modelTail {
 		return nil
@@ -50,6 +63,9 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	}()
 	if !modelTail {
 		result, err := localFailureToolResult(domain.AttemptOperationDigestV1(d), domain.AttemptOperationReservationDigestV1(d), domain.AttemptOperationObservationDigestV1(d), []string{})
+		if mcpUnknown {
+			result, err = canonicaloutput.EncodeMCPUnknownToolOutcomeV1(domain.AttemptOperationDigestV1(d), domain.AttemptOperationReservationDigestV1(d), domain.AttemptOperationObservationDigestV1(d))
+		}
 		if err != nil {
 			return deny()
 		}
@@ -61,6 +77,8 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	var plan *canonicaloutput.FailurePlanV1
 	if modelTail {
 		plan, err = canonicaloutput.EncodeModelAfterMCPFailureV2(run.ID, source.state.snapshot.Job.Job.Limits, pair)
+	} else if mcpUnknown {
+		plan, err = canonicaloutput.EncodeMCPOutcomeUnknownFailureV3(run.ID, source.state.snapshot.Job.Job.Limits, pair)
 	} else {
 		plan, err = canonicaloutput.EncodeKnownMCPServiceFailureV1(run.ID, source.state.snapshot.Job.Job.Limits, pair)
 	}
@@ -69,7 +87,7 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	}
 	defer plan.Release()
 	n := min(op.ResultBytes, uint64(64<<10))
-	if modelTail {
+	if modelTail || mcpUnknown {
 		n = 4
 	} // exact explicit absent normalized response: null
 	if n < 4 {
@@ -79,6 +97,8 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: entry.parent.Clone(), Source: entry.source.Clone(), FrontierDigest: d, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", CapturedAt: localTerminalSizeTime, Derived: run.Clone().DerivedContext}
 	if modelTail {
 		c.Schema, c.Version, c.Stop = "sessionless.terminal-failure-custody.v2", 2, domain.ModelOutcomeUnknownV2
+	} else if mcpUnknown {
+		c.Schema, c.Version, c.Stop = "sessionless.terminal-failure-custody.v3", 3, domain.MCPOutcomeUnknownV3
 	}
 	c.ProfileDigest, err = entry.owner.configuration.Digest()
 	if err != nil {
@@ -90,7 +110,7 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 			return deny()
 		}
 		size := uint64(len(event.Payload))
-		if i == len(pair)-1 && !modelTail {
+		if i == len(pair)-1 && !modelTail && !mcpUnknown {
 			size += n
 		}
 		if size > sessionmaterial.MaxPayloadBytesV1 {
@@ -115,9 +135,11 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 	future := localTerminalFutureMaterial(op, n)
 	future.observation.Reason = domain.AttemptOperationReasonServiceErrorV1
 	future.observation.Usage = domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageUnknownV1}
-	if modelTail {
+	if modelTail || mcpUnknown {
 		future.observation.Outcome, future.observation.Reason = domain.AttemptOperationAcceptedOutcomeUnknownV1, domain.AttemptOperationReasonTransportUnknownV1
 		future.observation.ResponseRef, future.observation.ResponseDigest, future.observation.ResponseBytes = "", "", 0
+	}
+	if modelTail {
 		number := uint64(math.MaxUint64)
 		// LENGTH only: longest state plus every possible metric, matching the
 		// existing upper accounting rows. This is never a valid/authenticated
@@ -131,12 +153,12 @@ func (entry *LocalInvocationEntryV1) knownFailureFitLocked(ctx context.Context, 
 		reason := domain.AttemptOperationReasonNoneV1
 		if i == len(materials)-1 {
 			reason = domain.AttemptOperationReasonServiceErrorV1
-			if modelTail {
+			if modelTail || mcpUnknown {
 				reason = domain.AttemptOperationReasonTransportUnknownV1
 			}
 		}
 		outcome := domain.AttemptOperationCompletedV1
-		if modelTail && i == len(materials)-1 {
+		if (modelTail || mcpUnknown) && i == len(materials)-1 {
 			outcome = domain.AttemptOperationAcceptedOutcomeUnknownV1
 		}
 		c.Accounting.Operations = append(c.Accounting.Operations, ports.OwnedOperationFailureRowV1{Sequence: row.Sequence, Kind: row.Kind, OperationDigest: row.OperationDigest, ReservationDigest: row.ReservationDigest, ObservationDigest: row.ObservationDigest, Outcome: outcome, Reason: reason, Reserved: row.Reserved, Usage: row.Usage, MCPSpendingDigest: row.MCPSpendingDigest})

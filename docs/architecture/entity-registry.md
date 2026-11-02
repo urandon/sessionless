@@ -215,10 +215,37 @@ pairs keep their original successful payload bytes; the one fixed
 new user request does not replay the old MODEL or MCP, and the UNKNOWN tail is
 never completed context or a safe compaction source. Retained readers and deletion
 verify the complete original capsule/accounting/marker/events and inventory only
-actual request/response objects, never a fabricated UNKNOWN response. Unknown
-tool outcomes, missing/conflicting observations, tainted PUT custody and late
-success-candidate reuse remain reconciliation-only. No table, ledger, migration,
+actual request/response objects, never a fabricated UNKNOWN response. Missing or
+conflicting observations, tainted PUT custody and late success-candidate reuse
+remain reconciliation-only. No table, ledger, migration,
 indefinite retention gate, active-reader relaxation or larger Run is introduced.
+
+The strict failure capsule/accounting V3 arm retains a complete authenticated
+known prefix ending in UNKNOWN MCP before any terminal candidate exists. It
+uses the same compact commitment, Plan, `local_f1:` marker and original one-use
+failure lifecycle, with separate V3 digest domains and the fixed
+`mcp_outcome_unknown` notice. The UNKNOWN result is a closed five-field
+Sessionless outcome containing exact operation/reservation/observation digests,
+not service content or a fabricated response; `normalized:null` and absent
+response-reference fields retain request-only custody. The original grant,
+actual MODEL/schema and exact tools/call request are checked by the original
+holder; retained DATA never restores those permissions. Original setup, all
+operation debits and UNKNOWN usage remain nonrefundable. F1/F2 and successful
+accounting/capsules retain their existing wire languages.
+
+Authenticated UNKNOWN tool call/result/notice facts remain lossless protected
+canonical history, never completed-operation context or safe compaction
+coverage. Existing retained-compaction wires carry no new caller-populated
+flag: actual-payload checks at current/historical context, cleanup and deletion
+consumers reject even rehashed cuts covering or splitting those facts. Fresh
+Run preparation denies the same unresolved tenant/owner/Session/resource/tool
+and normalized-argument identity before request PUT, reservation or send, even
+with a fresh call ID or grant revision. Different bounded work and unrelated
+compaction remain admissible. The bounded identities are derived transiently
+from the same authenticated Session history, not a new ledger or global gate.
+Prospective admission counts the selected initial capsule, complete canonical
+batch/notice and original attempted-body inventory with the actual serializers;
+no larger body, artifact, SQL, time or 32-KiB Run allowance is introduced.
 
 The local completion successor uses that same Run and the existing
 `substrate_execution_evidence` row, with explicitly tagged V2 evidence; it does

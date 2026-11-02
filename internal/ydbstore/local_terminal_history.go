@@ -46,6 +46,7 @@ type localTerminalHistorySnapshot struct {
 type localTerminalHistoryV1 struct {
 	failures             []localFailureHistoryV1
 	failuresMaterialized bool
+	unresolvedMCP        []localUnresolvedMCP
 	snapshots            []localTerminalHistorySnapshot
 	legacy               []localTerminalLegacySnapshot
 	runs                 []compactioncontext.HistoricalRunV1
@@ -101,6 +102,7 @@ func (h *localTerminalHistoryV1) clear() {
 	h.snapshots, h.legacy, h.runs, h.parents = nil, nil, nil, nil
 	h.runsV2 = nil
 	h.failures = nil
+	h.unresolvedMCP = nil
 }
 
 // The source owns view and history under its original mutex. The first call is
@@ -541,7 +543,7 @@ func (s *LocalCompactionSourceV1) readHistoricalDerived(ctx context.Context, v l
 		decoded, err := decodeLocalRetainedGeneration(&s.entry.owner.configuration, "", *v.Parent.Authority.HarnessBinding.AgentLoopPolicy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
-		if err != nil {
+		if err != nil || s.validateRetainedCanonicalLocked(ctx, decoded) != nil {
 			return nil, domain.ErrMembershipDenied
 		}
 		previous = decoded

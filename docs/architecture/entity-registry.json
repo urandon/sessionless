@@ -2782,7 +2782,7 @@
     {
       "table": "run_finalizations",
       "migration": "00059_create_run_finalizations.sql",
-      "role": "Canonical exactly-once terminal marker. Original V1 and local_v2 formats remain strict; local_f1 binds either strict failure-capsule/accounting V1 known MCP service error or V2 known MCP prefix plus authenticated UNKNOWN MODEL tail, full reserved/UNKNOWN accounting, canonical pair plus fixed notice and joined_retained custody, not erasure or send authority.",
+      "role": "Canonical exactly-once terminal marker. Original V1 and local_v2 formats remain strict; local_f1 binds exact strict failure-capsule/accounting variants: V1 known MCP service error, V2 known MCP prefix plus UNKNOWN MODEL, or V3 known prefix plus request-only authenticated UNKNOWN MCP. Full reserved/UNKNOWN accounting, exact canonical pair and one fixed notice, joined_retained custody and separate digest domains grant no erasure or send authority.",
       "primaryKey": [
         "tenant_id",
         "run_id"
@@ -2859,7 +2859,7 @@
     {
       "table": "runs",
       "migration": "00007_create_runs.sql",
-      "role": "Canonical Run payload with one immutable terminal Plan and optional strict terminal_failure V1-shaped correspondence selecting exact capsule/stop variants. Generic writers preserve metadata; known MCP service_error or a complete authenticated UNKNOWN MODEL tail after known MCP retains actual original bodies and full debit without success evidence, an invented response, a second capsule, ledger or larger 32KiB payload allowance.",
+      "role": "Canonical Run payload with one immutable terminal Plan and optional strict terminal_failure V1-shaped correspondence selecting exact V1/V2/V3 capsule/stop variants. Generic writers preserve metadata; known MCP service_error, UNKNOWN MODEL after known MCP, or request-only UNKNOWN MCP retains the complete original frontier and full debit without success evidence, an invented response, second capsule, ledger or larger 32KiB payload allowance. Authenticated UNKNOWN tool facts remain protected lossless canonical history and prevent semantic replay before effects, not unrelated bounded work.",
       "primaryKey": [
         "tenant_id",
         "run_id"

@@ -336,7 +336,7 @@ func verifyRetainedDeletionDerived(ctx context.Context, reader SessionDeletionBl
 		decoded, err := decodeLocalRetainedGeneration(nil, profileDigest, *policy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
-		if err != nil || !ownership.contains(decoded) {
+		if err != nil || !ownership.contains(decoded) || verifyRetainedDeletionCanonicalProtection(ctx, reader, decoded) != nil {
 			return deny()
 		}
 		previous = decoded
@@ -346,4 +346,42 @@ func verifyRetainedDeletionDerived(ctx context.Context, reader SessionDeletionBl
 		return deny()
 	}
 	return previous, nil
+}
+
+// Read the exact Session-owned canonical dependencies before interpreting a
+// retained cut for destruction. Old wire DATA cannot self-attest protection.
+func verifyRetainedDeletionCanonicalProtection(ctx context.Context, reader SessionDeletionBlobReader, retained *compactioncontext.RetainedV1) error {
+	var events []domain.SessionEvent
+	switch retained.CodecVersion() {
+	case 1:
+		events, _ = retained.DependenciesV1()
+	case 2:
+		events, _ = retained.DependenciesV2()
+	default:
+		return domain.ErrMembershipDenied
+	}
+	if len(events) > int(compactioncontext.MaxEventsV1) {
+		return domain.ErrMembershipDenied
+	}
+	var records []sessioncontext.EventPayload
+	defer func() {
+		for _, record := range records {
+			clear(record.Payload)
+		}
+	}()
+	var size uint64
+	for _, event := range events {
+		if event.Payload.Size <= 0 || uint64(event.Payload.Size) > compactioncontext.MaxBytesV1-size {
+			return domain.ErrMembershipDenied
+		}
+		size += uint64(event.Payload.Size)
+		body, err := readRetainedDeletionBlob(ctx, reader, event.Payload, compactioncontext.MaxBytesV1)
+		if err != nil {
+			return domain.ErrMembershipDenied
+		}
+		records = append(records, sessioncontext.EventPayload{Event: event, Payload: body})
+	}
+	// Dependency order is canonical in the retained source; preserve it rather
+	// than deriving protection from a map's accidental iteration order.
+	return retained.ValidateUnresolvedToolProtection(records)
 }

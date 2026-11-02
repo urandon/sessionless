@@ -132,9 +132,9 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 		return nil, sourceDenial("private files")
 	}
 	defer clear(key[:])
-	var manifest ManifestV1
-	if strictJSON(raw, &manifest) != nil || manifest.Version != 1 || len(manifest.Evidence) == 0 || len(manifest.Evidence) > 16 {
-		return nil, sourceDenial("manifest encoding")
+	manifest, err := decodeManifestTemplate(raw)
+	if err != nil {
+		return nil, err
 	}
 	fingerprint := sha256.Sum256(key[:])
 	if manifest.KeyFingerprint != hex.EncodeToString(fingerprint[:]) || domain.ValidateSHA256Digest("local_operator.key", manifest.KeyFingerprint) != nil {
@@ -144,38 +144,10 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 	if err != nil {
 		return nil, sourceDenial("installed executable")
 	}
-	c, p := manifest.Configuration.Clone(), manifest.Profile.Clone()
-	if c.Resource.ResourceID != "" || c.Resource.Revision != 0 || c.ProfileRevision != 0 || c.LocalInstallationID != "" || c.LocalInstallationRevision != 0 ||
-		p.Resource.ResourceID != "" || p.Resource.Revision != 0 || p.ProfileRevision != 0 || p.InstallationID != "" || p.InstallationRevision != 0 || p.RevocationGeneration != 0 || p.MutationID != "" || p.State != "" ||
-		p.Locator.ResourceID != "" || p.Locator.BackendProfileDigest != "" || p.Backend.BackendProfileDigest != "" || p.Substrate.LocalInstallationID != "" || p.Substrate.LocalInstallationRevision != 0 ||
-		c.OriginalSource != (domain.OwnedAgentAuthorityBodyRefV1{}) || p.InstalledManifest != (domain.OwnedAgentAuthorityBodyRefV1{}) {
-		return nil, ErrDenied
-	}
-	if c.WorkerExecutableDigest != identity.WorkerExecutableDigest || c.LocalHostIdentityDigest != identity.LocalHostIdentityDigest || c.LocalNetworkNamespaceIdentityDigest != identity.LocalNetworkNamespaceIdentityDigest {
-		return nil, ErrDenied
-	}
-	for i, body := range manifest.Evidence {
-		if body.Reference.Validate() != nil || body.Reference.Bytes != uint64(len(body.Body)) || hash(body.Body) != body.Reference.Digest {
-			return nil, ErrDenied
-		}
-		for j := 0; j < i; j++ {
-			if manifest.Evidence[j].Reference.Ref == body.Reference.Ref {
-				return nil, ErrDenied
-			}
-		}
-	}
-	if !hasBody(manifest.Evidence, c.CapabilityEvidence) || !hasBody(manifest.Evidence, p.ReviewReceipt) {
-		return nil, ErrDenied
-	}
-	terms, err := json.Marshal(manifest.InvoiceTerms)
-	if err != nil || !validTerms(manifest.InvoiceTerms, c, p) || c.OperatorTerms.Bytes != uint64(len(terms)) || c.OperatorTerms.Digest != hash(terms) || !hasExactBody(manifest.Evidence, c.OperatorTerms, terms) {
-		return nil, ErrDenied
+	if err := validateManifestTemplateData(manifest, identity); err != nil {
+		return nil, err
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	sourceRef := domain.OwnedAgentAuthorityBodyRefV1{Ref: "local-source-" + hash(raw), Digest: hash(raw), Bytes: uint64(len(raw))}
-	if sourceRef.Validate() != nil {
-		return nil, ErrDenied
-	}
 	var resource, installation, mutation string
 	revision := uint64(1)
 	if original == nil {
@@ -210,21 +182,9 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 			}
 		}
 	}
-	c.Resource.ResourceID, c.Resource.Revision, c.ProfileRevision, c.LocalInstallationID, c.LocalInstallationRevision = resource, revision, revision, installation, revision
-	c.OriginalSource = sourceRef
-	p.Resource = c.Resource
-	p.ProfileRevision, p.RevocationGeneration, p.State = revision, 1, domain.OwnedAgentCurrentActiveV1
-	p.InstallationID, p.InstallationRevision, p.MutationID, p.InstalledManifest = installation, revision, mutation, sourceRef
-	p.Locator.ResourceID = resource
-	p.Substrate.LocalInstallationID, p.Substrate.LocalInstallationRevision = installation, revision
-	p.Backend.BackendProfileDigest, err = c.Digest()
+	c, p, err := materializeManifestTemplate(raw, manifest, resource, installation, mutation, revision, now)
 	if err != nil {
-		return nil, ErrDenied
-	}
-	p.Locator.BackendProfileDigest = p.Backend.BackendProfileDigest
-	p.Window.PublishedAt, p.UpdatedAt = now, now
-	if c.ValidateForOwnedProfile(p) != nil || c.ValidateAt(now) != nil || p.ValidateInitial() != nil {
-		return nil, sourceDenial("profile correlation")
+		return nil, err
 	}
 	search, err := acceptSearchEvidence(manifest, p, now)
 	if err != nil {

@@ -27,6 +27,37 @@ type schemaV1 struct {
 	items                *schemaV1
 }
 
+// ValidateToolSchemaV1 checks DATA with the exact closed schema compiler and
+// parameter-byte/depth/member bounds used by FreezeRequestV1. The depth budget
+// accounts for parameters starting at depth five in the model wire envelope.
+// Success establishes neither full request/context fit nor tool capability,
+// installation, current authorization or permission to send/execute anything.
+func ValidateToolSchemaV1(raw json.RawMessage, effective domain.ConfiguredInferenceLimitsV1) error {
+	if effective.Validate() != nil {
+		return ErrContract
+	}
+	_, err := compileToolSchemaV1(raw, effective)
+	return err
+}
+
+// Both callers have validated effective limits. Keep the original wire-relative
+// JSON decode and closed object-root compilation in one path; the explicit
+// guard also prevents subtracting four from an insufficient unsigned budget.
+func compileToolSchemaV1(raw []byte, effective domain.ConfiguredInferenceLimitsV1) (*schemaV1, error) {
+	if effective.JSONDepth < 5 {
+		return nil, ErrContract
+	}
+	v, err := strictJSON(raw, effective.RequestBytes, effective.JSONDepth-4, effective.JSONMembers)
+	if err != nil {
+		return nil, ErrContract
+	}
+	schema, err := compileSchema(v, 1, effective)
+	if err != nil || schema.kind != "object" {
+		return nil, ErrContract
+	}
+	return schema, nil
+}
+
 func object(v any) (map[string]any, bool) { m, ok := v.(map[string]any); return m, ok }
 func exactKeys(m map[string]any, allowed ...string) bool {
 	for k := range m {

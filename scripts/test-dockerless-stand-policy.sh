@@ -80,4 +80,139 @@ test "$bounded_bytes" -eq 128 ||
 	fail "bounded log size = $bounded_bytes, want 128"
 test ! -e "$docker_calls" || fail 'Docker was invoked while bounding Dockerless logs'
 
+# Exercise the actual CLI's pre-effect denials. No BFF/model/DB is started and
+# no existing binary or host port is used by these cases.
+for mode in missing-origin missing-provider cloud zero-port leading-zero-port oversized-port nondigit-port; do
+	web_environment=local
+	web_origin=https://web.localhost
+	web_provider=yandex
+	web_port=8083
+	case "$mode" in
+		missing-origin) web_origin= ;;
+		missing-provider) web_provider= ;;
+		cloud) web_environment=cloud-dev ;;
+		zero-port) web_port=0 ;;
+		leading-zero-port) web_port=08083 ;;
+		oversized-port) web_port=65536 ;;
+		nondigit-port) web_port=not-a-port ;;
+	esac
+	if PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/web-$mode" \
+		SESSIONLESS_ENVIRONMENT="$web_environment" WEB_BASE_URL="$web_origin" \
+		WEB_LOGIN_PROVIDER="$web_provider" WEB_PORT="$web_port" \
+		"$runner" start web-bff >"$test_root/web-$mode.out" 2>&1; then
+		fail "native Web accepted invalid explicit configuration: $mode"
+	fi
+	case "$mode" in
+		missing-*) expected='requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER' ;;
+		cloud) expected='requires SESSIONLESS_ENVIRONMENT=local' ;;
+		*) expected='WEB_PORT must be a decimal port between 1 and 65535' ;;
+	esac
+	grep -F "$expected" "$test_root/web-$mode.out" >/dev/null ||
+		fail "native Web denial did not identify $mode"
+	test ! -e "$test_root/web-$mode/pids/web-bff.pid" ||
+		fail "native Web denial acquired a process: $mode"
+done
+test ! -e "$docker_calls" || fail 'Docker was invoked by native Web validation'
+
+# A copied real runner exercises successful dispatch against explicitly fake
+# commands. The peers neither bind sockets nor execute an application. The ps
+# peer acknowledges only after the launch-argument trace is complete, so the
+# check does not race the bounded background recorder.
+web_fixture=$test_root/web-fixture
+mkdir -p "$web_fixture/scripts" "$web_fixture/tools" "$web_fixture/.build/bin" "$web_fixture/fake-bin"
+cp "$runner" "$web_fixture/scripts/dockerless-local.sh"
+cp "$repo_root/tools/versions.env" "$web_fixture/tools/versions.env"
+printf '#!/bin/sh\nexit 97\n' >"$web_fixture/.build/bin/web-bff"
+cat >"$web_fixture/fake-bin/nohup" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >"$DOCKERLESS_POLICY_TRACE.pending"
+mv "$DOCKERLESS_POLICY_TRACE.pending" "$DOCKERLESS_POLICY_TRACE"
+STUB
+cat >"$web_fixture/fake-bin/ps" <<'STUB'
+#!/bin/sh
+test -e "$DOCKERLESS_POLICY_TRACE" || exit 1
+if test "${DOCKERLESS_POLICY_MODE:-normal}" = child-exit; then
+	if test -e "$DOCKERLESS_POLICY_TRACE.observed"; then exit 1; fi
+	: >"$DOCKERLESS_POLICY_TRACE.observed"
+fi
+printf '%s\n' "$DOCKERLESS_POLICY_MARKER"
+STUB
+cat >"$web_fixture/fake-bin/lsof" <<'STUB'
+#!/bin/sh
+if test "${DOCKERLESS_POLICY_MODE:-normal}" = foreign-ready; then printf '999999\n'; exit 0; fi
+test -e "$DOCKERLESS_POLICY_TRACE" || exit 1
+if test "${DOCKERLESS_POLICY_MODE:-normal}" = changed-listener && test -e "$DOCKERLESS_POLICY_READY"; then
+	printf '999999\n'
+else
+	cat "$DOCKERLESS_POLICY_RUNTIME/pids/web-bff.pid"
+fi
+STUB
+cat >"$web_fixture/fake-bin/curl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >"$DOCKERLESS_POLICY_READY"
+STUB
+chmod +x "$web_fixture/.build/bin/web-bff" "$web_fixture/fake-bin/nohup" \
+	"$web_fixture/fake-bin/ps" "$web_fixture/fake-bin/lsof" "$web_fixture/fake-bin/curl"
+PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/runtime" \
+	SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+	PORT=18080 WEB_PORT=18083 DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
+	DOCKERLESS_POLICY_RUNTIME="$web_fixture/runtime" \
+	DOCKERLESS_POLICY_TRACE="$web_fixture/launch" DOCKERLESS_POLICY_READY="$web_fixture/ready" \
+	"$web_fixture/scripts/dockerless-local.sh" start web-bff >"$web_fixture/out" 2>&1 ||
+	fail 'native Web CLI did not reach its fake launch/readiness peers'
+printf '%s\n' env PORT=18083 "$web_fixture/.build/bin/web-bff" >"$web_fixture/expected-launch"
+cmp -s "$web_fixture/expected-launch" "$web_fixture/launch" ||
+	fail 'native Web did not launch only the exact child with its dedicated port'
+grep -F 'http://127.0.0.1:18083/readyz' "$web_fixture/ready" >/dev/null ||
+	fail 'native Web readiness did not observe its own port'
+test -f "$web_fixture/runtime/pids/web-bff.pid" && test -f "$web_fixture/runtime/pids/web-bff.marker" ||
+	fail 'native Web launch omitted owned process metadata'
+test ! -e "$docker_calls" || fail 'Docker was invoked by native Web launch'
+
+for mode in foreign-ready child-exit changed-listener; do
+	if PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/$mode" \
+		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+		WEB_PORT=18083 DOCKERLESS_POLICY_MODE="$mode" DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
+		DOCKERLESS_POLICY_RUNTIME="$web_fixture/$mode" DOCKERLESS_POLICY_TRACE="$web_fixture/$mode-launch" \
+		DOCKERLESS_POLICY_READY="$web_fixture/$mode-ready" \
+		"$web_fixture/scripts/dockerless-local.sh" start web-bff >"$web_fixture/$mode.out" 2>&1; then
+		fail "native Web accepted false readiness: $mode"
+	fi
+	case "$mode" in
+		foreign-ready) expected='port belongs to another listener' ;;
+		child-exit) expected='child exited or lost ownership before readiness' ;;
+		changed-listener) expected='listener ownership changed during readiness' ;;
+	esac
+	grep -F "$expected" "$web_fixture/$mode.out" >/dev/null ||
+		fail "native Web did not identify false readiness: $mode"
+	if test "$mode" != changed-listener; then
+		test ! -e "$web_fixture/$mode-ready" || fail "native Web probed HTTP without an owned listener: $mode"
+	fi
+done
+test ! -e "$docker_calls" || fail 'Docker was invoked by false readiness checks'
+
+# Optional leaf wiring must not turn legacy stand startup into Web activation.
+grep -F 'dockerless-web-build: prepare web-stage' "$repo_root/Makefile" >/dev/null ||
+	fail 'native Web build omits the normal embedded frontend build'
+grep -F './scripts/dockerless-local.sh start web-bff' "$repo_root/Makefile" >/dev/null ||
+	fail 'native Web Make entry does not use the owned lifecycle'
+grep -F 'PORT="$web_port" "$repo_root/.build/bin/web-bff"' "$runner" >/dev/null ||
+	fail 'native Web must override shared control-api PORT for its own child'
+if sed -n '/^up() {/,/^}/p' "$runner" | grep -F 'start_web_bff' >/dev/null; then
+	fail 'ordinary stand startup must not silently enable Web'
+fi
+
+# A stale optional-Web marker must receive the SAME no-signal ownership check.
+mkdir -p "$test_root/stale-web/pids"
+printf '%s\n' "$$" >"$test_root/stale-web/pids/web-bff.pid"
+printf '%s\n' '/definitely/not/the/current/web-bff' >"$test_root/stale-web/pids/web-bff.marker"
+if PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/stale-web" \
+	"$runner" stop web-bff >"$test_root/stale-web.out" 2>&1; then
+	fail 'native Web stop accepted mismatched ownership metadata'
+fi
+kill -0 "$$" 2>/dev/null || fail 'native Web stop signalled an unrelated process'
+grep -F 'refusing to signal stale or mismatched web-bff pid metadata' "$test_root/stale-web.out" >/dev/null ||
+	fail 'native Web ownership denial was not actionable'
+test ! -e "$docker_calls" || fail 'Docker was invoked by native Web stop'
+
 printf 'Dockerless stand policy checks passed.\n'

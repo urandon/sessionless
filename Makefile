@@ -58,6 +58,10 @@ help:
 		'make test-mcp-offline verify synthetic joined TLS/Store MCP flow; no public traffic' \
 		'make build          build all component binaries' \
 		'make dockerless-build build only native binaries used by the Dockerless stand' \
+		'make dockerless-web-build build the optional native WebUI/BFF explicitly' \
+		'make dockerless-web-up start the explicitly configured native Web BFF' \
+		'make dockerless-web-down stop only the owned native Web BFF' \
+		'make local-profile-validate-build build the read-only operator template checker' \
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
 		'make attached-worker-package-test run focused package and CLI race/shuffle tests' \
 		'make attached-worker-receipt-session-test verify offline session-bound receipt lifecycle' \
@@ -248,6 +252,12 @@ dockerless-build: prepare
 			-o "$(BIN_DIR)/$$component" "./cmd/$$component"; \
 	done
 
+.PHONY: dockerless-web-build dockerless-web-up dockerless-web-down
+dockerless-web-build: prepare web-stage
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o "$(BIN_DIR)/web-bff" ./cmd/web-bff
+
 attached-worker-build: prepare
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
@@ -259,6 +269,12 @@ local-profile-install-build: prepare
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
 		-o "$(BIN_DIR)/local-profile-install" ./cmd/local-profile-install
+
+.PHONY: local-profile-validate-build
+local-profile-validate-build: prepare
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o "$(BIN_DIR)/local-profile-validate" ./cmd/local-profile-validate
 
 attached-worker-package-test: prepare
 	go test -race -count=1 ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
@@ -660,6 +676,12 @@ dockerless-logs:
 
 dockerless-down:
 	@./scripts/dockerless-local.sh down
+
+dockerless-web-up:
+	@./scripts/dockerless-local.sh start web-bff
+
+dockerless-web-down:
+	@./scripts/dockerless-local.sh stop web-bff
 
 web-bootstrap: prepare
 	go run ./cmd/web-bootstrap

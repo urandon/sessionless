@@ -68,6 +68,58 @@ Reports and unresolved reduction decisions belong in
 [#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
 or the original task description.
 
+### Read-only local profile template validation
+
+Build the checker with `make local-profile-validate-build`. It reads a finite
+operator-authored template from redirected standard input and the explicitly
+named worker executable/boot-host/network identity, not an installation or key:
+
+```sh
+.build/bin/local-profile-validate \
+  --executable /absolute/workspace/sessionless/.build/bin/worker-runtime \
+  < /absolute/workspace/private-input/operator-template.json
+```
+
+Use the existing [`localoperator.ManifestV1`](../internal/localoperator/source.go)
+shape, not a test fixture or another configuration format. Input is bounded to
+256 KiB; no private input, paths or decoder details are printed. Redirect a
+finite file: the byte limit does not make an arbitrary blocking stdin reader
+interruptible. The executable is observed, never executed. Validation creates
+no Source, IDs, grant, receipt, key, file, SQL state, process or network request.
+It cannot prove possession of `source.key`, independent review, actual model
+capabilities, service-price truth or current Store authority.
+
+The complete prepared template must explicitly supply:
+
+- Tenant, owner and billing owner; exact literal-loopback `/v1` endpoint, model
+  and response-model IDs, server/version/template identity, protocol and auth;
+  capability/data-class declarations, model window, estimator and finite limits.
+- Existing profile/backend/substrate and cost declarations. Retain actual
+  capability/review/calibration bodies, canonical owner-local invoice terms,
+  MCP grant and independent price/terms documents, and search resource grant,
+  expenditure and independent source documents. Exact bytes/references and
+  semantic correlations must agree. Hashes do not turn declarations into proof.
+- Observed worker/boot-host/network identity, original body hashes/lengths and
+  key fingerprint. The checker validates the fingerprint's form only; it does
+  not read, create, rotate or authenticate a key.
+
+Leave installation-owned resource/installation/mutation IDs, revisions/state,
+backend-profile digest, `OriginalSource` and installed-manifest reference empty.
+The original installer, not this checker or a copied test, owns those fields.
+Internally, validation uses a private deterministic DATA-only projection to run
+the same installed-shape checks; no projected identity or authority is returned.
+
+This complete-template check also requires original calibration and both
+MCP/search declarations; it does not change the historical one-shot intake's
+contract or enable either tool. Windows, invoice and service evidence use their
+existing canonical validators. The later installer still authenticates actual
+private files/key, current SQL publication and its real receipt independently.
+
+Template **preparation** remains separate: this read-only command neither
+authors evidence nor generates the private installation. There is not yet a
+production preparation command; do not present structural validation as that
+missing step or copy synthetic fixture evidence to make installation pass.
+
 ### Explicit local profile installation (operator tool)
 
 Build with `make local-profile-install-build`. This tool does not run as part

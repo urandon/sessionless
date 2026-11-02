@@ -109,6 +109,89 @@ the one-shot worker binary directly and delegates queue stop/start plus
 reconciler restart to the owned-process lifecycle script. This preserves the
 outage and recovery assertions instead of skipping them.
 
+## Optional native WebUI lifecycle
+
+The ordinary stand remains unchanged: `dockerless-up` does not silently start
+WebUI, install an inference profile or enable a model. The explicit Web leaves
+use the same owned-process metadata, bounded logs, readiness observation and
+graceful stop checks as the rest of the native stand:
+
+```sh
+make dockerless-web-build
+# After separately admitted stand startup and explicit Web configuration:
+make dockerless-web-up
+make dockerless-status
+make dockerless-logs
+make dockerless-web-down
+```
+
+The build uses the normal `web-stage` frontend build and embeds its result in
+the native `web-bff`; it is separate from the smaller `dockerless-build`.
+It does not start a service, but the standard `web-stage` prerequisite runs
+`npm ci`: it replaces frontend `node_modules` and may download pinned packages.
+It is not an offline/dependency-reuse build. Run it only with separately allowed
+dependency acquisition; source/fixture verification does not grant that
+authority. Go builds continue to reuse repository Go caches.
+`dockerless-web-up` requires an already installed `lsof` for numeric listener
+ownership observation, `SESSIONLESS_ENVIRONMENT=local`,
+an explicit `WEB_BASE_URL` and `WEB_LOGIN_PROVIDER`, and an already built binary.
+`WEB_PORT` defaults to 8083 and overrides shared `PORT` **only for this child**,
+so a control-api setting such as `PORT=8080` cannot put both processes on 8080.
+An occupied foreign port, exited child or changed listener fails readiness;
+another service's successful `/readyz` cannot qualify this BFF.
+The BFF retains its existing listen-address behavior; this wrapper does not add
+a firewall, reverse proxy, TLS terminator or network isolation.
+
+For the MVP route select `WEB_LOGIN_PROVIDER=yandex`, the registered HTTPS
+`WEB_BASE_URL`/callback and existing Yandex client, session/cursor/identity keys,
+storage and queue settings documented in [development](development.md) and
+[Web BFF](web-bff.md). Keep secrets outside these examples. HTTPS termination
+and allowed host exposure must already be explicitly configured; this workflow
+does not configure networking or substitute the Telegram/OIDC test fixture.
+Canonical membership still comes from the existing admitted bootstrap, not
+from merely logging in. Build/start/readiness is not browser or model proof.
+
+For owner-local inference, the [operator workflow](development.md#explicit-local-profile-installation-operator-tool)
+must first produce one genuine private installation and its accepted receipt.
+Do not copy the synthetic SQL/MCP test manifests into that installation. Then
+export the same existing canonical coordinates to all three processes:
+
+```sh
+export SESSIONLESS_ENVIRONMENT=local
+export WEB_LOCAL_EXECUTION_ENABLED=true
+export WORKER_LOCAL_EXECUTION_ENABLED=true
+export WEB_LOCAL_INSTALLATION_ROOT=/absolute/workspace/private-installation
+export WEB_LOCAL_WORKER_EXECUTABLE=/absolute/workspace/sessionless/.build/bin/worker-runtime
+export WEB_LOCAL_PROFILE_RECEIPT_FILE=/absolute/workspace/private-receipts/local-profile.json
+# Restart the already owned reconciler so it reopens this original installation.
+./scripts/dockerless-local.sh restart reconciler
+make dockerless-web-up
+# After a canonical Web message is actually queued:
+make dockerless-worker-once
+```
+
+These are instructions for a separately authorized run, not commands executed
+by tests or a grant to publish profiles, start services or call a model. Paths
+must resolve canonically without symlink components and stay on the workspace
+volume. The existing profile must name the actual pinned worker bytes/host and
+the exact already-running endpoint/model; rebuilding the worker does not renew
+the receipt. Do not reinstall per message or silently switch endpoint/model.
+Preparation/qualification, files/images, tools/compaction/search and the finite
+real-model smoke retain their own acceptance under #212/#218/#175/#35.
+
+Restart/stop of just this owned BFF is also available through
+`./scripts/dockerless-local.sh restart web-bff` and `stop web-bff`. Full
+`dockerless-down` stops it before the dependencies. Status only requires this
+optional service when its ownership metadata exists; logs include its bounded
+tail. A foreign/stale PID is never signalled to make startup or shutdown pass.
+
+The legacy-looking YDB connection string may include Goose scripting flags.
+Operational `ydbclient.Open` removes `go_query_mode`, `go_fake_tx` and
+`go_query_bind` and uses real Table OLTP for BFF, reconciler, worker and profile
+installation. Goose DDL explicitly uses separate `OpenScripting`. Do not infer
+fake operational transactions from the text of `.env.example`, or change
+migration semantics to make the demo start.
+
 ## Rebuilding YDB for Darwin x86_64
 
 YDB does not provide a supported Darwin server release or CI lane at this pin.

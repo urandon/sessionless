@@ -174,10 +174,11 @@ function verify({ make, ci, release }) {
   assert.equal(step(local, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact local tail checkout');
   assert.equal(step(local, 'Set up pinned Go'), step(connected, 'Set up pinned Go'), 'same pinned local tail Go/cache setup');
   assert.equal(step(local, 'Run ordinary local-tail tests over all packages'), 'run: make test-ordinary-ci-tail', 'complete local tail invocation');
-  assert.equal(step(local, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
+  assert.equal(step(core, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
   assert.equal([...ci.matchAll(/^        run: make test-connected-worker-ci$/gm)].length, 1, 'one required CI connected Worker execution');
-  assert.ok(local.indexOf('      - name: Run ordinary local-tail tests over all packages\n') < local.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows ordinary tail');
-  assert.equal([...local.matchAll(/^      - name:/gm)].length, 5, 'bounded local tail steps');
+  assert.ok(core.indexOf('      - name: Run additive offline MCP connected fixtures\n') < core.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows complete core and MCP');
+  assert.equal([...core.matchAll(/^      - name:/gm)].length, 8, 'bounded core and worker steps');
+  assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -333,12 +334,18 @@ test('CI MCP redistribution preserves the local gate and both required execution
 test('CI worker redistribution remains required, complete and sequential', () => {
   const workerStep = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
   const tailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
+  const coreStep = '      - name: Run repository CI contract\n        run: make ci-core-base\n';
+  const mcpStep = '      - name: Run additive offline MCP connected fixtures\n        run: make test-mcp-offline\n';
+  const connectedStep = '      - name: Run connected-session tests over all packages\n        run: make test-connected-ci\n';
   for (const ci of [
     original.ci.replace(workerStep, ''),
     original.ci.replace(workerStep, workerStep.replace('        run:', '        if: false\n        run:')),
     original.ci.replace(workerStep, workerStep.replace('        run:', '        continue-on-error: true\n        run:')),
     original.ci.replace(workerStep, workerStep.replace('make test-connected-worker-ci', 'make test-connected-worker-ci || true')),
     original.ci.replace(workerStep, '').replace(tailStep, workerStep + '\n' + tailStep),
+    original.ci.replace(workerStep, '').replace(coreStep, workerStep + '\n' + coreStep),
+    original.ci.replace(workerStep, '').replace(mcpStep, workerStep + '\n' + mcpStep),
+    original.ci.replace(workerStep, '').replace(connectedStep, connectedStep + '\n' + workerStep),
     original.ci.replace('      - name: Run repository CI contract\n        run: make ci-core-base\n', '      - name: Run repository CI contract\n        run: make ci-core-base\n\n      - name: Duplicate connected-worker execution\n        run: make test-connected-worker-ci\n'),
   ]) {
     assert.notEqual(ci, original.ci);

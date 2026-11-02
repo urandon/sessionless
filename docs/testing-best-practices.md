@@ -245,8 +245,10 @@ Local/release `make test-ordinary` and `ci-core` retain the complete four-comman
 ordinary contract. A parallel 30-minute `go-connected` job runs
 `make test-connected-ci`: complete Terminal and non-Terminal/non-Worker
 selections over the same full package patterns, without the additive MCP gate.
-The existing `go-local` job runs the complete connected Worker family through
-`make test-connected-worker-ci` after its two ordinary tail executions. CI thus
+The existing `verify` job runs the complete connected Worker family through
+`make test-connected-worker-ci` after its complete core and offline MCP checks.
+The ordinary local tail and the two other connected selections remain in their
+own parallel jobs. CI thus
 uses three disjoint normal connected executions instead of the local two:
 Terminal, Worker, and the remaining complete Session prefix. Every test is
 selected once, including future families; each invocation still covers the
@@ -267,6 +269,13 @@ stop-on-failure ordering unchanged. The connected job needs no Web build:
 the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join all three Go jobs, preserving their original complete-unit-test predecessor.
+Moving the unchanged Worker command does not increase a binary or job timeout.
+A cancelled Worker step after a long preceding ordinary tail is not proof that
+its own binary timed out or that its complete package corpus passed. Source-policy
+tests require exactly one Worker step after both core and MCP, rejecting early,
+duplicate, omitted, conditional or ignored executions. Timing estimates from
+separate jobs do not qualify the redistributed job: its own exact-head CI must
+prove completion inside the unchanged 30-minute ceiling.
 The unchanged offline
 `attached-worker-security-gate`, including both crash/restart prerequisites,
 and the complete unchanged `serverless-egress-conformance` target run in the

@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +24,49 @@ import (
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
+
+func offlineModelResultDiagnostic(result *providerloopsession.ModelResultV1) string {
+	if result == nil {
+		return "nil=true"
+	}
+	o := result.Observation.Observation
+	outcome, reason := "unobserved", "unobserved"
+	if o.Version != 0 {
+		outcome, reason = "invalid", "invalid"
+		switch o.Outcome {
+		case domain.AttemptOperationCompletedV1, domain.AttemptOperationRejectedBeforeSendV1, domain.AttemptOperationAcceptedOutcomeUnknownV1:
+			outcome = string(o.Outcome)
+		}
+		switch o.Reason {
+		case domain.AttemptOperationReasonNoneV1, domain.AttemptOperationReasonAuthorityDeniedV1, domain.AttemptOperationReasonCancelledV1,
+			domain.AttemptOperationReasonDeadlineV1, domain.AttemptOperationReasonServiceErrorV1, domain.AttemptOperationReasonMalformedV1,
+			domain.AttemptOperationReasonOverflowV1, domain.AttemptOperationReasonTransportUnknownV1, domain.AttemptOperationReasonWorkerLostV1:
+			reason = string(o.Reason)
+		}
+	}
+	return fmt.Sprintf("nil=false sent=%t observed=%t sequence=%d outcome=%s reason=%s has_response=%t", result.SendAttempted, o.Version != 0, result.Observation.Reservation.Operation.Sequence, outcome, reason, o.ResponseBytes != 0)
+}
+
+func TestLocalSessionCredentialedMCPOfflineCanonicalDiagnosticSnapshots(t *testing.T) {
+	const private = "private authority or response bytes"
+	peer := &offlineMCPPeer{lookups: 1, dials: 1, verifiedTLS: true, methods: []string{"initialize", "notifications/initialized", "tools/list", "tools/call", private}, err: errors.New(private)}
+	got := peer.diagnostic()
+	if strings.Contains(got, private) || !strings.Contains(got, "error_class=fixture_error") || !strings.Contains(got, "frames=5 methods=[initialize notifications/initialized tools/list tools/call]") || len(peer.methods) != 5 {
+		t.Fatal("peer diagnostic exposed private data, changed state or lost bounded progress")
+	}
+	if got := offlineModelResultDiagnostic(nil); got != "nil=true" {
+		t.Fatal("nil result diagnostic", got)
+	}
+	result := &providerloopsession.ModelResultV1{SendAttempted: true}
+	result.Observation.Observation.Version = 1
+	result.Observation.Observation.Outcome = domain.AttemptOperationOutcomeV1(private)
+	result.Observation.Observation.Reason = domain.AttemptOperationReasonV1(private)
+	result.Observation.Observation.ResponseRef = private
+	result.Observation.Observation.ResponseBytes = 1
+	if got := offlineModelResultDiagnostic(result); strings.Contains(got, private) || !strings.Contains(got, "outcome=invalid reason=invalid has_response=true") {
+		t.Fatal("result diagnostic exposed unchecked values or lost response presence")
+	}
+}
 
 // The unchanged offline Make selector includes this NOAUTH canonical lineage.
 // MODEL uses literal HTTP; MCP uses the existing instance-only DNS/dial/CA
@@ -121,6 +166,7 @@ func TestLocalSessionCredentialedMCPOfflineCanonicalWorkerToolChain(t *testing.T
 	}
 	result, err := session.RunWorkerLoop(ctx)
 	if err != nil || !result.Model.SendAttempted || result.Tool == nil || !result.Tool.SendAttempted || result.Compaction != nil {
+		t.Logf("MODEL={%s} Tool={%s} MCP={%s} operations={%s}", offlineModelResultDiagnostic(&result.Model), offlineModelResultDiagnostic(result.Tool), mcp.diagnostic(), seed.OperationDiagnostic())
 		t.Fatalf("actual canonical MODEL/MCP/MODEL: err=%v sent=%t tool=%t lastSQL=%s", err, result.Model.SendAttempted, result.Tool != nil, seed.LastSQL())
 	}
 	mcp.wait(t)

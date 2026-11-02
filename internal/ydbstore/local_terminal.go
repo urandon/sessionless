@@ -32,11 +32,15 @@ type LocalTerminalV1 struct {
 // One original barrier covers preparation, reservation/authorization and
 // retained publication. Fail-fast acquisition is bounded: no abandoned waiter
 // can acquire it later, and no source->entry lock inversion is permitted.
+func (entry *LocalInvocationEntryV1) terminalClaimed() bool {
+	return entry.terminal.Load() != nil || (entry.terminalSelection != nil && entry.terminalSelection.Load() != 0)
+}
+
 func (entry *LocalInvocationEntryV1) beginLocalMutation(ctx context.Context) (func(), error) {
-	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.terminal.Load() != nil || !entry.preparationMu.TryLock() {
+	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.terminalClaimed() || !entry.preparationMu.TryLock() {
 		return nil, domain.ErrMembershipDenied
 	}
-	if ctx.Err() != nil || entry.terminal.Load() != nil {
+	if ctx.Err() != nil || entry.terminalClaimed() {
 		entry.preparationMu.Unlock()
 		return nil, domain.ErrMembershipDenied
 	}
@@ -91,6 +95,9 @@ func (entry *LocalInvocationEntryV1) ClaimTerminal(ctx context.Context) (*LocalT
 		h.deadline = deadline
 	}
 	h.self = h
+	if entry.terminalSelection == nil || !entry.terminalSelection.CompareAndSwap(0, 1) {
+		return nil, domain.ErrMembershipDenied
+	}
 	if !entry.terminal.CompareAndSwap(nil, h) {
 		return nil, domain.ErrMembershipDenied
 	}

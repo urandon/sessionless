@@ -51,6 +51,9 @@ type LocalInvocationEntryV1 struct {
 	preparedMCP          *atomic.Pointer[localPreparedMCPV1]
 	preparationMu        *sync.Mutex
 	terminal             *atomic.Pointer[LocalTerminalV1]
+	failure              *atomic.Pointer[LocalFailureV1]
+	terminalSelection    *atomic.Uint32
+	observationLineage   *localOriginalObservationLineage
 	credentialCleanup    *localCredentialCleanup
 }
 
@@ -281,6 +284,9 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 		return nil, domain.ErrMembershipDenied
 	}
 	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, terminalOutputs: terminalOutputs, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1]), preparedModel: new(atomic.Pointer[localPreparedModelV1]), preparedMCP: new(atomic.Pointer[localPreparedMCPV1]), preparationMu: new(sync.Mutex), terminal: new(atomic.Pointer[LocalTerminalV1]), credentialCleanup: new(localCredentialCleanup)}
+	entry.failure = new(atomic.Pointer[LocalFailureV1])
+	entry.terminalSelection = new(atomic.Uint32)
+	entry.observationLineage = &localOriginalObservationLineage{}
 	entry.self = entry
 	if !b.bodySlot.bodies.CompareAndSwap(nil, bodies) {
 		return nil, domain.ErrMembershipDenied

@@ -77,7 +77,11 @@ func (store *Store) startRetainedSessionDeletion(ctx context.Context, tenant dom
 		}
 		// The SQL callback has CLOSED. Same original Run context/budget remains;
 		// blob reads cannot acquire a new deadline or be performed inside SQL.
-		previous, err = verifyRetainedDeletionBodiesWithWriter(w.runs[key.ID].ctx, store.sessionDeletionBlobReader, writer.producer.terminal, original.ownership, previous, &writer)
+		if writer.producer.failure != nil {
+			previous, err = verifyRetainedDeletionFailureBodies(w.runs[key.ID].ctx, store.sessionDeletionBlobReader, writer, original.ownership, previous)
+		} else {
+			previous, err = verifyRetainedDeletionBodiesWithWriter(w.runs[key.ID].ctx, store.sessionDeletionBlobReader, writer.producer.terminal, original.ownership, previous, &writer)
+		}
 		if err != nil {
 			return domain.SessionDeletion{}, err
 		}
@@ -332,8 +336,14 @@ func (store *Store) completeRetainedSessionDeletion(ctx context.Context, tenant 
 			q := &deletionCaptureQuery{query: query, budget: w.readBudget}
 			run, found, e := readDeletionCaptureJSON[domain.Run](ctx, q, "runs", "payload", tenant, key.ID)
 			digest, de := deletionRunDigest(run)
-			if e != nil || !found || de != nil || digest != key.RunDigest || run.TerminalCustody == nil || run.TerminalCustody.LocalEvidence == nil {
+			if e != nil || !found || de != nil || digest != key.RunDigest || run.TerminalCustody == nil || (run.TerminalCustody.LocalEvidence == nil && run.TerminalFailure == nil) {
 				return domain.ErrMembershipDenied
+			}
+			parentDigest := ""
+			if run.TerminalFailure != nil {
+				parentDigest = run.TerminalFailure.ParentDigest
+			} else {
+				parentDigest = run.TerminalCustody.LocalEvidence.ParentDigest
 			}
 			// Scope comes from the exact SAME capture just rejoined above. These
 			// complete child ranges are not independently discoverable authority.
@@ -342,7 +352,7 @@ func (store *Store) completeRetainedSessionDeletion(ctx context.Context, tenant 
 					return e
 				}
 			}
-			if _, e := tx.sqlTx.ExecContext(ctx, `DELETE FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3 AND owned_digest=$4`, tenant, key.Attempt, domain.ProviderEffectTurnV1, run.TerminalCustody.LocalEvidence.ParentDigest); e != nil {
+			if _, e := tx.sqlTx.ExecContext(ctx, `DELETE FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3 AND owned_digest=$4`, tenant, key.Attempt, domain.ProviderEffectTurnV1, parentDigest); e != nil {
 				return e
 			}
 			if _, e := tx.sqlTx.ExecContext(ctx, `DELETE FROM attempt_execution_admissions_v1 WHERE tenant_id=$1 AND attempt_id=$2 AND run_id=$3 AND session_id=$4`, tenant, key.Attempt, key.ID, session); e != nil {

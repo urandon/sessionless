@@ -20,9 +20,17 @@ import (
 // complete SQL postimage/range capture and transactional rejoin are integrated.
 
 type retainedDeletionProducerData struct {
+	failure    *localFailureHistoryV1
 	terminal   localTerminalHistorySnapshot
 	allocation ownedAllocationSnapshots
 	burnedAt   time.Time
+}
+
+func (p retainedDeletionProducerData) terminalBound() time.Time {
+	if p.failure != nil {
+		return p.failure.Run.TerminalFailure.CapturedAt
+	}
+	return p.terminal.Run.TerminalCustody.LocalEvidence.StoppedAt
 }
 
 // Original historical producer join. No current Source verifier, active lease
@@ -32,6 +40,9 @@ type retainedDeletionProducerData struct {
 func readRetainedDeletionProducer(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (retainedDeletionProducerData, error) {
 	deny := func() (retainedDeletionProducerData, error) {
 		return retainedDeletionProducerData{}, q.budget.deny()
+	}
+	if run.TerminalFailure != nil {
+		return readRetainedDeletionFailureProducer(ctx, q, run, anchor)
 	}
 	v, err := readHistoricalTerminalSnapshot(ctx, q, run, anchor)
 	if err != nil || v.Evidence.ValidateForPersistedAuthority(v.Parent.Authority, v.Parent.Reservation) != nil {
@@ -86,6 +97,9 @@ func retainedDeletionRunRefsData(run domain.Run) ([]domain.BlobRef, error) {
 			}
 			refs = append(refs, plan.Summary, plan.Manifest)
 		}
+	}
+	if run.TerminalFailure != nil {
+		return refs, nil
 	}
 	notice, err := canonicaloutput.EncodeFailureV1(run.ID, true, "cancelled")
 	if err != nil {
@@ -200,7 +214,10 @@ func (v retainedDeletionOwnershipData) contains(dependency *compactioncontext.Re
 // logical authority budget is mandatory; a missing or active callback denies
 // BEFORE Open. The reader exposes no Put/Delete or prefix-list operation.
 func readRetainedDeletionBlob(ctx context.Context, reader SessionDeletionBlobReader, ref domain.BlobRef, limit uint64) ([]byte, error) {
-	if ctx == nil || reader == nil || ref.Validate() != nil || ref.Size < 0 || uint64(ref.Size) > limit || limit == 0 || limit > domain.MaxTerminalCapsuleBytesV1 || chargeOwnedAuthorityBody(ctx, uint64(ref.Size)+1) != nil {
+	// F1 retains original ordinary request bodies (the existing 1MiB ceiling).
+	// Capsule/summary/canonical callers still pass their unchanged lower limits;
+	// this is not a larger capsule or per-logical-call materialization allowance.
+	if ctx == nil || reader == nil || ref.Validate() != nil || ref.Size < 0 || uint64(ref.Size) > limit || limit == 0 || limit > 1<<20 || chargeOwnedAuthorityBody(ctx, uint64(ref.Size)+1) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	r, err := reader.Open(ctx, ref.TenantID, ref)

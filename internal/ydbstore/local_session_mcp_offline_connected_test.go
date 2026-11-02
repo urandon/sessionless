@@ -53,11 +53,15 @@ type offlineMCPPeer struct {
 	afterCatalog   func()
 	dropReply      bool
 	wantFrames     int
+	serviceError   bool
 	done           chan struct{}
 }
 
-func newOfflineMCPPeer(t *testing.T, descriptor []byte, want int, afterCatalog func(), dropReply bool) *offlineMCPPeer {
+func newOfflineMCPPeer(t *testing.T, descriptor []byte, want int, afterCatalog func(), dropReply bool, serviceError ...bool) *offlineMCPPeer {
 	t.Helper()
+	if len(serviceError) > 1 {
+		t.Fatal("one MCP result selection only")
+	}
 	key, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if e != nil {
 		t.Fatal(e)
@@ -79,6 +83,9 @@ func newOfflineMCPPeer(t *testing.T, descriptor []byte, want int, afterCatalog f
 		t.Fatal(e)
 	}
 	p := &offlineMCPPeer{listener: listener, roots: roots, certificate: tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, descriptor: bytes.Clone(descriptor), afterCatalog: afterCatalog, dropReply: dropReply, wantFrames: want, done: make(chan struct{})}
+	if len(serviceError) == 1 {
+		p.serviceError = serviceError[0]
+	}
 	t.Cleanup(func() {
 		_ = listener.Close()
 		p.mu.Lock()
@@ -202,7 +209,7 @@ func (p *offlineMCPPeer) serve() {
 		case 2:
 			result = map[string]any{"tools": []json.RawMessage{p.descriptor}}
 		case 3:
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "offline public docs result"}}, "isError": false}
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "offline public docs result"}}, "isError": p.serviceError}
 		}
 		response, e := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
 		if e != nil {

@@ -84,6 +84,7 @@ type localState struct {
 	terminalRequested             bool
 	terminalDeadline              time.Time
 	terminalOutput                *PreparedLocalTerminalV1
+	knownFailure                  *PreparedLocalFailureV1
 	credentialed                  bool
 	credentialReleased            bool
 }
@@ -570,7 +571,17 @@ func (v *LocalV1) Close() error {
 		if joined {
 			s.mu.Lock()
 			terminal := s.terminalOutput
+			failure := s.knownFailure
 			s.mu.Unlock()
+			if failure != nil {
+				joinCtx, cancel := context.WithDeadline(context.Background(), deadline)
+				joinErr := failure.entry.StopAndJoin(joinCtx)
+				cancel()
+				if joinErr != nil {
+					s.closeErr = ErrSession
+					return
+				}
+			}
 			if terminal != nil && terminal.source != nil {
 				if terminal.output != nil {
 					// A direct call on the original prepared output need not own

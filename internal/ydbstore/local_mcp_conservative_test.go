@@ -34,6 +34,17 @@ func completedOriginalMCPFixture(t *testing.T, prebuild ...localRuntimeActualPre
 	if err != nil {
 		t.Fatal("original MODEL preparation", err)
 	}
+	return f, completeOriginalMCPAfterPreparedModel(t, f, model, false)
+}
+
+// Reuse the exact original prepared MODEL and Store/issuer path. The closed
+// response selection changes controlled peer DATA only, never a private owner,
+// signer, durable observation or current authority.
+func completeOriginalMCPAfterPreparedModel(t *testing.T, f *compactionSourceFixture, model *localPreparedModelV1, serviceError bool) *localPreparedMCPV1 {
+	t.Helper()
+	if model == nil || model.entry != f.entry || model.self != model || f.entry.preparedModel.Load() != model {
+		t.Fatal("requires actual original prepared MODEL")
+	}
 	recordPreparedLocalToolCall(t, f, model.operation, model.frozen)
 	m, err := f.entry.PrepareMCP(t.Context())
 	if err != nil || m == nil {
@@ -70,7 +81,7 @@ func completedOriginalMCPFixture(t *testing.T, prebuild ...localRuntimeActualPre
 	if err = f.store.AuthorizeAttemptOperationBeforeSend(t.Context(), r.Capability.Clone()); err != nil {
 		t.Fatal("actual original MCP BeforeSend", err)
 	}
-	wire, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.call.ID(), "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "bounded original result"}}, "isError": false}})
+	wire, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.call.ID(), "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "bounded original result"}}, "isError": serviceError}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +101,9 @@ func completedOriginalMCPFixture(t *testing.T, prebuild ...localRuntimeActualPre
 	}
 	rd, _ := r.Reservation.Digest()
 	o := domain.AttemptOperationObservationV1{Version: 1, OperationDigest: r.Reservation.OperationDigest, ReservationDigest: rd, Outcome: domain.AttemptOperationCompletedV1, Reason: domain.AttemptOperationReasonNoneV1, ResponseRef: ref.Ref, ResponseDigest: ref.Digest, ResponseBytes: ref.Bytes, ObservedAt: at, Usage: usage}
+	if serviceError {
+		o.Reason = domain.AttemptOperationReasonServiceErrorV1
+	}
 	auth, err := f.bootstrap.operate.AuthenticateAttemptOperationObservation(r.ObservationGrant, o)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +118,7 @@ func completedOriginalMCPFixture(t *testing.T, prebuild ...localRuntimeActualPre
 	if !reflect.DeepEqual(m.observation, auth) {
 		t.Fatal("original holder did not remember exact authenticated durable observation")
 	}
-	return f, m
+	return m
 }
 
 func primeOriginalMCPConservative(t *testing.T, f *compactionSourceFixture) {

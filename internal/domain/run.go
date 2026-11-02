@@ -74,6 +74,7 @@ type Run struct {
 	UpdatedAt                time.Time                   `json:"updated_at"`
 	DerivedContext           *RunDerivedContextV1        `json:"derived_context,omitempty"`
 	TerminalCustody          *RunTerminalCustodyV1       `json:"terminal_custody,omitempty"`
+	TerminalFailure          *RunTerminalFailureV1       `json:"terminal_failure,omitempty"`
 }
 
 func (run Run) Clone() Run {
@@ -97,6 +98,10 @@ func (run Run) Clone() Run {
 	if run.TerminalCustody != nil {
 		value := run.TerminalCustody.Clone()
 		run.TerminalCustody = &value
+	}
+	if run.TerminalFailure != nil {
+		value := *run.TerminalFailure
+		run.TerminalFailure = &value
 	}
 	return run
 }
@@ -148,7 +153,12 @@ func (run Run) Validate() error {
 		}
 	}
 	if run.TerminalCustody != nil {
-		return run.TerminalCustody.ValidateForRun(run)
+		if err := run.TerminalCustody.ValidateForRun(run); err != nil {
+			return err
+		}
+	}
+	if run.TerminalFailure != nil {
+		return run.TerminalFailure.ValidateForRun(run)
 	}
 	return nil
 }

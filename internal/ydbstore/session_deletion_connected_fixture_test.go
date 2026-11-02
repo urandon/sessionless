@@ -43,13 +43,38 @@ type retainedDeletionGraphFixture struct {
 func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicationSessionConnectedSeed, completed *LocalTerminalCompletionSQLFixture) *retainedDeletionGraphFixture {
 	t.Helper()
 	s := completed.Snapshot(t)
-	f := &retainedDeletionGraphFixture{base: retainedDeletionWriterConnector{base: freshRunHistoryConnector{base: terminalCompletionConnector{f: completed}, history: localFreshCommittedHistory(t, seed, s, nil)}, seed: seed}, tables: map[string][]map[string]driver.Value{}}
-	f.request = domain.SessionDeletion{TenantID: s.Run.TenantID, SessionID: s.Run.SessionID, RequestedBy: seed.Scope.OwnerUserID, Reason: "controlled retained deletion fixture", State: domain.SessionDeletionRequested, RequestedAt: s.Run.UpdatedAt.Add(time.Microsecond)}
+	return newRetainedDeletionGraphData(t, retainedDeletionFixtureData{base: retainedDeletionWriterConnector{base: freshRunHistoryConnector{base: terminalCompletionConnector{f: completed}, history: localFreshCommittedHistory(t, seed, s, nil)}, seed: seed}, snapshot: s, scope: seed.Scope, membership: seed.parent.base.membership, participant: seed.parent.base.participant, sourceEvents: seed.CanonicalSourceEvents(t), material: completed.state.material, job: seed.parent.graph.rows["worker_jobs"], input: seed.parent.graph.rows["artifact_manifests"], admission: seed.parent.base.final, parent: seed.parent.sql.parentRow, burn: seed.parent.sql.burnRow, allocation: seed.sql.localProxySQL.f.row, proxy: seed.compaction.firstProxy, accounting: seed.parent.sql.accountingRow, operations: seed.compaction.operations, proxies: seed.compaction.proxies})
+}
+
+// Test DATA projection only. Both genuine producer adapters feed the SAME
+// complete physical graph/strict dispatcher; this cannot mint a runtime owner,
+// signer, terminal receipt or alternate verifier.
+type retainedDeletionFixtureData struct {
+	base                                                                                        driver.Connector
+	snapshot                                                                                    LocalTerminalCompletionSnapshot
+	scope                                                                                       domain.AttemptExecutionSourceScopeV1
+	membership, participant, job, input, admission, parent, burn, allocation, proxy, accounting []driver.Value
+	sourceEvents                                                                                []domain.SessionEvent
+	material                                                                                    map[string][]driver.Value
+	operations, proxies                                                                         [][]driver.Value
+	extra                                                                                       []retainedDeletionFixtureRecord
+}
+type retainedDeletionFixtureRecord struct {
+	table   string
+	value   any
+	aliases map[string]any
+}
+
+func newRetainedDeletionGraphData(t *testing.T, data retainedDeletionFixtureData) *retainedDeletionGraphFixture {
+	t.Helper()
+	s := data.snapshot
+	f := &retainedDeletionGraphFixture{base: data.base, tables: map[string][]map[string]driver.Value{}}
+	f.request = domain.SessionDeletion{TenantID: s.Run.TenantID, SessionID: s.Run.SessionID, RequestedBy: data.scope.OwnerUserID, Reason: "controlled retained deletion fixture", State: domain.SessionDeletionRequested, RequestedAt: s.Run.UpdatedAt.Add(time.Microsecond)}
 	f.requested = true
-	if len(seed.parent.base.membership) == 0 {
+	if len(data.membership) == 0 {
 		t.Fatal("original membership fixture")
 	}
-	f.membership = seed.parent.base.membership[0].(string)
+	f.membership = data.membership[0].(string)
 	record := func(table string, v any, aliases map[string]any) {
 		b, e := json.Marshal(v)
 		if e != nil {
@@ -112,7 +137,7 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 	}
 	record("sessions", s.Session, map[string]any{"session_id": s.Session.ID})
 	var participant domain.SessionParticipant
-	if len(seed.parent.base.participant) == 0 || json.Unmarshal([]byte(seed.parent.base.participant[0].(string)), &participant) != nil {
+	if len(data.participant) == 0 || json.Unmarshal([]byte(data.participant[0].(string)), &participant) != nil {
 		t.Fatal("original participant durable fixture")
 	}
 	record("session_participants", participant, nil)
@@ -121,11 +146,11 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 		t.Fatal(e)
 	}
 	f.tables["session_activity"] = []map[string]driver.Value{{"tenant_id": string(s.Session.TenantID), "user_id": string(participant.UserID), "status": string(s.Session.Status), "activity_bucket": int64(bucket), "updated_at": s.Session.UpdatedAt, "session_id": string(s.Session.ID)}}
-	for _, event := range append(seed.CanonicalSourceEvents(t), s.Events...) {
+	for _, event := range append(append([]domain.SessionEvent(nil), data.sourceEvents...), s.Events...) {
 		record("session_events", event, map[string]any{"event_id": event.ID, "blob_key": event.Payload.Key})
 		f.tables["session_event_idempotency"] = append(f.tables["session_event_idempotency"], map[string]driver.Value{"tenant_id": string(event.TenantID), "session_id": string(event.SessionID), "idempotency_key": string(event.IdempotencyKey), "sequence": int64(event.Sequence), "event_id": string(event.ID), "created_at": event.CreatedAt})
 	}
-	for key, row := range completed.state.material {
+	for key, row := range data.material {
 		if len(row) != 7 {
 			t.Fatal("original material durable columns")
 		}
@@ -143,25 +168,28 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 	f.tables["runs_by_session"] = []map[string]driver.Value{{"tenant_id": string(s.Run.TenantID), "session_id": string(s.Run.SessionID), "created_at": s.Run.CreatedAt, "run_id": string(s.Run.ID), "trigger_event_id": string(s.Run.TriggerEventID), "status": string(s.Run.Status)}}
 	f.tables["run_finalizations"] = []map[string]driver.Value{{"tenant_id": string(s.Run.TenantID), "run_id": string(s.Run.ID), "terminal_status": s.FinalStatus, "content_digest": s.FinalDigest, "created_at": s.Run.UpdatedAt}}
 	var job domain.WorkerJob
-	if json.Unmarshal([]byte(seed.parent.graph.rows["worker_jobs"][0].(string)), &job) != nil {
+	if len(data.job) != 1 || json.Unmarshal([]byte(data.job[0].(string)), &job) != nil {
 		t.Fatal("original WorkerJob")
 	}
 	record("worker_jobs", job, nil)
 	var input domain.ArtifactManifest
-	if json.Unmarshal([]byte(seed.parent.graph.rows["artifact_manifests"][0].(string)), &input) != nil {
+	if len(data.input) != 1 || json.Unmarshal([]byte(data.input[0].(string)), &input) != nil {
 		t.Fatal("original input manifest")
 	}
 	for _, manifest := range []domain.ArtifactManifest{input, s.Manifest} {
+		if manifest.ID == "" && s.Run.TerminalFailure != nil {
+			continue
+		}
 		record("artifact_manifests", manifest, map[string]any{"artifact_manifest_id": manifest.ID})
 		f.tables["artifact_manifests_by_run"] = append(f.tables["artifact_manifests_by_run"], map[string]driver.Value{"tenant_id": string(manifest.TenantID), "run_id": string(manifest.RunID), "artifact_manifest_id": string(manifest.ID)})
 	}
-	a := seed.parent.base.final
+	a := data.admission
 	if len(a) != 7 {
 		t.Fatal("original admission columns")
 	}
-	f.tables["attempt_execution_admissions_v1"] = []map[string]driver.Value{{"tenant_id": string(seed.Scope.TenantID), "attempt_id": string(seed.Scope.AttemptID), "record": a[0], "digest": a[1], "run_id": a[2], "session_id": a[3], "owner_user_id": a[4], "reservation_id": a[5], "admitted_at": a[6]}}
-	f.tables["attempt_execution_admissions_by_session_v1"] = []map[string]driver.Value{{"tenant_id": string(seed.Scope.TenantID), "session_id": string(seed.Scope.SessionID), "attempt_id": string(seed.Scope.AttemptID), "run_id": string(seed.Scope.RunID)}}
-	p := seed.parent.sql.parentRow
+	f.tables["attempt_execution_admissions_v1"] = []map[string]driver.Value{{"tenant_id": string(data.scope.TenantID), "attempt_id": string(data.scope.AttemptID), "record": a[0], "digest": a[1], "run_id": a[2], "session_id": a[3], "owner_user_id": a[4], "reservation_id": a[5], "admitted_at": a[6]}}
+	f.tables["attempt_execution_admissions_by_session_v1"] = []map[string]driver.Value{{"tenant_id": string(data.scope.TenantID), "session_id": string(data.scope.SessionID), "attempt_id": string(data.scope.AttemptID), "run_id": string(data.scope.RunID)}}
+	p := data.parent
 	if len(p) != 15 {
 		t.Fatal("original parent columns")
 	}
@@ -170,12 +198,12 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 		parent[k] = p[i]
 	}
 	parent["owned_record"], parent["owned_digest"] = p[13], p[14]
-	burn := seed.parent.sql.burnRow
+	burn := data.burn
 	if len(burn) != 4 {
 		t.Fatal("original preparation burn")
 	}
 	parent["preparation_started_at"], parent["preparation_parent_digest"] = burn[2], burn[3]
-	allocation := seed.sql.localProxySQL.f.row
+	allocation := data.allocation
 	if len(allocation) != 12 {
 		t.Fatal("original allocation")
 	}
@@ -184,7 +212,7 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 			parent[k] = allocation[i+6]
 		}
 	}
-	proxy := seed.compaction.firstProxy
+	proxy := data.proxy
 	if len(proxy) != 12 {
 		t.Fatal("original first proxy")
 	}
@@ -193,14 +221,14 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 			parent[k] = proxy[i+6]
 		}
 	}
-	accounting := seed.parent.sql.accountingRow
+	accounting := data.accounting
 	if len(accounting) != 4 {
 		t.Fatal("original accounting")
 	}
 	parent["operation_accounting_record"], parent["operation_accounting_digest"] = accounting[2], accounting[3]
 	f.tables["attempt_effect_reservations"] = []map[string]driver.Value{parent}
-	for _, row := range seed.compaction.operations {
-		m := map[string]driver.Value{"tenant_id": string(seed.Scope.TenantID), "attempt_id": string(seed.Scope.AttemptID), "sequence": row[0], "record": row[1], "digest": row[2], "operation_digest": row[3], "call_id": row[4]}
+	for _, row := range data.operations {
+		m := map[string]driver.Value{"tenant_id": string(data.scope.TenantID), "attempt_id": string(data.scope.AttemptID), "sequence": row[0], "record": row[1], "digest": row[2], "operation_digest": row[3], "call_id": row[4]}
 		if row[5].(uint64) != 0 {
 			m["observation_record"] = row[7]
 		}
@@ -210,8 +238,8 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 		f.tables["attempt_operations_v1"] = append(f.tables["attempt_operations_v1"], m)
 		f.tables["attempt_operation_calls_v1"] = append(f.tables["attempt_operation_calls_v1"], map[string]driver.Value{"tenant_id": m["tenant_id"], "attempt_id": m["attempt_id"], "sequence": row[9], "operation_digest": row[10], "call_id": m["call_id"]})
 	}
-	for _, row := range seed.compaction.proxies {
-		m := map[string]driver.Value{"tenant_id": string(seed.Scope.TenantID), "attempt_id": string(seed.Scope.AttemptID), "sequence": row[0], "service_kind": row[13]}
+	for _, row := range data.proxies {
+		m := map[string]driver.Value{"tenant_id": string(data.scope.TenantID), "attempt_id": string(data.scope.AttemptID), "sequence": row[0], "service_kind": row[13]}
 		for i, k := range []string{"original_record", "original_digest", "current_record", "current_digest", "policy_body", "attestation_body"} {
 			if row[i+1].(uint64) != 0 {
 				m[k] = row[i+7]
@@ -219,8 +247,15 @@ func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicatio
 		}
 		f.tables["attempt_operation_proxies_v1"] = append(f.tables["attempt_operation_proxies_v1"], m)
 	}
-	f.tables["substrate_execution_evidence"] = []map[string]driver.Value{{"tenant_id": string(seed.Scope.TenantID), "attempt_id": string(seed.Scope.AttemptID), "run_id": string(seed.Scope.RunID), "physical_invocation_claim_id": seed.Request.PhysicalInvocationClaimID, "evidence_digest": s.EvidenceDigest, "recorded_at": s.Run.UpdatedAt, "record": s.EvidenceRecord}}
+	if s.Run.TerminalFailure == nil {
+		f.tables["substrate_execution_evidence"] = []map[string]driver.Value{{"tenant_id": string(data.scope.TenantID), "attempt_id": string(data.scope.AttemptID), "run_id": string(data.scope.RunID), "physical_invocation_claim_id": data.parent[6], "evidence_digest": s.EvidenceDigest, "recorded_at": s.Run.UpdatedAt, "record": s.EvidenceRecord}}
+	} else if s.EvidenceRecord != "" || s.Run.TerminalCustody.LocalEvidence != nil {
+		t.Fatal("F1 fixture received fabricated success evidence")
+	}
 	f.tables["session_lifecycle_backfill_state"] = []map[string]driver.Value{{"backfill_id": sessionLifecycleBackfillID, "completed_at": s.Run.CreatedAt}}
+	for _, item := range data.extra {
+		record(item.table, item.value, item.aliases)
+	}
 	return f
 }
 
@@ -438,6 +473,8 @@ func (c *retainedDeletionGraphConn) QueryContext(ctx context.Context, s string, 
 	}
 	// Fixed existing canonical Complete readers (never a generic SQL engine).
 	legacy := map[string]struct{ table, projection, keys string }{
+		completionSQL(`SELECT record FROM frontend_projection_outbox WHERE tenant_id = $1 AND frontend_projection_id = $2`):                                                                                                            {"frontend_projection_outbox", "record", "tenant_id,frontend_projection_id"},
+		completionSQL(`SELECT record FROM frontend_bindings WHERE tenant_id = $1 AND binding_id = $2`):                                                                                                                                 {"frontend_bindings", "record", "tenant_id,binding_id"},
 		completionSQL(`SELECT record FROM session_participants WHERE tenant_id = $1 AND session_id = $2 AND user_id = $3`):                                                                                                             {"session_participants", "record", "tenant_id,session_id,user_id"},
 		completionSQL(`SELECT payload FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2 LIMIT $3`):                                                                                                                 {"attached_worker_output_receipts", "payload", "tenant_id,run_id"},
 		completionSQL(`SELECT run_id FROM runs_by_session WHERE tenant_id = $1 AND session_id = $2 ORDER BY run_id ASC LIMIT $3`):                                                                                                      {"runs_by_session", "run_id", "tenant_id,session_id"},

@@ -33,8 +33,12 @@ func localPreparedModelFixture(t *testing.T, input uint64, barrier ...func()) (*
 }
 
 func localPreparedModelFixtureWithPrebuild(t *testing.T, prebuild localRuntimeActualPrebuild) (*compactionSourceFixture, *compactionPublicationSQL) {
+	return localPreparedModelFixtureWithInitialRequest(t, prebuild, true)
+}
+
+func localPreparedModelFixtureWithInitialRequest(t *testing.T, prebuild localRuntimeActualPrebuild, initialRequest bool) (*compactionSourceFixture, *compactionPublicationSQL) {
 	t.Helper()
-	f := newCompactionSourceFixtureWithPrebuild(t, true, prebuild, true)
+	f := newCompactionSourceFixtureWithInitialRequest(t, true, prebuild, initialRequest, true)
 	f.store.ownedProviderPriceCustody = localInvoiceRejectStandardCustody{}
 	engine := &compactionPublicationSQL{compactionEffectSQL: &compactionEffectSQL{compactionSourceSQL: f.queries}}
 	db := sql.OpenDB(compactionPublicationConnector{engine})

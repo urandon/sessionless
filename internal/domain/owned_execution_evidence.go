@@ -384,6 +384,9 @@ func terminalJSONValue(d *json.Decoder, shape string) error {
 	if shape == "retained_verification" && len(seen) != 11 {
 		return ownedExecutionEvidenceError()
 	}
+	if shape == "terminal_failure" && len(seen) != 12 {
+		return ownedExecutionEvidenceError()
+	}
 	return nil
 }
 
@@ -402,8 +405,19 @@ func terminalJSONMember(shape, key string) string {
 			return "derived"
 		case "terminal_custody":
 			return "custody"
+		case "terminal_failure":
+			return "terminal_failure"
 		case "local_capacity_association":
 			return "local_capacity"
+		}
+	case "terminal_failure":
+		switch key {
+		case "scope":
+			return "scope"
+		case "plan":
+			return "plan"
+		case "version", "parent_digest", "capsule_schema", "accounting_digest", "events_digest", "retained_bodies_digest", "retired_allocation_digest", "captured_at", "stop", "cleanup":
+			return "required_scalar"
 		}
 	case "local_capacity":
 		switch key {

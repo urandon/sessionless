@@ -231,7 +231,14 @@ func (f *canonicalToolSQL) QueryContext(ctx context.Context, s string, args []dr
 		}
 		return f.effects.QueryContext(ctx, s, args)
 	case localCompactionEventsSQL:
-		if len(args) != 6 || !f.seed.peer.exactArgs(args[:4], string(r.TenantID), string(r.SessionID), int64(0), int64(1)) || args[4].Value != int64(2) || args[5].Value != int64(8193) {
+		var job domain.WorkerJob
+		if len(f.seed.peer.base.rows["worker_jobs"]) != 1 || json.Unmarshal([]byte(f.seed.peer.base.rows["worker_jobs"][0].(string)), &job) != nil || job.ContextWindow == nil || job.ContextWindow.Validate() != nil {
+			return nil, errors.New("canonical tool original committed context window")
+		}
+		w := job.ContextWindow
+		rowLimit := w.ThroughSequence - w.AfterSequence + 1
+		cell := min(uint64(8192), (ownedAuthorityMaxBytes/4)/rowLimit-1)
+		if len(args) != 6 || !f.seed.peer.exactArgs(args[:4], string(r.TenantID), string(r.SessionID), int64(w.AfterSequence), int64(w.ThroughSequence)) || args[4].Value != int64(rowLimit) || args[5].Value != int64(cell+1) {
 			return nil, errors.New("canonical tool original committed event range")
 		}
 		return f.effects.QueryContext(ctx, s, args)

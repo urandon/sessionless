@@ -45,7 +45,27 @@ func (f *retainedDeletionGraphFixture) originalRows(s string, a []driver.NamedVa
 		}
 		return out
 	}
-	parentSQL := s == ownedAttemptEffectParentSQL || s == ownedAttemptPreparationBurnSQL || s == ownedAllocationRegistrationSQL || s == ownedOperationAccountingSQL || s == ownedProxyRegistrationSQL || s == localTerminalHistorySQL
+	if s == boundedRunPayloadSQL {
+		if len(a) != 2 {
+			return nil, true, errors.New("original bounded Run exact key arity")
+		}
+		row, e := point("runs", a, []string{"tenant_id", "run_id"})
+		if e != nil {
+			return nil, true, e
+		}
+		if row == nil {
+			return result(nil, 1)
+		}
+		raw, ok := row["payload"].(string)
+		if !ok {
+			return nil, true, errors.New("original bounded Run physical payload")
+		}
+		if len(raw) > 32769 {
+			raw = raw[:32769]
+		}
+		return result([][]driver.Value{{raw}}, 1)
+	}
+	parentSQL := s == ownedAttemptEffectParentSQL || s == ownedAttemptPreparationBurnSQL || s == ownedAllocationRegistrationSQL || s == ownedOperationAccountingSQL || s == ownedProxyRegistrationSQL || s == localTerminalHistorySQL || s == localFailureHistorySQL
 	if parentSQL {
 		if len(a) < 3 {
 			return nil, true, errors.New("original parent exact key arity")
@@ -55,9 +75,25 @@ func (f *retainedDeletionGraphFixture) originalRows(s string, a []driver.NamedVa
 			return nil, true, e
 		}
 		if p == nil {
-			return result(nil, map[string]int{ownedAttemptEffectParentSQL: 15, ownedAttemptPreparationBurnSQL: 5, ownedAllocationRegistrationSQL: 12, ownedOperationAccountingSQL: 4, ownedProxyRegistrationSQL: 12, localTerminalHistorySQL: 11}[s])
+			return result(nil, map[string]int{ownedAttemptEffectParentSQL: 15, ownedAttemptPreparationBurnSQL: 5, ownedAllocationRegistrationSQL: 12, ownedOperationAccountingSQL: 4, ownedProxyRegistrationSQL: 12, localTerminalHistorySQL: 11, localFailureHistorySQL: 12}[s])
 		}
 		switch s {
+		case localFailureHistorySQL:
+			if len(a) != 3 {
+				return nil, true, errors.New("failure history exact original parent key")
+			}
+			admission, e := point("attempt_execution_admissions_v1", a[:2], []string{"tenant_id", "attempt_id"})
+			if e != nil {
+				return nil, true, e
+			}
+			marker, e := point("run_finalizations", named(a[0].Value, p["run_id"]), []string{"tenant_id", "run_id"})
+			if e != nil {
+				return nil, true, e
+			}
+			if admission == nil || marker == nil {
+				return result(nil, 12)
+			}
+			return result([][]driver.Value{{p["owned_record"], p["owned_digest"], admission["record"], admission["digest"], marker["terminal_status"], marker["content_digest"], p["operation_accounting_record"], p["operation_accounting_digest"], p["allocation_original_record"], p["allocation_original_digest"], p["allocation_current_record"], p["allocation_current_digest"]}}, 12)
 		case ownedAttemptEffectParentSQL:
 			var row []driver.Value
 			for _, k := range []string{"tenant_id", "attempt_id", "kind", "run_id", "lease_id", "fence_token", "physical_invocation_claim_id", "effect_sequence", "invocation_authority_digest", "reserved_at"} {

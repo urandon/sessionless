@@ -57,6 +57,10 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
 ];
+const offlineMcp = [
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore",
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore",
+];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
 const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
 const localRuntimeGateRecipe = [
@@ -134,7 +138,7 @@ function verify({ make, ci, release }) {
     'test ! -e internal/providerloopsession/mcp_offline_fixture.go',
     'mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"',
     'go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession',
-    "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' ./internal/ydbstore",
+    ...offlineMcp,
   ].join('\n\t'), 'exact additive offline MCP gate');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
@@ -170,10 +174,11 @@ function verify({ make, ci, release }) {
   assert.equal(step(local, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact local tail checkout');
   assert.equal(step(local, 'Set up pinned Go'), step(connected, 'Set up pinned Go'), 'same pinned local tail Go/cache setup');
   assert.equal(step(local, 'Run ordinary local-tail tests over all packages'), 'run: make test-ordinary-ci-tail', 'complete local tail invocation');
-  assert.equal(step(local, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
+  assert.equal(step(core, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
   assert.equal([...ci.matchAll(/^        run: make test-connected-worker-ci$/gm)].length, 1, 'one required CI connected Worker execution');
-  assert.ok(local.indexOf('      - name: Run ordinary local-tail tests over all packages\n') < local.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows ordinary tail');
-  assert.equal([...local.matchAll(/^      - name:/gm)].length, 5, 'bounded local tail steps');
+  assert.ok(core.indexOf('      - name: Run additive offline MCP connected fixtures\n') < core.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows complete core and MCP');
+  assert.equal([...core.matchAll(/^      - name:/gm)].length, 8, 'bounded core and worker steps');
+  assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -329,12 +334,18 @@ test('CI MCP redistribution preserves the local gate and both required execution
 test('CI worker redistribution remains required, complete and sequential', () => {
   const workerStep = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
   const tailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
+  const coreStep = '      - name: Run repository CI contract\n        run: make ci-core-base\n';
+  const mcpStep = '      - name: Run additive offline MCP connected fixtures\n        run: make test-mcp-offline\n';
+  const connectedStep = '      - name: Run connected-session tests over all packages\n        run: make test-connected-ci\n';
   for (const ci of [
     original.ci.replace(workerStep, ''),
     original.ci.replace(workerStep, workerStep.replace('        run:', '        if: false\n        run:')),
     original.ci.replace(workerStep, workerStep.replace('        run:', '        continue-on-error: true\n        run:')),
     original.ci.replace(workerStep, workerStep.replace('make test-connected-worker-ci', 'make test-connected-worker-ci || true')),
     original.ci.replace(workerStep, '').replace(tailStep, workerStep + '\n' + tailStep),
+    original.ci.replace(workerStep, '').replace(coreStep, workerStep + '\n' + coreStep),
+    original.ci.replace(workerStep, '').replace(mcpStep, workerStep + '\n' + mcpStep),
+    original.ci.replace(workerStep, '').replace(connectedStep, connectedStep + '\n' + workerStep),
     original.ci.replace('      - name: Run repository CI contract\n        run: make ci-core-base\n', '      - name: Run repository CI contract\n        run: make ci-core-base\n\n      - name: Duplicate connected-worker execution\n        run: make test-connected-worker-ci\n'),
   ]) {
     assert.notEqual(ci, original.ci);
@@ -410,6 +421,41 @@ function connectedSelections(name) {
     /^TestLocalSession/.test(name) && !/^TestLocalSession(Terminal|Worker)/.test(name),
   ];
 }
+function offlineMcpSelections(name) {
+  return [
+    /^TestLocalSessionCredentialedMCPOfflineWeb/.test(name),
+    /^TestLocalSessionCredentialedMCPOffline/.test(name) && !/^TestLocalSessionCredentialedMCPOfflineWeb/.test(name),
+  ];
+}
+test('offline MCP selectors cover current and future prefix members exactly once', () => {
+  for (const name of [
+    'TestLocalSessionCredentialedMCPOffline',
+    'TestLocalSessionCredentialedMCPOfflineWeb',
+    'TestLocalSessionCredentialedMCPOfflineWebKnownServiceError',
+    'TestLocalSessionCredentialedMCPOfflineWebFutureFamily',
+    'TestLocalSessionCredentialedMCPOfflineWebish',
+    'TestLocalSessionCredentialedMCPOfflineCanonicalTerminalComplete',
+    'TestLocalSessionCredentialedMCPOfflineFutureFamily',
+    'TestLocalSessionCredentialedMCPOfflineManagerWeb',
+    'TestLocalSessionCredentialedMCP', 'TestLocalSessionOther',
+    'ExampleLocalSessionCredentialedMCPOffline', 'FuzzLocalSessionCredentialedMCPOffline',
+  ]) {
+    assert.equal(offlineMcpSelections(name).filter(Boolean).length,
+      Number(/^TestLocalSessionCredentialedMCPOffline/.test(name)), name);
+  }
+  const counts = [0, 0];
+  for (const entry of readdirSync(new URL('../internal/ydbstore/', import.meta.url))) {
+    if (!entry.endsWith('_test.go')) continue;
+    for (const match of read(`internal/ydbstore/${entry}`).matchAll(/^func ((?:Test|Fuzz)\w+|Example\w*)\(/gm)) {
+      const name = match[1];
+      const selected = offlineMcpSelections(name);
+      assert.equal(selected.filter(Boolean).length,
+        Number(/^TestLocalSessionCredentialedMCPOffline/.test(name)), `${entry}:${name}`);
+      selected.forEach((value, index) => { counts[index] += Number(value); });
+    }
+  }
+  assert.ok(counts.every(count => count > 0), `actual nonempty offline MCP partitions: ${counts}`);
+});
 function ciConnectedSelections(name) {
   return [
     /^TestLocalSessionTerminal/.test(name),
@@ -630,6 +676,26 @@ const mutations = [
   ['liveness replaces SQL health', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', 'run: curl http://localhost:8765/monitoring/cluster', /ydb SQL\/storage readiness/],
   ['wrong readiness owner', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', /ydb-security-isolated SQL\/storage readiness/],
 ];
+for (const [index, command] of offlineMcp.entries()) {
+  for (const [name, mutate] of [
+    ['lost race', value => value.replace(' -race', '')],
+    ['cached results', value => value.replace(' -count=1', '')],
+    ['lost shuffle', value => value.replace(' -shuffle=190351', '')],
+    ['wider binary timeout', value => value.replace('-timeout=5m', '-timeout=10m')],
+    ['lost fixture tag', value => value.replace(' -tags=sessionless_mcp_offline', '')],
+    ['lost additive overlay', value => value.replace(' -overlay=test/mcp-offline-overlay.json', '')],
+    ['incomplete package', value => value.replace('./internal/ydbstore', './internal/worker')],
+    ['extra exclusion', value => value.replace(' ./internal/ydbstore', " -skip='Terminal' ./internal/ydbstore")],
+    ['short suite', value => value.replace(' ./internal/ydbstore', ' -short ./internal/ydbstore')],
+    ['background command', value => `${value} &`],
+    ['ignored failure', value => `${value} || true`],
+  ]) mutations.push([`offline MCP ${index + 1} ${name}`, 'make', command, mutate(command), /exact additive offline MCP gate/]);
+  mutations.push([`offline MCP ${index + 1} missing`, 'make', `\t${command}\n`, '', /exact additive offline MCP gate/]);
+  mutations.push([`offline MCP ${index + 1} duplicated`, 'make', command, `${command}\n\t${command}`, /exact additive offline MCP gate/]);
+}
+mutations.push(['offline MCP reversed', 'make', offlineMcp.join('\n\t'), [...offlineMcp].reverse().join('\n\t'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP overlap', 'make', offlineMcp[1], offlineMcp[1].replace(" -skip='^TestLocalSessionCredentialedMCPOfflineWeb'", ''), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP gap', 'make', offlineMcp[0], offlineMcp[0].replace('MCPOfflineWeb', 'MCPOfflineWebKnownServiceError'), /exact additive offline MCP gate/]);
 for (const [index, command] of ordinary.entries()) {
   for (const [name, mutate] of [
     ['background command', value => `${value} &`],

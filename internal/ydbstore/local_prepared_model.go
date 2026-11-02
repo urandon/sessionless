@@ -379,6 +379,17 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	}
 	m := &localPreparedModelV1{entry: entry, source: source, frozen: frozen, fit: fit, price: price}
 	m.self = m
+	// Preserve only compact ORIGINAL authenticated facts before replacing a
+	// completed holder. This historical lineage grants no continuation or send
+	// authority and retains no request/normalized-body buffers.
+	if old != nil && entry.retainOriginalObservation(old.observation) != nil {
+		return deny()
+	}
+	if g := entry.compactionGeneration.Load(); g != nil && g.self == g && g.entry == entry && g.observation.Validate() == nil {
+		if entry.retainOriginalObservation(g.observation) != nil {
+			return deny()
+		}
+	}
 	if !entry.preparedModel.CompareAndSwap(old, m) {
 		return deny()
 	}

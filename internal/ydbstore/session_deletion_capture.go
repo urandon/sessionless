@@ -15,7 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -38,6 +40,7 @@ type sessionDeletionCapture struct {
 	admissions  []ownedSessionAdmissionKey
 	scopes      []deletionCaptureScope
 	attemptRows map[domain.AttemptID]retainedDeletionAttemptRows
+	failures    map[domain.AttemptID]domain.AttemptOperationScopeV1
 }
 type retainedDeletionAttemptRows struct{ parents, evidence, operations, calls, proxies, reconciliation uint64 }
 
@@ -228,6 +231,22 @@ func (g *deletionCaptureGraph) addRun(ctx context.Context, tenant domain.TenantI
 		if run.TerminalCustody.Correspondence != nil {
 			key.Anchor = run.TerminalCustody.Correspondence.TerminalAssistantEventID
 			key.Sequence = g.ownership.events[key.Anchor].Sequence
+		}
+		if run.TerminalFailure != nil {
+			notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, domain.KnownMCPServiceErrorV1)
+			if e != nil {
+				return e
+			}
+			key.Anchor = notice.ID
+			clear(notice.Payload)
+			key.Sequence = g.ownership.events[key.Anchor].Sequence
+			if g.failures == nil {
+				g.failures = map[domain.AttemptID]domain.AttemptOperationScopeV1{}
+			}
+			g.failures[key.Attempt] = run.TerminalFailure.Scope
+			if e := g.expect("run_finalizations", []any{tenant, id}, map[string]any{"terminal_status": run.Status, "created_at": run.UpdatedAt}); e != nil {
+				return e
+			}
 		}
 		key.RunDigest, err = deletionRunDigest(run)
 		if err != nil {
@@ -927,6 +946,34 @@ func (g *deletionCaptureGraph) observeRow(spec *deletionCaptureSpec, cells []del
 		return nil
 	}
 	switch spec.table {
+	case "attempt_operations_v1":
+		var attempt domain.AttemptID
+		if json.Unmarshal(byName["attempt_id"].Value, &attempt) != nil {
+			return domain.ErrMembershipDenied
+		}
+		if scope, ok := g.failures[attempt]; ok {
+			var reservationRaw, observationRaw string
+			if !byName["record"].Present || !byName["observation_record"].Present || json.Unmarshal(byName["record"].Value, &reservationRaw) != nil || json.Unmarshal(byName["observation_record"].Value, &observationRaw) != nil {
+				return domain.ErrMembershipDenied
+			}
+			var r domain.AttemptOperationReservationV1
+			var o domain.AttemptOperationObservationV1
+			if decodeOwnedEffectCanonicalJSON(reservationRaw, &r) != nil || decodeOwnedEffectCanonicalJSON(observationRaw, &o) != nil || r.Operation.Scope != scope || o.ValidateForReservation(r) != nil {
+				return domain.ErrMembershipDenied
+			}
+			refs, e := localFailureOperationBodies([]localFailureOperationV1{{Reservation: r, Observation: o}})
+			if e != nil {
+				return e
+			}
+			for _, ref := range refs {
+				if operationbody.ValidateRetainedBodiesV1(scope, []domain.BlobRef{ref}) != nil {
+					return domain.ErrMembershipDenied
+				}
+				if e := g.addObject(ref); e != nil {
+					return e
+				}
+			}
+		}
 	case "runs":
 		var run domain.Run
 		if decode(&run) != nil || run.Validate() != nil || !run.Status.Terminal() {

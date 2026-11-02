@@ -219,7 +219,7 @@ test-connected: prepare
 	$(MAKE) test-mcp-offline
 
 # CI runs Terminal and the remainder here, and the complete Worker family in
-# the existing local-tail job. Local/release ordering stays unchanged above.
+# verify after core and offline MCP. Local/release ordering stays unchanged above.
 .PHONY: test-connected-ci test-connected-worker-ci
 test-connected-ci: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
@@ -235,7 +235,8 @@ test-mcp-offline: prepare
 	test ! -e internal/providerloopsession/mcp_offline_fixture.go
 	mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"
 	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession
-	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

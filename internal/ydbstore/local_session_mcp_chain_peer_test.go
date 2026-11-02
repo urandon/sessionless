@@ -19,22 +19,37 @@ import (
 // Exactly two owned numeric connections, each with one HTTP request followed
 // by actual EOF. This is offline transport evidence, not model qualification.
 type offlineModelChainPeer struct {
-	listener *net.TCPListener
-	mu       sync.Mutex
-	conn     *net.TCPConn
-	closed   bool
-	response [2][]byte
-	result   chan []localLoopbackPeerResult
-	done     chan struct{}
+	listener  *net.TCPListener
+	mu        sync.Mutex
+	conn      *net.TCPConn
+	closed    bool
+	response  [2][]byte
+	result    chan []localLoopbackPeerResult
+	done      chan struct{}
+	want      int
+	completed int
+	changed   chan struct{}
 }
 
-func newOfflineModelChainPeer(t *testing.T) *offlineModelChainPeer {
+func newOfflineModelChainPeer(t *testing.T, expected ...int) *offlineModelChainPeer {
 	t.Helper()
+	want := 2
+	if len(expected) > 1 {
+		t.Fatal("one closed MODEL-count selection only")
+	}
+	if len(expected) == 1 {
+		want = expected[0]
+	}
+	if want != 1 && want != 2 {
+		t.Fatal("MODEL-count must be 1 or 2")
+	}
 	l, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal("owned two-MODEL listener", err)
 	}
 	p := &offlineModelChainPeer{listener: l, result: make(chan []localLoopbackPeerResult, 1), done: make(chan struct{})}
+	p.want = want
+	p.changed = make(chan struct{}, 2)
 	t.Cleanup(func() {
 		p.mu.Lock()
 		p.closed = true
@@ -87,7 +102,7 @@ func (p *offlineModelChainPeer) serve() {
 	defer p.listener.Close()
 	var results []localLoopbackPeerResult
 	defer func() { p.result <- results }()
-	for i := range 2 {
+	for i := range p.want {
 		c, err := p.listener.AcceptTCP()
 		if err != nil {
 			results = append(results, localLoopbackPeerResult{err: err})
@@ -110,7 +125,34 @@ func (p *offlineModelChainPeer) serve() {
 		p.conn = nil
 		p.mu.Unlock()
 		results = append(results, r)
+		p.mu.Lock()
+		p.completed++
+		p.mu.Unlock()
+		p.changed <- struct{}{}
 		if r.err != nil {
+			return
+		}
+	}
+}
+func (p *offlineModelChainPeer) completedCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.completed
+}
+func (p *offlineModelChainPeer) waitCompleted(t *testing.T, want int) {
+	t.Helper()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		if p.completedCalls() >= want {
+			return
+		}
+		select {
+		case <-p.changed:
+		case <-timer.C:
+			if p.completedCalls() < want {
+				t.Fatalf("MODEL completed calls=%d want=%d", p.completedCalls(), want)
+			}
 			return
 		}
 	}
@@ -160,8 +202,8 @@ func (p *offlineModelChainPeer) wait(t *testing.T, bearer bool) []localLoopbackP
 			t.Fatal("two actual MODEL requests did not reach EOF/join")
 		}
 	}
-	if len(result) != 2 {
-		t.Fatalf("MODEL requests=%d want=2; result=%+v", len(result), result)
+	if len(result) != p.want {
+		t.Fatalf("MODEL requests=%d want=%d; result=%+v", len(result), p.want, result)
 	}
 	for i, r := range result {
 		if r.err != nil || r.request == nil || len(r.extra) != 0 {

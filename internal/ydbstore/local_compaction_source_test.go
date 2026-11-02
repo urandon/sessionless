@@ -17,6 +17,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
@@ -38,6 +39,7 @@ type compactionSourceSQL struct {
 	maxStatements    int
 	statements       int
 	failClose        bool
+	deletionState    *string // explicit scripted deletion-fence row; nil is absence
 }
 type compactionSourceConnector struct{ f *compactionSourceSQL }
 
@@ -93,6 +95,13 @@ func (f *compactionSourceSQL) QueryContext(ctx context.Context, statement string
 	}
 	var values [][]driver.Value
 	switch statement {
+	case `SELECT state FROM session_deletions WHERE tenant_id = $1 AND session_id = $2`:
+		if ctx.Err() != nil || len(args) != 2 || args[0].Value != string(scopeTenant) || args[1].Value != string(scopeSession) {
+			return nil, errors.New("source deletion exact original Session")
+		}
+		if f.deletionState != nil {
+			values = [][]driver.Value{{*f.deletionState}}
+		}
 	case ownedProxyRegistrationSQL:
 		if f.firstProxy == nil {
 			return f.retainedEntrySQL.QueryContext(ctx, statement, args)
@@ -225,6 +234,12 @@ func newCompactionSourceFixture(t *testing.T, toolHistory bool, pinned ...bool) 
 }
 
 func newCompactionSourceFixtureWithPrebuild(t *testing.T, toolHistory bool, prebuild localRuntimeActualPrebuild, pinned ...bool) *compactionSourceFixture {
+	return newCompactionSourceFixtureWithInitialRequest(t, toolHistory, prebuild, true, pinned...)
+}
+
+// The legacy initial request is unrelated fixture DATA, never an operation
+// reservation. Select its absence before the original body adapter is used.
+func newCompactionSourceFixtureWithInitialRequest(t *testing.T, toolHistory bool, prebuild localRuntimeActualPrebuild, initialRequest bool, pinned ...bool) *compactionSourceFixture {
 	t.Helper()
 	f := newLocalBootstrapFixtureWithPrebuild(t, prebuild)
 	fixture := &compactionSourceSQL{retainedEntrySQL: &retainedEntrySQL{loopbackOperationSQL: &loopbackOperationSQL{localProxySQL: &localProxySQL{allocationConn: allocationConn{&allocationSQLFixture{parent: f.parent.sql}}}}}}
@@ -264,9 +279,12 @@ func newCompactionSourceFixtureWithPrebuild(t *testing.T, toolHistory bool, preb
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := entry.bodies.Write(t.Context(), frozen.Body())
-	if err != nil {
-		t.Fatal(err)
+	var request operationbody.ReferenceV1
+	if initialRequest {
+		request, err = entry.bodies.Write(t.Context(), frozen.Body())
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	base := &retainedEntryFixture{localBootstrapFixture: f, entry: entry, sql: fixture.retainedEntrySQL, blobs: &blobs.retainedEntryBlobs, frozen: frozen, request: request, cancelInvocation: cancel}
 	result := &compactionSourceFixture{retainedEntryFixture: base, queries: fixture, canonical: blobs}

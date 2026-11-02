@@ -38,7 +38,11 @@ func readRetainedDeletionWriter(ctx context.Context, q *ownedAuthorityQuery, run
 		return deny()
 	}
 	ops, err := readRetainedDeletionOperations(ctx, q, p)
-	if err != nil || counts.parents != 1 || counts.evidence != 1 || counts.operations != uint64(len(ops)) || counts.calls != uint64(len(ops)) || len(ops) == 0 || counts.proxies != uint64(len(ops)-1) {
+	evidence := uint64(1)
+	if p.failure != nil {
+		evidence = 0
+	}
+	if err != nil || counts.parents != 1 || counts.evidence != evidence || counts.operations != uint64(len(ops)) || counts.calls != uint64(len(ops)) || len(ops) == 0 || counts.proxies != uint64(len(ops)-1) {
 		return deny()
 	}
 	if readRetainedDeletionCalls(ctx, q, p, ops) != nil || readRetainedDeletionProxies(ctx, q, p, ops) != nil {
@@ -76,10 +80,15 @@ func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery,
 			return nil, q.budget.deny()
 		}
 		row, e := c.decode(q, scope, sequence)
-		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(parent.Authority, parent.Reservation) != nil || indexed != sequence || indexedDigest != c.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) || row.observation == nil || row.observation.ObservedAt.After(v.Run.TerminalCustody.LocalEvidence.StoppedAt) {
+		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(parent.Authority, parent.Reservation) != nil || indexed != sequence || indexedDigest != c.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) || row.observation == nil || row.observation.ObservedAt.After(p.terminalBound()) {
 			return nil, q.budget.deny()
 		}
-		if !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
+		if p.failure != nil {
+			candidate, e := ports.BuildOwnedOperationFailureRowV1(row.reservation, *row.observation, parent, source)
+			if e != nil || (sequence == accounting.Aggregate.Operations) != (candidate.Reason == domain.AttemptOperationReasonServiceErrorV1) {
+				return nil, q.budget.deny()
+			}
+		} else if !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
 			// SQL DATA collection only, not deletion eligibility or fresh effect
 			// authority. This arm MUST subsequently match an actual V2 capsule,
 			// complete V3 accounting and canonical seal outside this callback.
@@ -197,7 +206,7 @@ func readRetainedDeletionReconciliation(ctx context.Context, q *ownedAuthorityQu
 			return 0, q.budget.deny()
 		}
 		var v domain.AttemptEffectReconciliationEvidenceV1
-		if decodeOwnedEffectCanonicalJSON(raw, &v) != nil || v.ValidateForPersistedAuthority(parent.Authority, parent.Reservation) != nil || digest != string(v.EvidenceDigest) || run != string(parent.Scope.RunID) || claim != v.PhysicalInvocationClaimID || state != string(v.Observation.State) || !at.Equal(v.Observation.ObservedAt) || !ownedEffectTime(at) || at.Before(parent.Reservation.ReservedAt) || at.After(p.terminal.Run.TerminalCustody.LocalEvidence.StoppedAt) || v.Observation.State == domain.SubstrateOperationUnknownV1 {
+		if decodeOwnedEffectCanonicalJSON(raw, &v) != nil || v.ValidateForPersistedAuthority(parent.Authority, parent.Reservation) != nil || digest != string(v.EvidenceDigest) || run != string(parent.Scope.RunID) || claim != v.PhysicalInvocationClaimID || state != string(v.Observation.State) || !at.Equal(v.Observation.ObservedAt) || !ownedEffectTime(at) || at.Before(parent.Reservation.ReservedAt) || at.After(p.terminalBound()) || v.Observation.State == domain.SubstrateOperationUnknownV1 {
 			return 0, q.budget.deny()
 		}
 		previous = digest

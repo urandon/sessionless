@@ -24,8 +24,10 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
+	"gitcode.com/urandon/sessionless/internal/sessionlifecycle"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -140,7 +142,11 @@ func (b webManagerBinder) BindHarness(ctx context.Context, r ports.HarnessBindin
 	for _, kind := range ownedSpendingKinds {
 		b.f.install.sql.fundingKeys[localInstallationSQLKey([]driver.Value{string(r.TenantID), string(r.AttemptID), string(kind), string(b.f.install.receipt.Profile.BillingOwnerUserID)})] = true
 	}
-	return b.HarnessBinder.BindHarness(ctx, r)
+	a, err := b.HarnessBinder.BindHarness(ctx, r)
+	if err != nil {
+		b.f.lastError = "actual binder: " + err.Error()
+	}
+	return a, err
 }
 
 type webManagerSQL struct {
@@ -152,6 +158,13 @@ type webManagerSQL struct {
 	manager                  *canonicalManagerSQL
 	sessionPeer              *canonicalSessionSQL
 	lastError                string
+	lastQuery                string
+	callStatements           int
+	callTrace                []string
+	lastCommitTrace          []string
+	priorFailure             *retainedDeletionGraphFixture
+	priorRecords             map[string]string
+	priorAttempt             string
 }
 
 func (f *webManagerSQL) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -229,6 +242,125 @@ func (f *webManagerSQL) QueryContext(ctx context.Context, s string, args []drive
 		}
 	}()
 	flat := canonicalJoinSQL(s)
+	if s == "SELECT CurrentUtcTimestamp()" {
+		f.callStatements = 0
+		f.callTrace = nil
+	}
+	f.callStatements++
+	if len(f.callTrace) < 40 {
+		f.callTrace = append(f.callTrace, flat)
+	}
+	f.lastQuery = flat
+	if f.priorFailure != nil && f.manager != nil && s == localTerminalHistoryRunsSQL(len(args)-3) {
+		if err := f.manager.seed.loop.countStatement(ctx); err != nil {
+			return nil, err
+		}
+		return f.manager.seed.peer.effects.compactionSourceSQL.QueryContext(ctx, s, args)
+	}
+	if f.priorFailure != nil && s == quotaReservationStorageSQLV1 {
+		// The old lifecycle fixture has a literal first-Run key. A new Run must
+		// use the SAME physical quota decoder with its actual persisted key,
+		// never reuse or rewrite the retained first reservation.
+		if f.manager != nil {
+			if err := f.manager.seed.loop.countStatement(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return f.managedAdmissionGraphFixture.QueryContext(ctx, s, args)
+	}
+	if f.priorFailure != nil && flat == "SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2" {
+		if f.manager != nil {
+			if err := f.manager.seed.loop.countStatement(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return f.localCanonicalJoinSQL.QueryContext(ctx, s, args)
+	}
+	if s == ownedSessionMaterialPredecessorSQL {
+		if ctx.Err() != nil || len(args) != 3 || args[0].Value != string(f.scope.TenantID) || args[1].Value != string(f.scope.SessionID) {
+			return nil, errors.New("Web material predecessor exact Session")
+		}
+		sequence, ok := args[2].Value.(int64)
+		if !ok || sequence < 1 || sequence > 4096 {
+			return nil, errors.New("Web material predecessor bounded exact sequence")
+		}
+		if f.manager != nil {
+			if err := f.manager.seed.loop.countStatement(ctx); err != nil {
+				return nil, err
+			}
+		}
+		var rows [][]driver.Value
+		if current := f.rows["session_material_current_v1"]; len(current) != 0 {
+			if len(current) != 7 {
+				return nil, errors.New("Web material current physical shape")
+			}
+			rows = append(rows, append([]driver.Value{int64(0)}, current...))
+		}
+		if boundary := f.rows["session_material_boundaries_v1"]; len(boundary) != 0 {
+			if len(boundary) != 7 {
+				return nil, errors.New("Web material boundary physical shape")
+			}
+			if retainedDeletionFixtureEqual(boundary[2], sequence) {
+				rows = append(rows, append([]driver.Value{int64(1)}, boundary...))
+			}
+		}
+		return &compactionSourceRows{rows: rows}, nil
+	}
+	if flat == "SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM attempts WHERE tenant_id = $1 AND attempt_id = $2" && len(args) == 2 {
+		scope := "foreign"
+		if args[1].Value == string(f.request.AttemptID) {
+			scope = "current"
+		}
+		if f.priorFailure != nil && args[1].Value == f.priorFailure.tables["attempt_execution_admissions_v1"][0]["attempt_id"] {
+			scope = "prior"
+		}
+		f.lastQuery += " [scope=" + scope + "]"
+	}
+	if prior := f.priorFailure; prior != nil {
+		if flat == "SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM attempts WHERE tenant_id = $1 AND attempt_id = $2" && len(args) == 2 && args[0].Value == prior.tables["runs"][0]["tenant_id"] && args[1].Value == prior.tables["attempt_execution_admissions_v1"][0]["attempt_id"] {
+			return &explanationFixtureRows{values: []driver.Value{f.priorAttempt}}, nil
+		}
+		// Exact old-Run/Attempt historical point reads only. Current execution
+		// still routes to its real new admission/Store; history cannot authorize
+		// a current reservation or make writes against the old producer.
+		if s == localFailureHistorySQL || (len(args) == 2 && (args[1].Value == prior.tables["runs"][0]["run_id"] || args[1].Value == prior.tables["attempt_execution_admissions_v1"][0]["attempt_id"])) {
+			if historical, handled, e := prior.originalRows(s, args); handled {
+				return historical, e
+			}
+		}
+		if s == sessionMaterialBoundarySQL && len(args) == 3 {
+			for _, row := range prior.tables["session_material_boundaries_v1"] {
+				if retainedDeletionFixtureEqual(row["sequence"], args[2].Value) {
+					return &explanationFixtureRows{values: []driver.Value{row["record"], row["version"], row["through_sequence"], row["tenant_id"], row["session_id"], row["last_event_id"], row["prefix_digest"]}}, nil
+				}
+			}
+		}
+	}
+	if f.priorFailure != nil && s == ownedAdmissionSQL {
+		if ctx.Err() != nil || len(args) != 2 || args[0].Value != string(f.scope.TenantID) {
+			return nil, errors.New("Web Final exact tenant/Attempt")
+		}
+		var row []driver.Value
+		if len(f.final) != 0 {
+			if len(f.final) != 7 {
+				return nil, errors.New("Web Final physical shape")
+			}
+			final, err := domain.DecodeAttemptExecutionAdmissionV1([]byte(f.final[0].(string)))
+			if err != nil {
+				return nil, errors.New("Web Final original row")
+			}
+			if args[1].Value == string(final.Source.Scope.AttemptID) {
+				row = append(row, f.final...)
+			}
+		}
+		f.recordQuery(s, args)
+		if f.manager != nil {
+			if err := f.manager.seed.loop.countStatement(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return &explanationFixtureRows{values: row}, nil
+	}
 	if f.manager != nil && f.manager.rawCanonical && flat == "SELECT binding_id FROM frontend_bindings_by_session WHERE tenant_id = $1 AND session_id = $2 LIMIT $3" {
 		if !reflect.DeepEqual(localInstallationNamedValues(args), []driver.Value{string(f.scope.TenantID), string(f.scope.SessionID), int64(maxSessionDeletionRows + 1)}) {
 			return nil, errors.New("Web terminal exact binding index range")
@@ -357,12 +489,17 @@ func (f *webManagerSQL) QueryContext(ctx context.Context, s string, args []drive
 			return nil, errors.New("Web exact event point")
 		}
 		sequence, ok := args[2].Value.(int64)
-		if !ok || sequence < 1 || sequence > 4 {
+		if !ok || sequence < 1 || sequence > 8 {
 			return nil, errors.New("Web bounded event sequence")
 		}
 		records := map[string]string{}
+		for id, raw := range f.priorRecords {
+			records[id] = raw
+		}
 		if f.manager != nil {
-			records = f.manager.state.eventRecords
+			for id, raw := range f.manager.state.eventRecords {
+				records[id] = raw
+			}
 		} else if len(f.rows["session_events"]) == 1 {
 			records["first"] = f.rows["session_events"][0].(string)
 		}
@@ -391,8 +528,13 @@ func (f *webManagerSQL) QueryContext(ctx context.Context, s string, args []drive
 			return nil, errors.New("Web bounded history range")
 		}
 		records := map[string]string{}
+		for id, raw := range f.priorRecords {
+			records[id] = raw
+		}
 		if f.manager != nil {
-			records = f.manager.state.eventRecords
+			for id, raw := range f.manager.state.eventRecords {
+				records[id] = raw
+			}
 		} else if len(f.rows["session_events"]) == 1 {
 			records["first"] = f.rows["session_events"][0].(string)
 		}
@@ -435,6 +577,10 @@ func (f *webManagerSQL) ExecContext(ctx context.Context, s string, args []driver
 		}
 	}()
 	flat := canonicalJoinSQL(s)
+	f.callStatements++
+	if len(f.callTrace) < 40 {
+		f.callTrace = append(f.callTrace, flat)
+	}
 	switch s {
 	case spendingWriteSQL, spendingAuditWriteSQL, ownedProfileWriteSQL, ownedProfileAuditWriteSQL:
 		return f.install.sql.ExecContext(ctx, s, args)
@@ -492,12 +638,20 @@ type webManagerIngress struct {
 func (w webManagerIngress) LookupCanonicalUserEvent(ctx context.Context, r ports.CanonicalUserEventLookup) (ports.CanonicalUserEventLookupResult, error) {
 	w.f.request.TenantID, w.f.request.UserID, w.f.request.SessionID, w.f.request.BindingID, w.f.request.IdempotencyKey = r.TenantID, r.UserID, w.f.scope.SessionID, r.BindingID, r.IdempotencyKey
 	w.f.addRead("SELECT session_id, sequence, event_id, run_id, mutation_digest FROM frontend_ingress_idempotency WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3 AND expire_at > CurrentUtcTimestamp()", "frontend_ingress_idempotency", string(r.TenantID), string(r.BindingID), string(r.IdempotencyKey))
-	return w.Store.LookupCanonicalUserEvent(ctx, r)
+	result, err := w.Store.LookupCanonicalUserEvent(ctx, r)
+	if err != nil {
+		w.f.lastError = "actual ingress lookup: " + err.Error()
+	}
+	return result, err
 }
 func (w webManagerIngress) CommitCanonicalUserEvent(ctx context.Context, r ports.CanonicalUserEventCommit) (ports.CanonicalUserEventResult, error) {
 	w.f.request = r
 	w.f.registerCanonicalReads(r)
 	result, err := w.Store.CommitCanonicalUserEvent(ctx, r)
+	w.f.lastCommitTrace = append([]string(nil), w.f.callTrace...)
+	if err != nil {
+		w.f.lastError = "actual ingress commit: " + err.Error() + " lastSQL=" + w.f.lastQuery + fmt.Sprintf(" observed_statements=%d", w.f.callStatements)
+	}
 	if err == nil {
 		w.f.canonical = false
 	}
@@ -639,6 +793,9 @@ func (s *LocalWebManagerSeed) FundingCounts() (int, int) {
 	return len(s.peer.install.sql.fundingHeads), len(s.peer.install.sql.fundingAudits)
 }
 func (s *LocalWebManagerSeed) LastError() string { return s.peer.lastError }
+func (s *LocalWebManagerSeed) LastCommitStatements() []string {
+	return append([]string(nil), s.peer.lastCommitTrace...)
+}
 func (s *LocalWebManagerSeed) OriginalStorageDigest(t *testing.T) string {
 	t.Helper()
 	raw, err := json.Marshal(struct{ Profile, Funding, Audit map[string][]driver.Value }{s.peer.install.sql.heads, s.peer.install.sql.fundingHeads, s.peer.install.sql.fundingAudits})
@@ -657,12 +814,23 @@ func (s *LocalWebManagerSeed) AdmitManager(t *testing.T) *LocalCanonicalManagerS
 	r := f.request
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if r.PreparedMaterial == nil || len(f.rows["runs"]) != 1 || len(f.rows["attempts"]) != 1 || len(f.install.sql.fundingHeads) != 4 || len(f.install.sql.fundingAudits) != 4 || f.bindings != 1 {
+	wantFunding := 4
+	if f.priorFailure != nil {
+		wantFunding = 8
+	}
+	if r.PreparedMaterial == nil || len(f.rows["runs"]) != 1 || len(f.rows["attempts"]) != 1 || len(f.install.sql.fundingHeads) != wantFunding || len(f.install.sql.fundingAudits) != wantFunding || f.bindings != 1 {
 		t.Fatal("Web did not produce original canonical request")
 	}
-	admission := ports.DispatchAdmissionRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, OutboxID: r.DispatchID, ReservationID: "reservation-local-lifecycle", Now: f.at, HoldUntil: f.at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 8, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxArtifacts: 8, MaxContextEvents: 100, MaxToolEvents: 20, MaxToolEventBytes: 1 << 18}, Workload: domain.WorkloadShape{Runtime: time.Second, Turns: 1}}
+	reservationID := domain.QuotaReservationID("reservation-local-lifecycle")
+	if f.priorFailure != nil {
+		reservationID = domain.QuotaReservationID("hold-" + string(r.RunID))
+	}
+	admission := ports.DispatchAdmissionRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, OutboxID: r.DispatchID, ReservationID: reservationID, Now: f.at, HoldUntil: f.at.Add(time.Minute), Limits: domain.ProductLimits{MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 8, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxArtifacts: 8, MaxContextEvents: 100, MaxToolEvents: 20, MaxToolEventBytes: 1 << 18}, Workload: domain.WorkloadShape{Runtime: time.Second, Turns: 1}}
 	if result, e := s.Store.AdmitDispatch(ctx, admission); e != nil || !result.Admitted {
-		t.Fatalf("actual Web canonical admission: admitted=%t err=%v SQL=%s", result.Admitted, e, f.lastError)
+		t.Fatalf("actual Web canonical admission: admitted=%t err=%v SQL=%s last=%s statements=%d", result.Admitted, e, f.lastError, f.lastQuery, f.callStatements)
+	}
+	if f.priorFailure != nil {
+		f.addRead("SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2", "quota_reservations", string(r.TenantID), string(reservationID))
 	}
 	parent := &ownedAttemptEffectParentSQLFixture{base: f.ownedFinalScript, graph: f.managedAdmissionGraphFixture}
 	alloc := &allocationSQLFixture{parent: parent}
@@ -696,7 +864,35 @@ func (s *LocalWebManagerSeed) AdmitManager(t *testing.T) *LocalCanonicalManagerS
 	if e != nil {
 		t.Fatal(e)
 	}
-	rows := &compactionSourceSQL{retainedEntrySQL: &retainedEntrySQL{loopbackOperationSQL: operations}, events: [][]driver.Value{append([]driver.Value(nil), f.rows["session_events"]...)}}
+	var events []domain.SessionEvent
+	for _, raw := range f.priorRecords {
+		var event domain.SessionEvent
+		if json.Unmarshal([]byte(raw), &event) != nil || event.Validate() != nil {
+			t.Fatal("actual prior canonical event")
+		}
+		events = append(events, event)
+	}
+	events = append(events, event)
+	sort.Slice(events, func(i, j int) bool { return events[i].Sequence < events[j].Sequence })
+	var eventRows [][]driver.Value
+	for _, item := range events {
+		raw, e := json.Marshal(item)
+		if e != nil {
+			t.Fatal(e)
+		}
+		eventRows = append(eventRows, []driver.Value{string(raw)})
+	}
+	rows := &compactionSourceSQL{retainedEntrySQL: &retainedEntrySQL{loopbackOperationSQL: operations}, events: eventRows}
+	if f.priorFailure != nil {
+		rows.historyRuns = make(map[domain.RunID]string)
+		rows.historyMarkers = make(map[domain.RunID][2]string)
+		for _, row := range f.priorFailure.tables["runs"] {
+			rows.historyRuns[domain.RunID(row["run_id"].(string))] = row["payload"].(string)
+		}
+		for _, row := range f.priorFailure.tables["run_finalizations"] {
+			rows.historyMarkers[domain.RunID(row["run_id"].(string))] = [2]string{row["terminal_status"].(string), row["content_digest"].(string)}
+		}
+	}
 	effects := &compactionEffectSQL{compactionSourceSQL: rows}
 	toolPeer := &canonicalToolSQL{seed: loopSeed, effects: effects}
 	toolSeed := &LocalCanonicalToolSeed{LocalCanonicalLoopSeed: loopSeed, Grant: grant, peer: toolPeer, hold: append([]driver.Value(nil), f.rows["quota_reservations"]...)}
@@ -716,4 +912,233 @@ func (s *LocalWebManagerSeed) AdmitManager(t *testing.T) *LocalCanonicalManagerS
 	}
 	f.manager = manager
 	return &LocalCanonicalManagerSeed{LocalCanonicalTerminalSeed: terminalSeed, manager: manager}
+}
+
+// Switch only test-owned dispatch after the ACTUAL original owner completed
+// and released. Historical rows remain immutable, current SQL scopes still
+// come from the next real Web binder/admission. No Run or grant is synthesized.
+func (s *LocalWebManagerSeed) BeginNextAfterKnownFailure(t *testing.T, manager *LocalCanonicalManagerSeed) {
+	t.Helper()
+	f := s.peer
+	if f.priorFailure != nil || !manager.TerminalStorageReleased() {
+		t.Fatal("next message before original F1 release")
+	}
+	f.priorFailure = s.knownFailureGraph(t, manager)
+	oldAttempt, err := json.Marshal(manager.TerminalSnapshot(t).Attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.priorAttempt = string(oldAttempt)
+	f.priorRecords = map[string]string{}
+	for id, raw := range manager.terminal.state.eventRecords {
+		f.priorRecords[id] = raw
+	}
+	f.rows["session_material_current_v1"] = append([]driver.Value(nil), manager.terminal.state.material["current"]...)
+	f.rows["session_material_boundaries_v1"] = append([]driver.Value(nil), manager.terminal.state.material[fmt.Sprint(manager.terminal.state.Session.LastEventSequence)]...)
+	f.rows["frontend_ingress_idempotency"] = nil
+	f.rows["run_idempotency"] = nil
+	f.rows["runs"] = nil
+	f.rows["attempts"] = nil
+	f.rows["run_explanation_heads_v1"] = nil
+	f.rows["artifact_manifests"] = nil
+	f.rows["leases"] = nil
+	f.rows["worker_jobs"] = nil
+	f.rows["dispatch_outbox"] = nil
+	f.rows["quota_reservations"] = nil
+	f.manager = nil
+	f.sessionPeer = nil
+	f.canonical = true
+}
+
+// Corrupt only canonical history DATA after the genuine first F1 committed.
+// The original failed Run/F1 marker/capsule/frontier and funding remain exact;
+// a payload-based classifier must not hide this producing Run from validation.
+func (s *LocalWebManagerSeed) ReplacePriorKnownFailureNotice(t *testing.T, ref domain.BlobRef) {
+	t.Helper()
+	f := s.peer
+	if f.priorFailure == nil || f.manager != nil || ref.Validate() != nil || ref.TenantID != s.Tenant {
+		t.Fatal("prior F1 corruption requires genuine retained snapshot")
+	}
+	found := 0
+	for id, raw := range f.priorRecords {
+		var event domain.SessionEvent
+		if json.Unmarshal([]byte(raw), &event) != nil {
+			t.Fatal("actual retained canonical row")
+		}
+		if event.Kind == domain.SessionEventSystemNotice && event.RunID != nil {
+			event.Payload = ref
+			if event.Validate() != nil {
+				t.Fatal("changed canonical notice must remain structurally valid")
+			}
+			raw, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.priorRecords[id] = string(raw)
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatal("exactly one retained failure notice required")
+	}
+}
+
+func (s *LocalWebManagerSeed) CorruptPriorKnownFailureCorrespondence(t *testing.T, mode string) {
+	t.Helper()
+	f := s.peer
+	if f.priorFailure == nil || f.manager != nil {
+		t.Fatal("prior F1 corruption requires genuine retained snapshot")
+	}
+	switch mode {
+	case "missing_notice":
+		found := 0
+		for id, raw := range f.priorRecords {
+			var event domain.SessionEvent
+			if json.Unmarshal([]byte(raw), &event) != nil {
+				t.Fatal("actual retained event")
+			}
+			if event.Kind == domain.SessionEventSystemNotice && event.RunID != nil {
+				event.RunID = nil
+				if event.Validate() != nil {
+					t.Fatal("generic unlinked notice must remain valid")
+				}
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.priorRecords[id] = string(raw)
+				found++
+			}
+		}
+		if found != 1 {
+			t.Fatal("one actual F1 anchor required")
+		}
+	case "metadata_stripped":
+		rows := f.priorFailure.tables["runs"]
+		if len(rows) != 1 {
+			t.Fatal("one original retained Run")
+		}
+		var run domain.Run
+		if json.Unmarshal([]byte(rows[0]["payload"].(string)), &run) != nil || run.TerminalFailure == nil {
+			t.Fatal("actual F1 Run")
+		}
+		run.TerminalFailure = nil
+		if run.Validate() != nil {
+			t.Fatal("stripped Run must remain structurally valid")
+		}
+		raw, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows[0]["payload"] = string(raw)
+	case "marker_stripped":
+		rows := f.priorFailure.tables["run_finalizations"]
+		if len(rows) != 1 {
+			t.Fatal("one actual F1 marker")
+		}
+		rows[0]["content_digest"] = ""
+	default:
+		t.Fatal("closed F1 history correspondence fault")
+	}
+}
+
+// Project only ACTUAL committed Source/Manager rows into the SAME complete
+// deletion graph used by the original successful producer. No terminal marker,
+// private producer or auth receipt is fabricated by this DATA adapter.
+func (s *LocalWebManagerSeed) knownFailureGraph(t *testing.T, manager *LocalCanonicalManagerSeed) *retainedDeletionGraphFixture {
+	t.Helper()
+	snapshot := manager.TerminalSnapshot(t)
+	parent := manager.ManagerParent(t)
+	if snapshot.Run.TerminalFailure == nil || snapshot.Run.Status != domain.RunFailed || snapshot.Finalizations != 1 || len(snapshot.Events) != 3 {
+		t.Fatal("requires genuine completed F1 producer")
+	}
+	f := s.peer
+	if manager.LocalCanonicalLoopSeed.peer.base != f.localCanonicalJoinSQL {
+		t.Fatal("terminal Session/head projection was not the original Web map")
+	}
+	effects := manager.peer.effects
+	scope := parent.Scope
+	var extra []retainedDeletionFixtureRecord
+	var binding domain.FrontendBinding
+	if len(f.rows["frontend_bindings"]) != 1 || json.Unmarshal([]byte(f.rows["frontend_bindings"][0].(string)), &binding) != nil {
+		t.Fatal("actual Web binding missing")
+	}
+	extra = append(extra, retainedDeletionFixtureRecord{"frontend_bindings", binding, map[string]any{"binding_id": string(binding.ID)}}, retainedDeletionFixtureRecord{"frontend_bindings_by_session", struct{}{}, map[string]any{"tenant_id": string(binding.TenantID), "session_id": string(binding.SessionID), "binding_id": string(binding.ID)}}, retainedDeletionFixtureRecord{"frontend_binding_keys", struct{}{}, map[string]any{"tenant_id": string(binding.TenantID), "frontend": string(binding.Frontend), "external_conversation_id": binding.ExternalConversationID, "binding_id": string(binding.ID)}})
+	for _, p := range manager.terminal.projection {
+		bucket, e := ydbpartition.BucketV1(string(p.ID))
+		if e != nil {
+			t.Fatal(e)
+		}
+		extra = append(extra, retainedDeletionFixtureRecord{"frontend_projection_outbox", p, map[string]any{"frontend_projection_id": string(p.ID)}}, retainedDeletionFixtureRecord{"frontend_projections_by_session", struct{}{}, map[string]any{"tenant_id": string(p.TenantID), "session_id": string(p.SessionID), "frontend_projection_id": string(p.ID)}}, retainedDeletionFixtureRecord{"frontend_projections_by_run", struct{}{}, map[string]any{"tenant_id": string(p.TenantID), "run_id": string(snapshot.Run.ID), "frontend": string(p.Frontend), "frontend_projection_id": string(p.ID)}}, retainedDeletionFixtureRecord{"frontend_projection_ready_v1", struct{}{}, map[string]any{"tenant_id": string(p.TenantID), "run_id": string(snapshot.Run.ID), "frontend": string(p.Frontend), "frontend_projection_id": string(p.ID), "shard_bucket": uint64(bucket), "created_at": p.CreatedAt}})
+	}
+	if len(f.rows["run_explanation_heads_v1"]) == 1 {
+		var head runexplanation.HeadV1
+		if json.Unmarshal([]byte(f.rows["run_explanation_heads_v1"][0].(string)), &head) != nil {
+			t.Fatal("actual Run explanation")
+		}
+		extra = append(extra, retainedDeletionFixtureRecord{"run_explanation_heads_v1", head, nil})
+	}
+	if len(f.rows["session_displays"]) == 1 {
+		var display domain.SessionDisplay
+		if json.Unmarshal([]byte(f.rows["session_displays"][0].(string)), &display) != nil {
+			t.Fatal("actual Session display")
+		}
+		extra = append(extra, retainedDeletionFixtureRecord{"session_displays", display, nil})
+	}
+	return newRetainedDeletionGraphData(t, retainedDeletionFixtureData{base: f, snapshot: snapshot, scope: scope, membership: f.membership, participant: f.participant, sourceEvents: []domain.SessionEvent{manager.Event}, material: manager.terminal.state.material, job: f.rows["worker_jobs"], input: f.rows["artifact_manifests"], admission: f.final, parent: f.sessionPeer.parent.parentRow, burn: f.sessionPeer.parent.burnRow, allocation: f.sessionPeer.alloc.row, proxy: effects.firstProxy, accounting: f.sessionPeer.parent.accountingRow, operations: effects.operations, proxies: effects.proxies, extra: extra})
+}
+
+// Execute the public lifecycle over an isolated copy of genuine durable SQL
+// DATA and an exact-object controlled delete peer. The original execution rows,
+// Source and objects are not modified. This is no native/storage qualification.
+func (s *LocalWebManagerSeed) CheckKnownFailureDeletion(t *testing.T, manager *LocalCanonicalManagerSeed, reader SessionDeletionBlobReader, mode string) error {
+	t.Helper()
+	f := s.knownFailureGraph(t, manager)
+	f.requested = false
+	db := sql.OpenDB(f)
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	probe := &retainedDeletionProbeReader{reader: reader}
+	store := &Store{db: db, sessionDeletionBlobReader: probe}
+	if _, err := store.RequestSessionDeletion(t.Context(), f.request); err != nil {
+		return fmt.Errorf("F1 Request %s: %w", f.lastSQL, err)
+	}
+	switch mode {
+	case "positive":
+	case "missing_observation":
+		delete(f.tables["attempt_operations_v1"][1], "observation_record")
+	case "missing_parent":
+		f.tables["attempt_effect_reservations"] = nil
+	case "changed_marker":
+		f.tables["run_finalizations"][0]["content_digest"] = "local_f1:" + strings.Repeat("f", 64)
+	case "changed_accounting":
+		f.tables["attempt_effect_reservations"][0]["operation_accounting_digest"] = strings.Repeat("f", 64)
+	case "missing_body":
+		probe.deny = true
+	default:
+		t.Fatal("closed F1 deletion fault")
+	}
+	requestWrites := f.writes
+	blobs := &retainedDeletionServiceBlobs{reader: probe, deleted: map[string]bool{}}
+	service, err := sessionlifecycle.New(store, blobs, 0, 0)
+	if err != nil {
+		return err
+	}
+	plan, err := service.Plan(t.Context(), s.Tenant, s.Session)
+	if err == nil {
+		_, err = service.Execute(t.Context(), s.Tenant, s.Session, plan.Confirmation, time.Now().UTC())
+	}
+	if mode != "positive" {
+		if err == nil || blobs.deletes != 0 || blobs.puts != 0 || f.writes != requestWrites || f.request.State != domain.SessionDeletionRequested {
+			return fmt.Errorf("F1 corrupt %s granted destructive effects: %v", mode, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("F1 full deletion %s: %w", f.lastSQL, err)
+	}
+	if f.request.State != domain.SessionDeletionCompleted || f.request.RetainedVerification == nil || blobs.puts != 0 || blobs.deletes != len(plan.Inventory.Objects) || blobs.deletes < 8 || len(f.tables["attempt_effect_reservations"]) != 0 {
+		return fmt.Errorf("F1 deletion omitted retained inventory: state=%s deletes=%d inventory=%d", f.request.State, blobs.deletes, len(plan.Inventory.Objects))
+	}
+	return nil
 }

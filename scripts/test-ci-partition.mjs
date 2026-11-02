@@ -45,6 +45,8 @@ done`;
 const coldGoStep = `if: "${coldGoPredicate}"\n        shell: bash\n        run: |\n${coldGoShell.split('\n').map(line => `          ${line}`).join('\n')}`;
 const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)";
 const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)";
+const connectedCiTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
+const connectedWorker = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionWorker' $(GO_PACKAGE_PATTERNS)";
 const ordinary = [
   "go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
@@ -112,11 +114,15 @@ function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'test-ordinary-ci-base'), words('prepare fmt-check lint'), 'CI base preparation');
   assert.deepEqual(target(make, 'test-ordinary-ci-tail'), ['prepare'], 'CI tail preparation');
   assert.deepEqual(target(make, 'test-connected'), ['prepare'], 'connected preparation');
+  assert.deepEqual(target(make, 'test-connected-ci'), ['prepare'], 'CI connected preparation');
+  assert.deepEqual(target(make, 'test-connected-worker-ci'), ['prepare'], 'CI worker preparation');
   assert.deepEqual(assignment(make, 'GO_PACKAGE_PATTERNS'), words('./cmd/... ./internal/... ./migrations/...'), 'complete Go corpus');
   assert.equal(recipe(make, 'test-ordinary'), ordinary.join('\n\t'), 'exact sequential ordinary partition');
   assert.equal(recipe(make, 'test-ordinary-ci-base'), ordinary.slice(0, 3).join('\n\t'), 'exact CI base partition');
   assert.equal(recipe(make, 'test-ordinary-ci-tail'), ordinaryTail.join('\n\t'), 'exact CI tail partition');
   assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}\n\t$(MAKE) test-mcp-offline`, 'exact sequential connected partition');
+  assert.equal(recipe(make, 'test-connected-ci'), `${connectedCiTerminal}\n\t${connectedOther}`, 'exact CI normal connected partition');
+  assert.equal(recipe(make, 'test-connected-worker-ci'), connectedWorker, 'exact CI worker connected partition');
   assert.deepEqual(target(make, 'test-mcp-offline'), ['prepare'], 'offline MCP preparation');
   assert.equal(recipe(make, 'test-mcp-offline'), [
     'test ! -e internal/localloopback/mcp_offline_fixture.go',
@@ -151,7 +157,7 @@ function verify({ make, ci, release }) {
       '    steps:\n      - name: Checkout mirrored commit\n        uses: actions/checkout@v6\n\n', `${name} cold Go guard immediately after checkout`);
     assert.ok(value.includes(`      - name: ${coldGoStepName}\n        ${coldGoStep}\n\n      - name: Set up pinned Go\n        ${pinnedGo}\n`), `${name} cold Go guard immediately before setup`);
   }
-  assert.equal(step(connected, 'Run connected-session tests over all packages'), 'run: make test-connected', 'complete connected invocation');
+  assert.equal(step(connected, 'Run connected-session tests over all packages'), 'run: make test-connected-ci', 'complete connected invocation');
   assert.equal([...connected.matchAll(/^      - name:/gm)].length, 4, 'bounded connected steps');
   assert.match(local, /^    timeout-minutes: 30$/m, 'local tail 30-minute bound');
   assert.match(local, /^    runs-on: ubuntu-latest$/m);
@@ -159,7 +165,10 @@ function verify({ make, ci, release }) {
   assert.equal(step(local, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact local tail checkout');
   assert.equal(step(local, 'Set up pinned Go'), step(connected, 'Set up pinned Go'), 'same pinned local tail Go/cache setup');
   assert.equal(step(local, 'Run ordinary local-tail tests over all packages'), 'run: make test-ordinary-ci-tail', 'complete local tail invocation');
-  assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
+  assert.equal(step(local, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
+  assert.equal([...ci.matchAll(/^        run: make test-connected-worker-ci$/gm)].length, 1, 'one required CI connected Worker execution');
+  assert.ok(local.indexOf('      - name: Run ordinary local-tail tests over all packages\n') < local.indexOf('      - name: Run connected-worker tests over all packages\n'), 'worker follows ordinary tail');
+  assert.equal([...local.matchAll(/^      - name:/gm)].length, 5, 'bounded local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -181,6 +190,10 @@ function verify({ make, ci, release }) {
   assert.ok(ydb.indexOf(generationStepName) > ydb.indexOf('Prove inline-output transactional claim and write custody'));
   assert.ok(ydb.indexOf(generationStepName) < ydb.indexOf('Capture failed YDB Local state'));
   assert.equal(step(core, 'Run repository CI contract'), 'run: make ci-core-base', 'complete CI base invocation');
+  const mcpStepName = 'Run additive offline MCP connected fixtures';
+  assert.equal(step(core, mcpStepName), 'run: make test-mcp-offline', 'required complete CI offline MCP invocation');
+  assert.ok(core.indexOf('      - name: Run repository CI contract\n') < core.indexOf(`      - name: ${mcpStepName}\n`), 'MCP follows complete core base');
+  assert.equal([...ci.matchAll(/^        run: make test-mcp-offline$/gm)].length, 1, 'one required CI offline MCP execution');
   const offlineName = 'Run offline worker and egress security contracts';
   assert.equal(step(security, offlineName),
     'run: env -u YDB_CONNECTION_STRING -u YDB_ANONYMOUS_CREDENTIALS make attached-worker-security-gate serverless-egress-conformance');
@@ -249,6 +262,64 @@ test('joined generation qualification keeps exact selection, order and independe
   }
 });
 
+test('CI MCP redistribution preserves the local gate and both required executions', () => {
+  const mcpName = 'Run additive offline MCP connected fixtures';
+  const mcpStep = `      - name: ${mcpName}\n        run: make test-mcp-offline\n`;
+  const coreStep = '      - name: Run repository CI contract\n        run: make ci-core-base\n';
+  for (const ci of [
+    original.ci.replace(mcpStep, ''),
+    original.ci.replace(mcpStep, mcpStep.replace('        run:', '        if: false\n        run:')),
+    original.ci.replace(mcpStep, mcpStep.replace('        run:', '        continue-on-error: true\n        run:')),
+    original.ci.replace(mcpStep, mcpStep.replace('make test-mcp-offline', 'make test-mcp-offline || true')),
+    original.ci.replace(mcpStep, '').replace(coreStep, mcpStep + '\n' + coreStep),
+    original.ci.replace('run: make test-connected-ci\n', 'run: make test-connected\n'),
+  ]) {
+    assert.notEqual(ci, original.ci, 'mutation must change the workflow');
+    assert.throws(() => verify({ ...original, ci }));
+  }
+  const normal = recipe(original.make, 'test-connected-ci');
+  for (const changed of [
+    connectedOther,
+    connectedCiTerminal,
+    `${connectedOther}\n\t${connectedCiTerminal}`,
+    `${normal}\n\t$(MAKE) test-mcp-offline`,
+    normal.replace(connectedCiTerminal, connectedCiTerminal + ' &'),
+    normal.replace('-timeout=15m', '-timeout=30m'),
+  ]) {
+    assert.notEqual(changed, normal);
+    const make = original.make.replace(`test-connected-ci: prepare\n\t${normal}`, `test-connected-ci: prepare\n\t${changed}`);
+    assert.notEqual(make, original.make, 'mutation must change the CI recipe');
+    assert.throws(() => verify({ ...original, make }));
+  }
+});
+
+test('CI worker redistribution remains required, complete and sequential', () => {
+  const workerStep = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
+  const tailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
+  for (const ci of [
+    original.ci.replace(workerStep, ''),
+    original.ci.replace(workerStep, workerStep.replace('        run:', '        if: false\n        run:')),
+    original.ci.replace(workerStep, workerStep.replace('        run:', '        continue-on-error: true\n        run:')),
+    original.ci.replace(workerStep, workerStep.replace('make test-connected-worker-ci', 'make test-connected-worker-ci || true')),
+    original.ci.replace(workerStep, '').replace(tailStep, workerStep + '\n' + tailStep),
+    original.ci.replace('      - name: Run repository CI contract\n        run: make ci-core-base\n', '      - name: Run repository CI contract\n        run: make ci-core-base\n\n      - name: Duplicate connected-worker execution\n        run: make test-connected-worker-ci\n'),
+  ]) {
+    assert.notEqual(ci, original.ci);
+    assert.throws(() => verify({ ...original, ci }));
+  }
+  for (const changed of [
+    '', connectedWorker + ' &', connectedWorker + ' || true',
+    connectedWorker.replace(' -race', ''), connectedWorker.replace('-count=1', '-count=2'),
+    connectedWorker.replace('-timeout=15m', '-timeout=30m'),
+    connectedWorker.replace('^TestLocalSessionWorker', '^TestLocalSessionWorkerEntry'),
+    connectedWorker.replace('$(GO_PACKAGE_PATTERNS)', './internal/ydbstore'),
+  ]) {
+    const make = original.make.replace(`test-connected-worker-ci: prepare\n\t${connectedWorker}`, `test-connected-worker-ci: prepare\n\t${changed}`);
+    assert.notEqual(make, original.make);
+    assert.throws(() => verify({ ...original, make }));
+  }
+});
+
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {
   const local = assignment(original.make, 'CI_CORE_CHECKS');
   assert.equal(targetText(original.make, 'ci-core'), '$(CI_CORE_CHECKS)');
@@ -306,6 +377,13 @@ function connectedSelections(name) {
     /^TestLocalSession/.test(name) && !/^TestLocalSession(Terminal|Worker)/.test(name),
   ];
 }
+function ciConnectedSelections(name) {
+  return [
+    /^TestLocalSessionTerminal/.test(name),
+    /^TestLocalSessionWorker/.test(name),
+    /^TestLocalSession/.test(name) && !/^TestLocalSession(Terminal|Worker)/.test(name),
+  ];
+}
 test('connected selectors are disjoint and cover the original complete prefix', () => {
   for (const name of [
     'TestLocalSession', 'TestLocalSessionTerminal',
@@ -320,10 +398,12 @@ test('connected selectors are disjoint and cover the original complete prefix', 
     const selected = connectedSelections(name).filter(Boolean).length;
     assert.equal(selected, Number(allConnected), name);
     assert.equal(Number(!allConnected) + selected, 1, name);
+    assert.equal(ciConnectedSelections(name).filter(Boolean).length, Number(allConnected), `${name}: CI exact union`);
   }
 });
 test('connected partition covers the actual repository test-name corpus', () => {
   const counts = [0, 0];
+  const ciCounts = [0, 0, 0];
   function inspect(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
@@ -334,12 +414,16 @@ test('connected partition covers the actual repository test-name corpus', () => 
           const selected = connectedSelections(name);
           assert.equal(selected.filter(Boolean).length, Number(/^TestLocalSession/.test(name)), `${path}:${name}`);
           selected.forEach((value, index) => { counts[index] += Number(value); });
+          const ciSelected = ciConnectedSelections(name);
+          assert.equal(ciSelected.filter(Boolean).length, Number(/^TestLocalSession/.test(name)), `${path}:${name}: CI`);
+          ciSelected.forEach((value, index) => { ciCounts[index] += Number(value); });
         }
       }
     }
   }
   for (const root of ['cmd', 'internal', 'migrations']) inspect(fileURLToPath(new URL(`../${root}`, import.meta.url)));
   assert.ok(counts.every(count => count > 0), `actual nonempty connected partitions: ${counts}`);
+  assert.ok(ciCounts.every(count => count > 0), `actual nonempty CI connected partitions: ${ciCounts}`);
 });
 test('ordinary selectors and connected selectors partition the complete test-name corpus', () => {
   const names = [
@@ -503,9 +587,9 @@ const mutations = [
   ['parallel connected halves', 'make', connectedTerminal, `${connectedTerminal} &`, /exact sequential connected partition/],
   ['missing connected job', 'ci', '  go-connected:\n', '  removed-connected:\n', /unique go-connected job/],
   ['serialized connected job', 'ci', '  go-connected:\n', '  go-connected:\n    needs: verify\n', /connected is parallel/],
-  ['wrong connected target', 'ci', 'run: make test-connected\n', 'run: make test-ordinary\n', /complete connected invocation/],
+  ['wrong connected target', 'ci', 'run: make test-connected-ci\n', 'run: make test-ordinary\n', /complete connected invocation/],
   ['skipped connected step', 'ci', '      - name: Run connected-session tests over all packages\n', '      - name: Run connected-session tests over all packages\n        if: false\n', /complete connected invocation/],
-  ['ignored connected command', 'ci', 'run: make test-connected\n', 'run: make test-connected || true\n', /complete connected invocation/],
+  ['ignored connected command', 'ci', 'run: make test-connected-ci\n', 'run: make test-connected-ci || true\n', /complete connected invocation/],
   ['connected gains write permission', 'ci', '  go-connected:\n', '  go-connected:\n    permissions:\n      contents: write\n', /connected is parallel/],
   ['image loses connected', 'ci', '      - go-connected\n', ''],
   ['image loses local tail', 'ci', '      - go-local\n', ''],

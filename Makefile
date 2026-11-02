@@ -213,6 +213,16 @@ test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)
 	$(MAKE) test-mcp-offline
 
+# CI runs Terminal and the remainder here, and the complete Worker family in
+# the existing local-tail job. Local/release ordering stays unchanged above.
+.PHONY: test-connected-ci test-connected-worker-ci
+test-connected-ci: prepare
+	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)
+
+test-connected-worker-ci: prepare
+	go test -race -count=1 -timeout=15m -run='^TestLocalSessionWorker' $(GO_PACKAGE_PATTERNS)
+
 # Additive test instrumentation only: neither normal Go package exposes a
 # resolver/dialer/CA override. The overlay must never replace an existing file.
 test-mcp-offline: prepare

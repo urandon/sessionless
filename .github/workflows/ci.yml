@@ -62,10 +62,14 @@ jobs:
       - name: Run repository CI contract
         run: make ci-core-base
 
+      - name: Run additive offline MCP connected fixtures
+        run: make test-mcp-offline
+
   go-local:
     name: Go ordinary local-tail verification
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Preserve the required check name; also run the connected Worker family.
     steps:
       - name: Checkout mirrored commit
         uses: actions/checkout@v6
@@ -96,6 +100,9 @@ jobs:
 
       - name: Run ordinary local-tail tests over all packages
         run: make test-ordinary-ci-tail
+
+      - name: Run connected-worker tests over all packages
+        run: make test-connected-worker-ci
 
   go-connected:
     name: Go connected-session verification
@@ -130,7 +137,7 @@ jobs:
           cache: "${{ !startsWith(github.event.head_commit.message, 'ci(cold-go): ') }}"
 
       - name: Run connected-session tests over all packages
-        run: make test-connected
+        run: make test-connected-ci
 
   web-browser:
     name: Web browser and accessibility

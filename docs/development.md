@@ -484,16 +484,22 @@ suites. CI adds Playwright's Linux system dependencies through the same target.
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
 It sets an explicit 15-minute per-package test deadline for the growing
 Store/worker conformance suites. The Go verification CI job has a separate
-30-minute ceiling for `make ci-core`, including compilation, ordinary race tests,
-builds, integration and policy checks. A parallel 30-minute `go-connected` job
-runs the complementary `make test-connected` selection over all packages.
+30-minute ceiling for `make ci-core-base`, including compilation, the first three
+ordinary race selections, builds, integration and policy checks. Parallel
+30-minute `go-local` and `go-connected` jobs run `make test-ordinary-ci-tail` and
+`make test-connected-ci` over the complete package roots. A fourth parallel
+30-minute Go job, `go-runtime`, runs the unchanged three-part
+`make test-mcp-offline` gate followed by `make test-connected-worker-ci`.
+It adds no Node setup, database/service or credential. Its theoretical fifteen
+plus fifteen minutes of test ceilings, before setup/compilation, do not prove
+the combined group fits: a new exact-head CI run must qualify the actual budget.
 Local `make test` runs ordinary and connected selections sequentially, even
 under `make -j`. Both retain the race detector and 15-minute per-binary bounds.
-YDB, isolated-security, local-stand and Terraform join both Go jobs. The unchanged offline
+YDB, isolated-security, local-stand and Terraform join all four Go jobs. The unchanged offline
 `attached-worker-security-gate` and complete `serverless-egress-conformance` run
 in the existing 25-minute isolated security job before YDB startup, without
-that job's YDB environment variables. All nine CI jobs remain required; images
-retain all their original dependencies plus `go-connected`. Local/release
+that job's YDB environment variables. All eleven CI jobs are required; images
+retain every prior dependency and directly join `go-runtime`. Local/release
 `make ci` still requires core, connected tests and both offline gates; see
 [the partition contract](testing-best-practices.md#cumulative-package-runtime).
 A package pass does not replace unfinished checks, and exact-head CI must

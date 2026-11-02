@@ -254,6 +254,11 @@ jobs:
           YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
         run: make attached-resource-generation-ydb-gate
 
+      - name: Prove local Web runtime and two-message trigger batch
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make local-runtime-ydb-gate
+
       - name: Capture failed YDB Local state
         if: failure()
         run: |

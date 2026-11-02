@@ -47,6 +47,20 @@ func (f *localCanonicalJoinSQL) QueryContext(ctx context.Context, s string, args
 	for i := range args {
 		values[i] = args[i].Value
 	}
+	if s == ownedSessionMaterialPredecessorSQL {
+		boundary, ok := f.reads[canonicalJoinSQL(sessionMaterialBoundarySQL)]
+		if !ok || !reflect.DeepEqual(values, boundary.args) {
+			return nil, errors.New("canonical join foreign material predecessor key")
+		}
+		f.recordQuery(s, args)
+		var rows [][]driver.Value
+		for i, table := range []string{"session_material_current_v1", "session_material_boundaries_v1"} {
+			if row := f.rows[table]; len(row) != 0 {
+				rows = append(rows, append([]driver.Value{int64(i)}, row...))
+			}
+		}
+		return &compactionSourceRows{rows: rows}, nil
+	}
 	if entry, ok := f.reads[flat]; ok {
 		if !reflect.DeepEqual(values, entry.args) {
 			return nil, fmt.Errorf("canonical join foreign key: %s", flat)
@@ -388,6 +402,120 @@ func TestLocalCanonicalCommitThreeCallbacksRetainOriginalBudget(t *testing.T) {
 		}
 		t.Logf("canonical retries: %d callbacks, %d statements, %d metadata bytes", budget.callbacks, budget.statements, budget.bytes)
 	})
+}
+
+// The installed Source/binder is genuine; the already committed predecessor
+// prefix is canonical DATA, not a fabricated invocation or terminal receipt.
+// Genesis-only coverage misses the additional exact-boundary read on turn B.
+func TestLocalCanonicalCommitNonemptyHistoryWithinOriginalBudget(t *testing.T) {
+	for _, mode := range []string{"commit", "two rollbacks", "committed lost ACK"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				store, f, original, request := newLocalCanonicalJoin(t)
+				var session domain.Session
+				if json.Unmarshal([]byte(f.rows["sessions"][0].(string)), &session) != nil {
+					t.Fatal("original Session")
+				}
+				priorID := domain.SessionEventID("prior-local-canonical")
+				priorBody := []byte(`{"version":1,"text":"prior public message"}`)
+				sum := sha256.Sum256(priorBody)
+				prior := domain.SessionEvent{ID: priorID, TenantID: request.TenantID, SessionID: request.SessionID,
+					Sequence: 1, Kind: domain.SessionEventUserMessage, AuthorUserID: &request.UserID,
+					IdempotencyKey: "prior-local-message", CreatedAt: session.CreatedAt,
+					Payload: domain.BlobRef{TenantID: request.TenantID,
+						Key:  domain.SessionEventObjectPrefix(request.TenantID, request.SessionID, priorID) + "uploads/prior/message.json",
+						Size: int64(len(priorBody)), SHA256: hex.EncodeToString(sum[:])}}
+				prepared, err := sessionmaterial.PrepareV1(prior, priorBody, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(prepared.Release)
+				measure, err := sessioncontext.MeasurePreparedRecordV1(prior, prepared)
+				if err != nil {
+					t.Fatal(err)
+				}
+				genesis, err := sessioncontext.NewSessionMaterialGenesisV1(request.TenantID, request.SessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prefix, err := sessioncontext.FoldSessionMaterialV1(genesis, prior, &measure)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.LastEventSequence = 1
+				ratedFixturePut(t, f.ratedSQLFixture, "sessions", session)
+				f.rows["session_material_current_v1"] = materialRow(t, prefix)
+				f.rows["session_material_boundaries_v1"] = materialRow(t, prefix)
+				key := canonicalJoinSQL(sessionMaterialBoundarySQL)
+				read := f.reads[key]
+				read.args = []driver.Value{string(request.TenantID), string(request.SessionID), int64(1)}
+				f.reads[key] = read
+				// Lost-ACK recovery reads the event actually written at sequence2,
+				// not this fixture constructor's original genesis-case sequence1.
+				for eventKey, eventRead := range f.reads {
+					if eventRead.table == "session_events" {
+						eventRead.args = []driver.Value{string(request.TenantID), string(request.SessionID), int64(2)}
+						f.reads[eventKey] = eventRead
+					}
+				}
+				heads, audits := cloneLocalInstallationRows(original.sql.fundingHeads), cloneLocalInstallationRows(original.sql.fundingAudits)
+				wantCallbacks, wantStatements := 1, 32
+				var committed map[string][]driver.Value
+				var committedWrites int
+				switch mode {
+				case "two rollbacks":
+					f.commitModes = []string{"rollback", "rollback"}
+					wantCallbacks, wantStatements = 3, 96
+				case "committed lost ACK":
+					f.commitModes = []string{"ambiguous"}
+					wantCallbacks = 2
+					f.afterCommit = func() {
+						if committed == nil {
+							committed = cloneLocalInstallationRows(f.rows)
+							committedWrites = f.writes
+							if len(f.statements) != 32 {
+								t.Fatalf("first nonempty callback statements=%d want=32", len(f.statements))
+							}
+						}
+					}
+				}
+				ctx, cancel := ownedAuthorityCallContext(t.Context())
+				defer cancel()
+				got, err := store.CommitCanonicalUserEvent(ctx, request)
+				budget := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
+				if err != nil || got.Created != (mode != "committed lost ACK") || got.Sequence != 2 || budget.callbacks != wantCallbacks || budget.statements > 96 || budget.callbackStatements > 32 || budget.failed {
+					t.Fatalf("nonempty canonical commit: created=%t sequence=%d err=%v statements=%d budget=%d failed=%t", got.Created, got.Sequence, err, len(f.statements), budget.callbackStatements, budget.failed)
+				}
+				if mode == "committed lost ACK" {
+					if committed == nil || f.writes != committedWrites || !reflect.DeepEqual(committed, f.rows) {
+						t.Fatal("nonempty lost ACK rewrote committed graph")
+					}
+				} else {
+					if len(f.statements) != wantStatements || budget.statements != wantStatements || budget.callbackStatements != 32 {
+						t.Fatalf("nonempty original budget: statements=%d total=%d last=%d want=%d/32", len(f.statements), budget.statements, budget.callbackStatements, wantStatements)
+					}
+					for _, query := range []string{ownedAdmissionPrincipalSQL, ownedAdmissionSourcesJoinSQL, ownedSessionMaterialPredecessorSQL} {
+						count := 0
+						for _, statement := range f.statements {
+							if statement == query {
+								count++
+							}
+						}
+						if count != wantCallbacks {
+							t.Fatalf("fresh nonempty callback joins: count=%d want=%d query=%s", count, wantCallbacks, query)
+						}
+					}
+				}
+				folded, err := sessioncontext.DecodeSessionMaterialPrefixV1([]byte(f.rows["session_material_current_v1"][0].(string)))
+				if err != nil || folded.ThroughSequence != 2 || folded.UserMessageCount != 2 || folded.Coverage != sessioncontext.SessionMaterialCompleteV1 || !reflect.DeepEqual(f.rows["session_material_current_v1"], f.rows["session_material_boundaries_v1"]) {
+					t.Fatal("nonempty fold lost exact predecessor", err)
+				}
+				if !reflect.DeepEqual(heads, original.sql.fundingHeads) || !reflect.DeepEqual(audits, original.sql.fundingAudits) || len(f.rows["frontend_ingress_idempotency"]) != 5 {
+					t.Fatal("canonical commit changed original funding or omitted final idempotency")
+				}
+			})
+		})
+	}
 }
 
 func TestLocalCanonicalCommitExactSecondDeliveryIsReadOnly(t *testing.T) {

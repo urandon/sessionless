@@ -22,6 +22,103 @@ const sessionMaterialBoundarySQL = `SELECT SUBSTRING(CAST(record AS String),0,81
  SUBSTRING(CAST(last_event_id AS String),0,161), SUBSTRING(CAST(prefix_digest AS String),0,65)
  FROM session_material_boundaries_v1 WHERE tenant_id=$1 AND session_id=$2 AND sequence=$3`
 
+// Two independent exact primary keys in ONE statement. UNION ALL retains an
+// orphan boundary (unlike a current-rooted LEFT JOIN). Matching aliases and
+// the outer projection preserve scan order under YQL's by-name UNION:
+// https://ydb.tech/docs/en/yql/reference/syntax/select/union
+// Tags express independent absence, never permission or a skipped check.
+const ownedSessionMaterialPredecessorSQL = `SELECT prefix_kind, prefix_record, prefix_version,
+ prefix_through, prefix_tenant, prefix_session, prefix_last, prefix_digest FROM (
+ SELECT CAST(0 AS Uint64) AS prefix_kind,
+ SUBSTRING(CAST(record AS String),0,8193) AS prefix_record, version AS prefix_version,
+ through_sequence AS prefix_through, SUBSTRING(CAST(tenant_id AS String),0,161) AS prefix_tenant,
+ SUBSTRING(CAST(session_id AS String),0,161) AS prefix_session,
+ SUBSTRING(CAST(last_event_id AS String),0,161) AS prefix_last,
+ SUBSTRING(CAST(prefix_digest AS String),0,65) AS prefix_digest
+ FROM session_material_current_v1 WHERE tenant_id=$1 AND session_id=$2
+ UNION ALL
+ SELECT CAST(1 AS Uint64) AS prefix_kind,
+ SUBSTRING(CAST(record AS String),0,8193) AS prefix_record, version AS prefix_version,
+ through_sequence AS prefix_through, SUBSTRING(CAST(tenant_id AS String),0,161) AS prefix_tenant,
+ SUBSTRING(CAST(session_id AS String),0,161) AS prefix_session,
+ SUBSTRING(CAST(last_event_id AS String),0,161) AS prefix_last,
+ SUBSTRING(CAST(prefix_digest AS String),0,65) AS prefix_digest
+ FROM session_material_boundaries_v1 WHERE tenant_id=$1 AND session_id=$2 AND sequence=$3
+ )`
+
+type sessionMaterialPrefixRow struct {
+	record, tenant, session, last, digest string
+	version, through                      uint64
+}
+
+func (r *sessionMaterialPrefixRow) destinations() []any {
+	return []any{&r.record, &r.version, &r.through, &r.tenant, &r.session, &r.last, &r.digest}
+}
+
+// Shared physical/canonical decoder; batching cannot create a weaker parser.
+func (r sessionMaterialPrefixRow) decode(tenant domain.TenantID, session domain.SessionID, sequence uint64) (sessioncontext.SessionMaterialPrefixV1, error) {
+	if len(r.record) > sessioncontext.MaxSessionMaterialPrefixBytesV1 || len(r.tenant) > 160 || len(r.session) > 160 || len(r.last) > 160 || len(r.digest) != 64 ||
+		r.version != 1 || r.through != sequence || r.tenant != string(tenant) || r.session != string(session) {
+		return sessioncontext.SessionMaterialPrefixV1{}, errSessionMaterialSource
+	}
+	prefix, err := sessioncontext.DecodeSessionMaterialPrefixV1([]byte(r.record))
+	if err != nil || prefix.Version != uint32(r.version) || prefix.ThroughSequence != r.through ||
+		prefix.TenantID != tenant || prefix.SessionID != session || string(prefix.LastEventID) != r.last || prefix.PrefixDigest != r.digest {
+		return sessioncontext.SessionMaterialPrefixV1{}, errSessionMaterialSource
+	}
+	return prefix, nil
+}
+
+func readOwnedSessionMaterialPredecessor(ctx context.Context, q *ownedAuthorityQuery, tenant domain.TenantID, session domain.SessionID, sequence uint64) (sessioncontext.SessionMaterialPrefixV1, error) {
+	deny := func() (sessioncontext.SessionMaterialPrefixV1, error) {
+		_ = q.budget.deny()
+		return sessioncontext.SessionMaterialPrefixV1{}, errSessionMaterialSource
+	}
+	if sequence == 0 {
+		return deny()
+	}
+	rows, err := q.QueryContext(ctx, ownedSessionMaterialPredecessorSQL, tenant, session, sequence)
+	if err != nil {
+		return sessioncontext.SessionMaterialPrefixV1{}, err
+	}
+	defer rows.Close()
+	var values [2]sessionMaterialPrefixRow
+	var seen [2]bool
+	for rows.Next() {
+		var kind uint64
+		var row sessionMaterialPrefixRow
+		dest := append([]any{&kind}, row.destinations()...)
+		n, err := scanOwnedCurrentRow(rows, dest...)
+		// Charge tags/scalars/detection bytes before any canonical JSON decode.
+		// Exact PKs permit at most two rows; duplicate/unknown tags fail closed.
+		if q.budget.materialized(q.callback, n) != nil || err != nil || kind > 1 || seen[kind] {
+			return deny()
+		}
+		seen[kind], values[kind] = true, row
+	}
+	if err := rows.Err(); err != nil {
+		return sessioncontext.SessionMaterialPrefixV1{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return sessioncontext.SessionMaterialPrefixV1{}, err
+	}
+	if seen == [2]bool{} {
+		return sessioncontext.NewUnknownSessionMaterialPrefixV1(tenant, session, sequence)
+	}
+	if seen != [2]bool{true, true} {
+		return deny()
+	}
+	current, err := values[0].decode(tenant, session, sequence)
+	if err != nil {
+		return deny()
+	}
+	boundary, err := values[1].decode(tenant, session, sequence)
+	if err != nil || !sessioncontext.EqualSessionMaterialPrefixV1(current, boundary) {
+		return deny()
+	}
+	return current, nil
+}
+
 // The byte charge is made BEFORE parsing, including oversize detection bytes
 // and all projected scalars. Writers do not inherit the readonly choice budget;
 // An owned canonical callback supplies its ORIGINAL budget even when a generic
@@ -35,8 +132,7 @@ func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement 
 		}
 		return sessioncontext.SessionMaterialPrefixV1{}, false, errSessionMaterialSource
 	}
-	var record, rowTenant, rowSession, lastID, digest string
-	var version, through uint64
+	var row sessionMaterialPrefixRow
 	args := []any{tenant, session}
 	switch statement {
 	case sessionMaterialCurrentSQL:
@@ -47,9 +143,9 @@ func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement 
 	}
 	var err error
 	if q, ok := query.(*ownedAuthorityQuery); ok && charge == nil {
-		err = q.scanMetadata(ctx, statement, args, &record, &version, &through, &rowTenant, &rowSession, &lastID, &digest)
+		err = q.scanMetadata(ctx, statement, args, row.destinations()...)
 	} else {
-		err = query.QueryRowContext(ctx, statement, args...).Scan(&record, &version, &through, &rowTenant, &rowSession, &lastID, &digest)
+		err = query.QueryRowContext(ctx, statement, args...).Scan(row.destinations()...)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessioncontext.SessionMaterialPrefixV1{}, false, nil
@@ -58,17 +154,12 @@ func readSessionMaterialPrefixV1(ctx context.Context, query rowQuery, statement 
 		return sessioncontext.SessionMaterialPrefixV1{}, false, err
 	}
 	if charge != nil {
-		if err := charge(int64(len(record) + len(rowTenant) + len(rowSession) + len(lastID) + len(digest) + 16)); err != nil {
+		if err := charge(int64(len(row.record) + len(row.tenant) + len(row.session) + len(row.last) + len(row.digest) + 16)); err != nil {
 			return sessioncontext.SessionMaterialPrefixV1{}, false, err
 		}
 	}
-	if len(record) > sessioncontext.MaxSessionMaterialPrefixBytesV1 || len(rowTenant) > 160 || len(rowSession) > 160 || len(lastID) > 160 || len(digest) != 64 ||
-		version != 1 || through != sequence || rowTenant != string(tenant) || rowSession != string(session) {
-		return badSource()
-	}
-	prefix, err := sessioncontext.DecodeSessionMaterialPrefixV1([]byte(record))
-	if err != nil || prefix.Version != uint32(version) || prefix.ThroughSequence != through ||
-		prefix.TenantID != tenant || prefix.SessionID != session || string(prefix.LastEventID) != lastID || prefix.PrefixDigest != digest {
+	prefix, err := row.decode(tenant, session, sequence)
+	if err != nil {
 		return badSource()
 	}
 	return prefix, true, nil
@@ -84,6 +175,9 @@ func loadSessionMaterialPredecessorTx(ctx context.Context, tx *stateTx, session 
 			return sessioncontext.SessionMaterialPrefixV1{}, errSessionMaterialSource
 		}
 		return prefix.Clone(), nil
+	}
+	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok && sequence > 0 {
+		return readOwnedSessionMaterialPredecessor(ctx, q, tx.tenantID, session, sequence)
 	}
 	current, found, err := readSessionMaterialPrefixV1(ctx, tx.sqlTx, sessionMaterialCurrentSQL, tx.tenantID, session, sequence, nil)
 	if err != nil {

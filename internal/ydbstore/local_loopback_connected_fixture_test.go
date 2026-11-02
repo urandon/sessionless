@@ -451,6 +451,22 @@ func (f *LocalLoopbackConnectedFixture) RegisterAndReserve(t *testing.T, proof p
 	return registered, r.Capability.Clone()
 }
 
+// AttemptSocketPublication invokes the SAME concrete Store configured with the
+// actual keeper. It exposes no verifier/approval injection to external tests.
+func (f *LocalLoopbackConnectedFixture) AttemptSocketPublication(t *testing.T, proof ports.OwnedProxyPublicationV2) error {
+	t.Helper()
+	f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	_, _, err := f.store.PublishOwnedProxy(f.Context, f.parent.request, proof)
+	return err
+}
+
+func (f *LocalLoopbackConnectedFixture) AssertNoSocketPublicationOrOperationWrites(t *testing.T) {
+	t.Helper()
+	if f.parent.sql.inserts != 1 || f.parent.sql.burnUpdates != 1 || f.sql.f.writes != 1 || f.sql.writes != 0 || f.sql.operationWrites != 0 || f.sql.callWrites != 0 {
+		t.Fatalf("denied socket carrier changed original writes: parent=%d burn=%d allocation=%d proxy=%d operation=%d call=%d", f.parent.sql.inserts, f.parent.sql.burnUpdates, f.sql.f.writes, f.sql.writes, f.sql.operationWrites, f.sql.callWrites)
+	}
+}
+
 // Select a larger normalized DATA slot before freezing the whole operation for
 // preflight/publication. Existing 512-byte connected fixtures remain unchanged.
 func (f *LocalLoopbackConnectedFixture) UseNormalizedModelResultBound(t *testing.T) {

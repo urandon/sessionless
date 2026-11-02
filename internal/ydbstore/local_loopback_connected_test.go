@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localloopback"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
@@ -25,16 +28,17 @@ type localLoopbackPeerResult struct {
 	err         error
 }
 type localLoopbackPeer struct {
-	listener *net.TCPListener
-	mu       sync.Mutex
-	conn     *net.TCPConn
-	closed   bool
-	accepted chan struct{}
-	result   chan localLoopbackPeerResult
-	done     chan struct{}
-	response []byte
-	success  bool
-	partial  bool
+	listener           *net.TCPListener
+	mu                 sync.Mutex
+	conn               *net.TCPConn
+	closed             bool
+	accepted           chan struct{}
+	result             chan localLoopbackPeerResult
+	done               chan struct{}
+	response           []byte
+	success            bool
+	partial            bool
+	requestPrefixBytes int
 }
 
 // One owned numeric peer, no external model/server. Denial mode drains to EOF,
@@ -42,18 +46,19 @@ type localLoopbackPeer struct {
 // not a scheduler sample or a sleep claiming absence before a future write.
 func newLocalLoopbackPeer(t *testing.T, success bool, partial ...bool) *localLoopbackPeer {
 	t.Helper()
+	if len(partial) > 1 {
+		t.Fatal("owned peer permits one partial-response mode")
+	}
+	return newLocalLoopbackPeerMode(t, success, len(partial) == 1 && partial[0], 0)
+}
+
+func newLocalLoopbackPeerMode(t *testing.T, success, partial bool, requestPrefixBytes int) *localLoopbackPeer {
+	t.Helper()
 	listener, e := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	if e != nil {
 		t.Fatal(e)
 	}
-	p := &localLoopbackPeer{listener: listener, accepted: make(chan struct{}), result: make(chan localLoopbackPeerResult, 1), done: make(chan struct{}), success: success, response: []byte(`{"id":"owned-test-response","choices":[]}`)}
-	if len(partial) > 1 {
-		_ = listener.Close()
-		t.Fatal("owned peer permits one partial-response mode")
-	}
-	if len(partial) == 1 {
-		p.partial = partial[0]
-	}
+	p := &localLoopbackPeer{listener: listener, accepted: make(chan struct{}), result: make(chan localLoopbackPeerResult, 1), done: make(chan struct{}), success: success, partial: partial, requestPrefixBytes: requestPrefixBytes, response: []byte(`{"id":"owned-test-response","choices":[]}`)}
 	t.Cleanup(func() {
 		p.mu.Lock()
 		p.closed = true
@@ -111,6 +116,18 @@ func (p *localLoopbackPeer) serve() {
 		return
 	}
 	close(p.accepted)
+	if p.requestPrefixBytes > 0 {
+		prefix := make([]byte, p.requestPrefixBytes)
+		_, e := io.ReadFull(c, prefix)
+		if e == nil {
+			e = c.SetLinger(0)
+		}
+		if closeErr := c.Close(); e == nil {
+			e = closeErr
+		}
+		p.result <- localLoopbackPeerResult{body: prefix, err: e}
+		return
+	}
 	if !p.success {
 		raw, e := io.ReadAll(io.LimitReader(c, (1<<20)+(16<<10)+1))
 		p.result <- localLoopbackPeerResult{body: raw, err: e}
@@ -304,6 +321,13 @@ type localLoopbackReady struct {
 // this test helper supplies neither a dialer nor approval/capability callbacks.
 func prepareLocalLoopbackConnected(t *testing.T, p *localLoopbackPeer) localLoopbackReady {
 	t.Helper()
+	r := prepareUnregisteredLocalLoopbackConnected(t, p)
+	r.registered, r.capability = r.fixture.RegisterAndReserve(t, r.proof)
+	return r
+}
+
+func prepareUnregisteredLocalLoopbackConnected(t *testing.T, p *localLoopbackPeer) localLoopbackReady {
+	t.Helper()
 	f := ydbstore.NewLocalLoopbackConnectedFixture(t, p.endpoint())
 	p.setResponse(f.Response(t))
 	k, e := localloopback.NewKeeperV1(f.Source, f.OperationIssuer, f.Bootstrap)
@@ -330,8 +354,7 @@ func prepareLocalLoopbackConnected(t *testing.T, p *localLoopbackPeer) localLoop
 	if e != nil {
 		t.Fatal(e)
 	}
-	registered, capability := f.RegisterAndReserve(t, proof)
-	return localLoopbackReady{f, k, c, proof, registered, capability}
+	return localLoopbackReady{fixture: f, keeper: k, connection: c, proof: proof}
 }
 func (r localLoopbackReady) assertHistoricalOnly(t *testing.T) {
 	t.Helper()
@@ -422,4 +445,193 @@ func TestLocalLoopbackConnectedStorePartialReplyIsUnknownNoRetry(t *testing.T) {
 	r.assertHistoricalOnly(t)
 	r.fixture.AssertReplayNoNewCapability(t)
 	r.fixture.AssertOriginalCapabilityConsumed(t, r.capability)
+}
+
+// These carriers originate from an ACTUAL retained socket and are submitted to
+// the original Store with its concrete keeper installed. Unlike the separate
+// DATA-only Store matrix, no scripted producer verifier assents to substitutions.
+// Mutations deliberately do not retain the original MAC: callers cannot reseal
+// another source/claim/sequence/tag as an observation by copying its bytes.
+func TestLocalLoopbackConnectedActualProducerCarrierDenialsZeroSend(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ports.OwnedProxyPublicationV2)
+	}{
+		{"forged_authenticator", func(v *ports.OwnedProxyPublicationV2) { v.Authenticator[0] ^= 1 }},
+		{"source", func(v *ports.OwnedProxyPublicationV2) { v.SourceDigest = strings.Repeat("b", 64) }},
+		{"allocation", func(v *ports.OwnedProxyPublicationV2) {
+			v.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV2(strings.Repeat("b", 64))
+		}},
+		{"fence", func(v *ports.OwnedProxyPublicationV2) { v.FenceToken++ }},
+		{"claim", func(v *ports.OwnedProxyPublicationV2) { v.PhysicalInvocationClaimID = "foreign-claim" }},
+		{"sequence", func(v *ports.OwnedProxyPublicationV2) { v.OperationSequence++ }},
+		{"wrong_tag", func(v *ports.OwnedProxyPublicationV2) { v.TransportKind = domain.RegisteredProxyTransportPinnedHTTPSV2 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newLocalLoopbackPeer(t, false)
+			r := prepareUnregisteredLocalLoopbackConnected(t, p)
+			proof := r.proof.Clone()
+			tc.mutate(&proof)
+			if err := r.fixture.AttemptSocketPublication(t, proof); !errors.Is(err, domain.ErrMembershipDenied) {
+				t.Fatalf("actual socket publication %s: got %v, want membership denial", tc.name, err)
+			}
+			r.fixture.AssertNoSocketPublicationOrOperationWrites(t)
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			if r.keeper.VerifyOwnedProxyPublication(r.proof, at) != nil || r.keeper.VerifyOwnedProxyPublicationCurrent(r.proof, at) != nil {
+				t.Fatal("substitution control lost the original authentic current socket")
+			}
+			if err := r.connection.Close(); err != nil {
+				t.Fatalf("close original preflight after rejected publication: %v", err)
+			}
+			peer := p.waitResult(t)
+			if peer.err != nil || len(peer.body) != 0 {
+				t.Fatalf("rejected actual producer %s emitted HTTP before EOF: bytes=%d err=%v", tc.name, len(peer.body), peer.err)
+			}
+			if again, err := r.keeper.Preflight(r.fixture.Context, r.fixture.Allocation, r.fixture.ExecutionSource, r.fixture.Operation, r.fixture.Payload()); err == nil || again != nil {
+				if again != nil {
+					_ = again.Close()
+				}
+				t.Fatal("rejected publication cleanup allowed original sequence to redial")
+			}
+		})
+	}
+}
+
+// The registered carrier and capability are genuinely published/reserved first.
+// A changed retained carrier burns this socket's first Invoke without consuming
+// the issuer token, opening HTTP, or making its unchanged original replayable.
+func TestLocalLoopbackConnectedRegisteredCarrierDenialsZeroSend(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*domain.RegisteredProxyAttestationV2)
+	}{
+		{"source", func(v *domain.RegisteredProxyAttestationV2) { v.SourceDigest = strings.Repeat("b", 64) }},
+		{"allocation_generation", func(v *domain.RegisteredProxyAttestationV2) { v.AllocationGeneration++ }},
+		{"claim", func(v *domain.RegisteredProxyAttestationV2) { v.PhysicalInvocationClaimID = "foreign-claim" }},
+		{"sequence", func(v *domain.RegisteredProxyAttestationV2) { v.OperationSequence++ }},
+		{"literal_peer", func(v *domain.RegisteredProxyAttestationV2) {
+			v.LocalLoopback.LiteralPeerDigest = strings.Repeat("b", 64)
+		}},
+		{"wrong_tag", func(v *domain.RegisteredProxyAttestationV2) {
+			v.TransportKind = domain.RegisteredProxyTransportPinnedHTTPSV2
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newLocalLoopbackPeer(t, false)
+			r := prepareLocalLoopbackConnected(t, p)
+			changed := r.registered.Clone()
+			tc.mutate(&changed)
+			result, err := r.connection.Invoke(r.fixture.Context, changed, r.capability, r.fixture.Payload())
+			if !errors.Is(err, domain.ErrMembershipDenied) || result.SendAttempted || result.RequestBytes != 0 || len(result.Body) != 0 {
+				t.Fatalf("changed registered %s escaped before-send: err=%v attempted=%t bytes=%d", tc.name, err, result.SendAttempted, result.RequestBytes)
+			}
+			peer := p.waitResult(t)
+			if peer.err != nil || len(peer.body) != 0 {
+				t.Fatalf("changed registered %s emitted HTTP before EOF: bytes=%d err=%v", tc.name, len(peer.body), peer.err)
+			}
+			r.assertHistoricalOnly(t)
+			r.fixture.AssertReplayNoNewCapability(t)
+			r.fixture.AssertOriginalCapabilityUntouchedThenBurn(t, r.capability)
+		})
+	}
+}
+
+func TestLocalLoopbackConnectedCopiedLiveOwnersCannotUseRetainedSocket(t *testing.T) {
+	p := newLocalLoopbackPeer(t, false)
+	r := prepareLocalLoopbackConnected(t, p)
+	// Mirror the existing terminal identity regression: reflection creates a
+	// deliberate invalid value without a static mutex copy. Only fail-fast self
+	// identity methods touch copies; no copied lock/connection is operated on.
+	copiedKeeper := new(localloopback.KeeperV1)
+	reflect.ValueOf(copiedKeeper).Elem().Set(reflect.ValueOf(r.keeper).Elem())
+	copiedConnection := new(localloopback.ConnectionV1)
+	reflect.ValueOf(copiedConnection).Elem().Set(reflect.ValueOf(r.connection).Elem())
+	if err := copiedKeeper.VerifyOwnedProxyPublication(r.proof, time.Now().UTC().Truncate(time.Microsecond)); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("copied genuine producer authenticated original socket: %v", err)
+	}
+	result, err := copiedConnection.Invoke(r.fixture.Context, r.registered, r.capability, r.fixture.Payload())
+	if !errors.Is(err, domain.ErrMembershipDenied) || result.SendAttempted || result.RequestBytes != 0 || len(result.Body) != 0 {
+		t.Fatalf("copied genuine connection used original socket: err=%v attempted=%t bytes=%d", err, result.SendAttempted, result.RequestBytes)
+	}
+	if copiedKeeper.Close() == nil || copiedConnection.Close() == nil {
+		t.Fatal("copied genuine owner closed original resources")
+	}
+	if _, err := r.connection.Publication(); err != nil {
+		t.Fatalf("copied owner damaged original retained socket: %v", err)
+	}
+	if err := r.connection.Close(); err != nil {
+		t.Fatalf("join genuine socket after copied-owner denials: %v", err)
+	}
+	peer := p.waitResult(t)
+	if peer.err != nil || len(peer.body) != 0 {
+		t.Fatalf("copied owners emitted HTTP before original EOF: bytes=%d err=%v", len(peer.body), peer.err)
+	}
+	r.assertHistoricalOnly(t)
+	r.fixture.AssertReplayNoNewCapability(t)
+	r.fixture.AssertOriginalCapabilityUntouchedThenBurn(t, r.capability)
+}
+
+// The peer observes an exact original request PREFIX and resets without a
+// response. This is NOT deterministic short-Write coverage: the client's kernel
+// may already have accepted its entire single Write. Peer-observed bytes and
+// client Write's returned count are deliberately not claimed to be equal.
+func TestLocalLoopbackConnectedRequestPrefixResetUnknownNoReplay(t *testing.T) {
+	const prefix = "POST /v1/chat/completions HTTP/1.1\r\n"
+	t.Run("original_transport_capability", func(t *testing.T) {
+		p := newLocalLoopbackPeerMode(t, false, false, len(prefix))
+		r := prepareLocalLoopbackConnected(t, p)
+		result, err := r.connection.Invoke(r.fixture.Context, r.registered, r.capability, r.fixture.Payload())
+		if !errors.Is(err, domain.ErrMembershipDenied) || !result.SendAttempted || len(result.Body) != 0 || result.ResponseBytes != 0 {
+			t.Fatalf("prefix-reset transport fabricated a response or lost possible effect: err=%v attempted=%t writeBytes=%d responseBytes=%d", err, result.SendAttempted, result.RequestBytes, result.ResponseBytes)
+		}
+		peer := p.waitResult(t)
+		if peer.err != nil || string(peer.body) != prefix || peer.request != nil || len(peer.extra) != 0 {
+			t.Fatalf("reset peer did not observe exactly the original incomplete request prefix: bytes=%d err=%v", len(peer.body), peer.err)
+		}
+		r.fixture.AssertOriginalCapabilityConsumed(t, r.capability)
+		r.assertHistoricalOnly(t)
+		r.fixture.AssertReplayNoNewCapability(t)
+		if conn, err := r.keeper.Preflight(r.fixture.Context, r.fixture.Allocation, r.fixture.ExecutionSource, r.fixture.Operation, r.fixture.Payload()); err == nil || conn != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			t.Fatal("prefix-reset operation reopened its original connection sequence")
+		}
+	})
+	t.Run("original_session_durable_unknown", func(t *testing.T) {
+		p := newLocalLoopbackPeerMode(t, false, false, len(prefix))
+		session, seed, _ := newFactorySession(t, p)
+		parent, err := session.Start(t.Context(), seed.Request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := session.WriteModelRequest(t.Context(), seed.Profile.Limits, sessionRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		op := firstSessionOperation(t, seed, parent, ref)
+		result, err := session.InvokeFirstModel(t.Context(), op, seed.Profile.Limits, sessionRequest())
+		if !errors.Is(err, providerloopsession.ErrIncomplete) || !result.SendAttempted {
+			t.Fatalf("prefix-reset session did not stop after possible original effect: err=%v attempted=%t", err, result.SendAttempted)
+		}
+		peer := p.waitResult(t)
+		if peer.err != nil || string(peer.body) != prefix {
+			t.Fatalf("session reset peer observed another request prefix: bytes=%d err=%v", len(peer.body), peer.err)
+		}
+		observed := seed.PersistedObservation(t)
+		if seed.Operate.VerifyAttemptOperationObservation(result.Observation) != nil || !reflect.DeepEqual(result.Observation.Observation, observed) || observed.Outcome != domain.AttemptOperationAcceptedOutcomeUnknownV1 || observed.Reason != domain.AttemptOperationReasonTransportUnknownV1 || observed.ResponseRef != "" || observed.Usage.State != domain.AttemptOperationUsageUnknownV1 {
+			t.Fatal("prefix-reset result was not the original authenticated durable unknown observation")
+		}
+		before := seed.Stats()
+		for _, sequence := range []uint64{1, 2} {
+			op.Sequence = sequence
+			again, err := session.InvokeFirstModel(t.Context(), op, seed.Profile.Limits, sessionRequest())
+			if err == nil || again.SendAttempted || seed.Stats() != before {
+				t.Fatalf("prefix-reset session retried/continued sequence %d: err=%v attempted=%t", sequence, err, again.SendAttempted)
+			}
+		}
+		if err := session.Close(); err != nil {
+			t.Fatalf("join original prefix-reset session: %v", err)
+		}
+	})
 }

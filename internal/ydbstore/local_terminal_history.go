@@ -25,12 +25,12 @@ const localTerminalHistorySQL = `SELECT
  SUBSTRING(CAST(f.terminal_status AS String),0,33),SUBSTRING(CAST(f.content_digest AS String),0,74),
  SUBSTRING(CAST(m.payload AS String),0,32769),
  SUBSTRING(p.operation_accounting_record,0,32769),SUBSTRING(CAST(p.operation_accounting_digest AS String),0,65)
- FROM attempt_effect_reservations AS p
+ FROM (SELECT $1 AS tenant_id,$2 AS attempt_id,$3 AS kind,$4 AS artifact_manifest_id) AS k
+ INNER JOIN attempt_effect_reservations AS p ON p.tenant_id=k.tenant_id AND p.attempt_id=k.attempt_id AND p.kind=k.kind
  INNER JOIN attempt_execution_admissions_v1 AS a ON a.tenant_id=p.tenant_id AND a.attempt_id=p.attempt_id
  INNER JOIN substrate_execution_evidence AS e ON e.tenant_id=p.tenant_id AND e.attempt_id=p.attempt_id
  INNER JOIN run_finalizations AS f ON f.tenant_id=p.tenant_id AND f.run_id=p.run_id
- INNER JOIN artifact_manifests AS m ON m.tenant_id=p.tenant_id AND m.artifact_manifest_id=$4
- WHERE p.tenant_id=$1 AND p.attempt_id=$2 AND p.kind=$3`
+ INNER JOIN artifact_manifests AS m ON m.tenant_id=k.tenant_id AND m.artifact_manifest_id=k.artifact_manifest_id`
 
 type localTerminalHistorySnapshot struct {
 	Run        domain.Run

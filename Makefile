@@ -237,7 +237,8 @@ test-mcp-offline: prepare
 	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession
 	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError' ./internal/ydbstore
 	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure' ./internal/ydbstore
-	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure)' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure' ./internal/ydbstore
+	go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)' ./internal/ydbstore
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

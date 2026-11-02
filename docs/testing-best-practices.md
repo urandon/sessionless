@@ -198,17 +198,19 @@ source-policy test checks this disjoint union against both adversarial future
 names and the actual repository test-name corpus; only fresh full executions
 and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
-`make test-mcp-offline`: three sequential uncached race/shuffle executions for the
+`make test-mcp-offline`: four sequential uncached race/shuffle executions for the
 explicitly tagged synthetic MCP transport fixture. The first selects the complete
 `^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError` family; the second
 selects the complete `^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure`
-family. The third selects the original complete
-`^TestLocalSessionCredentialedMCPOffline` prefix excluding both families.
+family. The third selects the complete
+`^TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure` family. The fourth
+selects the original complete `^TestLocalSessionCredentialedMCPOffline` prefix
+excluding all three families.
 They are disjoint and include every current and future original-prefix member
 exactly once. Each binary keeps the five-minute bound, race detector, count1,
 shuffle190351, package, tag and overlay. The test-execution budgets now sum to
-fifteen minutes, in addition to compilation and three binary initializations;
-the previous two-execution ten-minute aggregate ceiling is not preserved. No scenario,
+twenty minutes, in addition to compilation and four binary initializations;
+the previous three-execution fifteen-minute aggregate ceiling is not preserved. No scenario,
 subtest or assertion is shortened. Separate recipe
 lines stop at the first failure, including under `make -j`. The source-policy
 test checks the exact commands, real corpus, future names and guard mutations.
@@ -262,15 +264,15 @@ binary bound. There is one more binary/package initialization, not shared
 process state or test-order dependence. The source-policy test checks both
 local and CI unions against adversarial names and the actual corpus. All four
 Go verification jobs keep a 30-minute bound; the offline
-gate keeps its five-minute per-binary bound across all three sequential executions,
+gate keeps its five-minute per-binary bound across all four sequential executions,
 race/shuffle/uncached flags and
 additive-only overlay guards. Moving these unchanged commands does not
 change test coverage or widen any job bound. Adding the eleventh job adds a
 separate runner/setup and another 30-minute job allowance; it does not preserve
 the previous aggregate workflow resource ceiling. The runtime group's theoretical
-test ceilings are fifteen minutes for MCP plus fifteen minutes for Worker,
-before compilation, package initialization and action setup. Those ceilings
-alone therefore do not prove that the combined job fits its 30-minute limit.
+test ceilings are twenty minutes for MCP plus fifteen minutes for Worker,
+already exceeding the 30-minute job limit before compilation, package
+initialization and action setup. Those ceilings therefore do not prove fit.
 Actual complete execution and a new exact-head eleven-job CI run must establish
 that fit, including cold Go cache qualification when explicitly requested.
 The source-policy test requires exactly one CI

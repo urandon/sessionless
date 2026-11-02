@@ -61,7 +61,8 @@ const ordinaryTail = [
 const offlineMcp = [
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError' ./internal/ydbstore",
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure' ./internal/ydbstore",
-  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure)' ./internal/ydbstore",
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure' ./internal/ydbstore",
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)' ./internal/ydbstore",
 ];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
 const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
@@ -486,10 +487,11 @@ function offlineMcpSelections(name) {
   return [
     /^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError/.test(name),
     /^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure/.test(name),
-    /^TestLocalSessionCredentialedMCPOffline/.test(name) && !/^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure)/.test(name),
+    /^TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure/.test(name),
+    /^TestLocalSessionCredentialedMCPOffline/.test(name) && !/^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)/.test(name),
   ];
 }
-test('offline MCP selectors cover current and future prefix members exactly once', () => {
+test('offline MCP selectors cover current and future prefix members exactly once', t => {
   for (const name of [
     'TestLocalSessionCredentialedMCPOffline',
     'TestLocalSessionCredentialedMCPOfflineWeb',
@@ -500,6 +502,12 @@ test('offline MCP selectors cover current and future prefix members exactly once
     'TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure',
     'TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailureFuture',
     'TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailur',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailureFuture',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailureish',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailureKnownServiceError',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailur',
+    'TestLocalSessionCredentialedMCPOfflineWebUnknownMCP',
     'TestLocalSessionCredentialedMCPOfflineWebFutureFamily',
     'TestLocalSessionCredentialedMCPOfflineWebish',
     'TestLocalSessionCredentialedMCPOfflineCanonicalTerminalComplete',
@@ -511,7 +519,16 @@ test('offline MCP selectors cover current and future prefix members exactly once
     assert.equal(offlineMcpSelections(name).filter(Boolean).length,
       Number(/^TestLocalSessionCredentialedMCPOffline/.test(name)), name);
   }
-  const counts = [0, 0, 0];
+  for (const [suffix, partition] of [
+    ['WebUnknownMCPFailure', 2], ['WebUnknownMCPFailureFuture', 2],
+    ['WebUnknownMCPFailureish', 2], ['WebUnknownMCPFailureKnownServiceError', 2],
+    ['WebUnknownMCPFailur', 3], ['WebUnknownMCP', 3], ['WebFutureFamily', 3],
+    ['WebKnownServiceErrorUnknownMCPFailure', 0], ['WebModelAfterMCPFailureUnknownMCPFailure', 1],
+  ]) {
+    const selected = offlineMcpSelections('TestLocalSessionCredentialedMCPOffline' + suffix);
+    assert.deepEqual(selected, [0, 1, 2, 3].map(index => index === partition), `${suffix}: exact family, not just union`);
+  }
+  const counts = [0, 0, 0, 0];
   for (const entry of readdirSync(new URL('../internal/ydbstore/', import.meta.url))) {
     if (!entry.endsWith('_test.go')) continue;
     for (const match of read(`internal/ydbstore/${entry}`).matchAll(/^func ((?:Test|Fuzz)\w+|Example\w*)\(/gm)) {
@@ -523,6 +540,7 @@ test('offline MCP selectors cover current and future prefix members exactly once
     }
   }
   assert.ok(counts.every(count => count > 0), `actual nonempty offline MCP partitions: ${counts}`);
+  t.diagnostic(`actual offline MCP family census F1/F2/F3/complement: ${counts.join('/')}; total=${counts.reduce((sum, value) => sum + value, 0)}`);
 });
 function ciConnectedSelections(name) {
   return [
@@ -762,11 +780,13 @@ for (const [index, command] of offlineMcp.entries()) {
   mutations.push([`offline MCP ${index + 1} duplicated`, 'make', command, `${command}\n\t${command}`, /exact additive offline MCP gate/]);
 }
 mutations.push(['offline MCP reversed', 'make', offlineMcp.join('\n\t'), [...offlineMcp].reverse().join('\n\t'), /exact additive offline MCP gate/]);
-mutations.push(['offline MCP overlap', 'make', offlineMcp[2], offlineMcp[2].replace(" -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure)'", ''), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP overlap', 'make', offlineMcp[3], offlineMcp[3].replace(" -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)'", ''), /exact additive offline MCP gate/]);
 mutations.push(['offline MCP F1 gap', 'make', offlineMcp[0], offlineMcp[0].replace('WebKnownServiceError', 'WebKnownServiceErrorFreshHistory'), /exact additive offline MCP gate/]);
 mutations.push(['offline MCP F2 gap', 'make', offlineMcp[1], offlineMcp[1].replace('WebModelAfterMCPFailure', 'WebModelAfterMCPFailureFreshHistory'), /exact additive offline MCP gate/]);
-mutations.push(['offline MCP complement loses F1 exclusion', 'make', offlineMcp[2], offlineMcp[2].replace('Web(KnownServiceError|ModelAfterMCPFailure)', 'WebModelAfterMCPFailure'), /exact additive offline MCP gate/]);
-mutations.push(['offline MCP complement loses F2 exclusion', 'make', offlineMcp[2], offlineMcp[2].replace('Web(KnownServiceError|ModelAfterMCPFailure)', 'WebKnownServiceError'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP F3 gap', 'make', offlineMcp[2], offlineMcp[2].replace('WebUnknownMCPFailure', 'WebUnknownMCPFailureFreshHistory'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP complement loses F1 exclusion', 'make', offlineMcp[3], offlineMcp[3].replace('Web(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)', 'Web(ModelAfterMCPFailure|UnknownMCPFailure)'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP complement loses F2 exclusion', 'make', offlineMcp[3], offlineMcp[3].replace('Web(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)', 'Web(KnownServiceError|UnknownMCPFailure)'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP complement loses F3 exclusion', 'make', offlineMcp[3], offlineMcp[3].replace('Web(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)', 'Web(KnownServiceError|ModelAfterMCPFailure)'), /exact additive offline MCP gate/]);
 for (const [index, command] of ordinary.entries()) {
   for (const [name, mutate] of [
     ['background command', value => `${value} &`],

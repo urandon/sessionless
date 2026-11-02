@@ -44,7 +44,7 @@ func knownFailurePrefixFixture(t *testing.T) (*compactionSourceFixture, *LocalFa
 			completeOriginalMCPAfterPreparedModel(t, f, m, true)
 		}
 	}
-	h, err := f.entry.ClaimKnownMCPFailure()
+	h, err := f.entry.ClaimFailure()
 	if err != nil {
 		t.Fatal("actual known error claim", err)
 	}
@@ -61,7 +61,7 @@ func knownFailurePrefixFixture(t *testing.T) (*compactionSourceFixture, *LocalFa
 func TestLocalFailureOriginalCompleteModelCompactionPrefix(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f, h := knownFailurePrefixFixture(t)
-		for _, row := range h.mcp.source.state.snapshot.Operations {
+		for _, row := range h.source.state.snapshot.Operations {
 			if !h.authenticatedRow(row, 6) {
 				t.Fatal("original prefix MAC missing", row.reservation.Operation.Sequence)
 			}
@@ -90,7 +90,7 @@ func TestLocalFailureOriginalCompleteModelCompactionPrefix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := localFailureCapsuleV1{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: f.entry.parent.Clone(), Source: f.entry.source.Clone(), ProfileDigest: pd, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", CapturedAt: h.capturedAt, Accounting: h.accounting.Clone(), Bodies: bodies, Derived: h.snapshot.Job.Run.Clone().DerivedContext}
+		c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: f.entry.parent.Clone(), Source: f.entry.source.Clone(), ProfileDigest: pd, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", CapturedAt: h.capturedAt, Accounting: h.accounting.Clone(), Bodies: bodies, Derived: h.snapshot.Job.Run.Clone().DerivedContext}
 		for _, op := range h.ops {
 			c.Operations = append(c.Operations, localFailureOperationV1{Reservation: op.Reservation.Clone(), Observation: op.Observation.Clone(), Normalized: json.RawMessage(op.Response)})
 		}
@@ -98,7 +98,7 @@ func TestLocalFailureOriginalCompleteModelCompactionPrefix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		plan, err := knownMCPFailurePlan(h.snapshot.Job.Run, h.snapshot.Job.Job.Limits, c)
+		plan, err := localFailurePlan(h.snapshot.Job.Run, h.snapshot.Job.Job.Limits, c)
 		if err != nil {
 			t.Fatal("complete authenticated prefix pure plan", err)
 		}

@@ -199,8 +199,26 @@ same ordinary-body adapter is fenced without erasure. Every retained body key
 must map to its complete persisted operation so deletion can inventory exact
 SQL-owned targets and independently verify capsule/canonical/body bytes before
 its existing destructive admission. Generic Run writers preserve F1 metadata;
-it grants no replay, settled money or erasure. Remote UNKNOWN, missing tails
-and late success-candidate reuse remain reconciliation-only in this slice.
+it grants no replay, settled money or erasure.
+
+The explicit failure capsule/accounting V2 successor uses that SAME compact
+commitment shape and `local_f1:` family for a known successful MCP prefix followed
+by an authenticated, actually reserved UNKNOWN MODEL tail. The exact request is
+retained; `normalized:null` and absent response-reference fields mean no validated
+response exists, not a zero-length successful answer. Original setup and every
+operation debit and usage provenance, including reported overruns, remain
+retained. The configured HTTP decoder preserves independently valid
+provider-reported usage before rejecting a response's finish reason; absent
+validated response bytes do not erase that report or settle/refund it. Known MCP
+pairs keep their original successful payload bytes; the one fixed
+`model_outcome_unknown` notice remains protected historical DATA. An explicit
+new user request does not replay the old MODEL or MCP, and the UNKNOWN tail is
+never completed context or a safe compaction source. Retained readers and deletion
+verify the complete original capsule/accounting/marker/events and inventory only
+actual request/response objects, never a fabricated UNKNOWN response. Unknown
+tool outcomes, missing/conflicting observations, tainted PUT custody and late
+success-candidate reuse remain reconciliation-only. No table, ledger, migration,
+indefinite retention gate, active-reader relaxation or larger Run is introduced.
 
 The local completion successor uses that same Run and the existing
 `substrate_execution_evidence` row, with explicitly tagged V2 evidence; it does

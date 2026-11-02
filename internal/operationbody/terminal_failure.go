@@ -11,9 +11,9 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-// WriteKnownMCPFailureV1 consumes the SAME single canonical batch and protected
+// WriteFailureEventsV1 consumes the SAME single canonical batch and protected
 // notice slots as successful publication. No assistant, extra notice or reset.
-func (t *TerminalOutputV1) WriteKnownMCPFailureV1(ctx context.Context, run domain.Run, drafts []domain.SessionEventDraft, bodies [][]byte) error {
+func (t *TerminalOutputV1) WriteFailureEventsV1(ctx context.Context, run domain.Run, drafts []domain.SessionEventDraft, bodies [][]byte) error {
 	return t.writeCanonicalEvents(ctx, run, drafts, bodies, true)
 }
 

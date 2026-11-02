@@ -23,7 +23,7 @@ type offlineModelChainPeer struct {
 	mu        sync.Mutex
 	conn      *net.TCPConn
 	closed    bool
-	response  [2][]byte
+	response  [3][]byte
 	result    chan []localLoopbackPeerResult
 	done      chan struct{}
 	want      int
@@ -40,8 +40,8 @@ func newOfflineModelChainPeer(t *testing.T, expected ...int) *offlineModelChainP
 	if len(expected) == 1 {
 		want = expected[0]
 	}
-	if want != 1 && want != 2 {
-		t.Fatal("MODEL-count must be 1 or 2")
+	if want != 1 && want != 2 && want != 3 {
+		t.Fatal("MODEL-count must be 1, 2 or 3")
 	}
 	l, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -49,7 +49,7 @@ func newOfflineModelChainPeer(t *testing.T, expected ...int) *offlineModelChainP
 	}
 	p := &offlineModelChainPeer{listener: l, result: make(chan []localLoopbackPeerResult, 1), done: make(chan struct{})}
 	p.want = want
-	p.changed = make(chan struct{}, 2)
+	p.changed = make(chan struct{}, 3)
 	t.Cleanup(func() {
 		p.mu.Lock()
 		p.closed = true
@@ -93,7 +93,21 @@ func (p *offlineModelChainPeer) configure(t *testing.T, model string) {
 		t.Fatal("final MODEL response", err)
 	}
 	p.mu.Lock()
-	p.response = [2][]byte{first, final}
+	p.response = [3][]byte{first, final, bytes.Clone(final)}
+	p.mu.Unlock()
+}
+
+// A fixed actual HTTP response, not a forged operation observation. The peer
+// still consumes MODEL2's complete request and joins its actual EOF normally.
+func (p *offlineModelChainPeer) malformedFinal(t *testing.T, model string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"model": model, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": "unvalidated model bytes must not be exported"}, "finish_reason": "error"}}, "usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+	if err != nil {
+		t.Fatal("fixed malformed MODEL2 response", err)
+	}
+	p.mu.Lock()
+	clear(p.response[1])
+	p.response[1] = body
 	p.mu.Unlock()
 }
 

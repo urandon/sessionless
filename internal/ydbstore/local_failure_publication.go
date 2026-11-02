@@ -65,12 +65,19 @@ func (h *LocalFailureV1) Prepare(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	c := localFailureCapsuleV1{Schema: "sessionless.terminal-failure-custody.v1", Version: 1, Parent: e.parent.Clone(), Source: e.source.Clone(), ProfileDigest: pd, FrontierDigest: fd, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", Accounting: h.accounting.Clone(), Bodies: bodies, Derived: h.snapshot.Job.Run.Clone().DerivedContext}
+	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v1", Version: h.version, Parent: e.parent.Clone(), Source: e.source.Clone(), ProfileDigest: pd, FrontierDigest: fd, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", Accounting: h.accounting.Clone(), Bodies: bodies, Derived: h.snapshot.Job.Run.Clone().DerivedContext}
+	if h.version == 2 {
+		c.Schema, c.Stop = "sessionless.terminal-failure-custody.v2", domain.ModelOutcomeUnknownV2
+	}
 	c.CapturedAt = h.capturedAt
 	for _, op := range h.ops {
-		c.Operations = append(c.Operations, localFailureOperationV1{Reservation: op.Reservation.Clone(), Observation: op.Observation.Clone(), Normalized: json.RawMessage(op.Response)})
+		normalized := json.RawMessage(op.Response)
+		if h.version == 2 && op.Observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 {
+			normalized = json.RawMessage("null")
+		}
+		c.Operations = append(c.Operations, localFailureOperationV1{Reservation: op.Reservation.Clone(), Observation: op.Observation.Clone(), Normalized: normalized})
 	}
-	h.canonical, err = knownMCPFailurePlan(h.snapshot.Job.Run, h.snapshot.Job.Job.Limits, c)
+	h.canonical, err = localFailurePlan(h.snapshot.Job.Run, h.snapshot.Job.Job.Limits, c)
 	if err != nil {
 		return fmt.Errorf("known MCP failure canonical planning: %w", err)
 	}
@@ -171,7 +178,7 @@ func (h *LocalFailureV1) Publish(ctx context.Context) (err error) {
 			return domain.ErrMembershipDenied
 		}
 	}
-	if e.terminalOutputs.WriteKnownMCPFailureV1(call, post, h.drafts, payloads) != nil {
+	if e.terminalOutputs.WriteFailureEventsV1(call, post, h.drafts, payloads) != nil {
 		return fmt.Errorf("known MCP failure canonical publication: %w", domain.ErrMembershipDenied)
 	}
 	if e.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return h.rejoin(ctx, q) }) != nil || call.Err() != nil {

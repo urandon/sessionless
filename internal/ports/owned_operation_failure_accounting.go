@@ -83,6 +83,12 @@ func (v OwnedOperationFailureAccountingV1) ValidateFor(parent domain.OwnedAttemp
 	if !v.contentValid() || !accountingSourceV3(parent, source) || v.Scope != ownedResidualScope(parent) || v.AggregateDebit.ValidateForPolicy(*parent.Authority.HarnessBinding.AgentLoopPolicy) != nil {
 		return domain.ErrMembershipDenied
 	}
+	return validateFailureAccountingTotals(v, parent, source)
+}
+
+// Arithmetic shared by separately validated retained formats. This helper does
+// not select a format, authorize continuation or relax either content language.
+func validateFailureAccountingTotals(v OwnedOperationFailureAccountingV1, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1) error {
 	var aggregate domain.AttemptOperationDebitV1
 	for _, c := range []*domain.ExternalServiceCostCeilingV1{parent.Authority.AdmissionCostCeiling.MCPToolCost, parent.Authority.AdmissionCostCeiling.WebSearchCost} {
 		if c != nil {

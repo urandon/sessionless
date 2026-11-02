@@ -9,11 +9,17 @@ import (
 
 // This route never receives an error DTO, caller stop code or replacement
 // frontier. The original entry independently authenticates its retained holder.
-func (s *localState) claimKnownMCPFailure() {
+func (s *localState) claimFailure() {
 	if s.entry == nil || s.credentialed || s.entryRoute != localEntryWorker {
 		return
 	}
-	h, err := s.entry.ClaimKnownMCPFailure()
+	s.mu.Lock()
+	claimed := s.knownFailure != nil
+	s.mu.Unlock()
+	if claimed {
+		return
+	}
+	h, err := s.entry.ClaimFailure()
 	if err != nil {
 		return
 	}
@@ -39,7 +45,7 @@ type PreparedLocalFailureV1 struct {
 
 func (*PreparedLocalFailureV1) MarshalJSON() ([]byte, error) { return nil, ErrSession }
 func (*PreparedLocalFailureV1) String() string               { return "PreparedLocalFailureV1{private:[redacted]}" }
-func (v *LocalV1) KnownMCPFailure() (*PreparedLocalFailureV1, error) {
+func (v *LocalV1) Failure() (*PreparedLocalFailureV1, error) {
 	if v == nil || v.state == nil {
 		return nil, ErrSession
 	}

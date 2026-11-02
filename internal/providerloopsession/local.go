@@ -315,6 +315,9 @@ func (s *localState) runModelStep(ctx, call context.Context) (result ModelStepRe
 		if err != nil {
 			// An ambiguous or partial step cannot be retried through a wrapper
 			// copy. Independent observation reconciliation never dispatches.
+			// Retain the actual original authenticated tail BEFORE cancellation
+			// invalidates ordinary active observation/preparation lifetimes.
+			s.claimFailure()
 			s.runtimeFailed = true
 			s.cancel()
 		}

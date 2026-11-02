@@ -83,12 +83,21 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 			return nil, q.budget.deny()
 		}
 		marked := strings.HasPrefix(markers[id], localFailureFinalizationPrefix)
-		notice, err := canonicaloutput.EncodeFailureV1(id, false, domain.KnownMCPServiceErrorV1)
+		stop := domain.KnownMCPServiceErrorV1
+		if run.TerminalFailure != nil {
+			stop = run.TerminalFailure.Stop
+		}
+		notice, err := canonicaloutput.EncodeFailureV1(id, false, stop)
 		if err != nil {
 			return nil, q.budget.deny()
 		}
+		unknownNotice, err := canonicaloutput.EncodeFailureV1(id, false, domain.ModelOutcomeUnknownV2)
+		if err != nil {
+			clear(notice.Payload)
+			return nil, q.budget.deny()
+		}
 		var anchor domain.SessionEvent
-		anchors, matching := 0, 0
+		anchors, matching, closedNotice := 0, 0, 0
 		for _, record := range records {
 			e := record.Event
 			if e.RunID != nil && *e.RunID == id && e.Kind == domain.SessionEventSystemNotice {
@@ -97,13 +106,17 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 				if bytes.Equal(notice.Payload, record.Payload) {
 					matching++
 				}
+				if bytes.Equal(notice.Payload, record.Payload) || bytes.Equal(unknownNotice.Payload, record.Payload) {
+					closedNotice++
+				}
 			}
 		}
 		clear(notice.Payload)
+		clear(unknownNotice.Payload)
 		if run.TerminalFailure == nil && !marked {
 			// Ordinary legacy notices retain their old language. The newly closed
 			// known-error notice cannot masquerade as one without F1 correspondence.
-			if matching != 0 {
+			if closedNotice != 0 {
 				return nil, q.budget.deny()
 			}
 			continue
@@ -120,7 +133,7 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 	return out, nil
 }
 
-func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsuleV1, records []sessioncontext.EventPayload) error {
+func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsule, records []sessioncontext.EventPayload) error {
 	deny := func() error { return domain.ErrMembershipDenied }
 	run := v.Run
 	if run.TerminalFailure == nil || run.TerminalCustody == nil || !reflect.DeepEqual(c.Parent, v.Parent) || !reflect.DeepEqual(c.Source, v.Admission.Source) || !domain.EqualRunDerivedContextV1(c.Derived, run.DerivedContext) {
@@ -134,7 +147,7 @@ func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsuleV1
 	if err != nil || metadata != *run.TerminalFailure {
 		return deny()
 	}
-	p, err := knownMCPFailurePlan(run, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1}, c)
+	p, err := localFailurePlan(run, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1}, c)
 	if err != nil {
 		return err
 	}
@@ -179,6 +192,11 @@ func validateFailureHistoryData(v localFailureHistoryV1, c localFailureCapsuleV1
 			bytes  uint64
 			digest string
 		}{{op.Reservation.Operation.RequestRef, op.Reservation.Operation.RequestBytes, op.Reservation.Operation.RequestDigest}, {op.Observation.ResponseRef, op.Observation.ResponseBytes, op.Observation.ResponseDigest}} {
+			// The V2 plan validator has already proved the exact UNKNOWN MODEL
+			// tail and explicit normalized:null. It owns a request, no response.
+			if required.ref == "" && c.Version == 2 && op.Observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && required.bytes == 0 && required.digest == "" {
+				continue
+			}
 			found := false
 			for _, body := range c.Bodies {
 				if strings.HasSuffix(body.Key, "/"+required.ref) && body.Size == int64(required.bytes) && body.SHA256 == required.digest {

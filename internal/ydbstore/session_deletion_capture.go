@@ -233,7 +233,7 @@ func (g *deletionCaptureGraph) addRun(ctx context.Context, tenant domain.TenantI
 			key.Sequence = g.ownership.events[key.Anchor].Sequence
 		}
 		if run.TerminalFailure != nil {
-			notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, domain.KnownMCPServiceErrorV1)
+			notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, run.TerminalFailure.Stop)
 			if e != nil {
 				return e
 			}

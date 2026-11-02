@@ -85,7 +85,16 @@ func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery,
 		}
 		if p.failure != nil {
 			candidate, e := ports.BuildOwnedOperationFailureRowV1(row.reservation, *row.observation, parent, source)
-			if e != nil || (sequence == accounting.Aggregate.Operations) != (candidate.Reason == domain.AttemptOperationReasonServiceErrorV1) {
+			last := candidate.Reason == domain.AttemptOperationReasonServiceErrorV1
+			metadata := p.failure.Run.TerminalFailure
+			if metadata == nil || !domain.TerminalFailureSchemaStopValid(metadata.CapsuleSchema, metadata.Stop) {
+				return nil, q.budget.deny()
+			}
+			if metadata.CapsuleSchema == "sessionless.terminal-failure-custody.v2" {
+				candidate, e = ports.BuildOwnedOperationFailureRowV2(row.reservation, *row.observation, parent, source)
+				last = candidate.Kind == domain.AttemptOperationModelV1 && candidate.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && ports.FailureModelUnknownReasonV2(candidate.Reason)
+			}
+			if e != nil || (sequence == accounting.Aggregate.Operations) != last {
 				return nil, q.budget.deny()
 			}
 		} else if !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {

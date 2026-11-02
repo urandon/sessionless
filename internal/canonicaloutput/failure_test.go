@@ -69,6 +69,35 @@ func TestKnownMCPFailureExactPairNoticeAndLimits(t *testing.T) {
 	}
 }
 
+func TestModelAfterMCPFailureV2KeepsSuccessfulPairAndFixedNotice(t *testing.T) {
+	pair := outputResult().ToolEvents
+	limits := domain.ProductLimits{MaxToolEvents: 2, MaxToolEventBytes: 4096}
+	failed, err := canonicaloutput.EncodeModelAfterMCPFailureV2("run-output", limits, pair)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer failed.Release()
+	success, err := canonicaloutput.EncodeCompletionV1("run-output", limits, ports.ExecutionResult{ToolEvents: pair}, "manifest-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer success.Release()
+	events := failed.Events()
+	if len(events) != 3 {
+		t.Fatal("not exactly known pair plus one MODEL failure stop")
+	}
+	for i := range 2 {
+		if events[i].ID != success.Events()[i].ID || !bytes.Equal(events[i].Payload, success.Events()[i].Payload) {
+			t.Fatal("V2 rewrote successful MCP payload/identity", i)
+		}
+	}
+	notice, err := canonicaloutput.EncodeFailureV1("run-output", false, domain.ModelOutcomeUnknownV2)
+	if err != nil || events[2].Kind != domain.SessionEventSystemNotice || events[2].ID != notice.ID || !bytes.Equal(events[2].Payload, notice.Payload) {
+		t.Fatal("V2 not fixed protected notice")
+	}
+	clear(notice.Payload)
+}
+
 // Encoding DATA only: current configured MCP still permits one aggregate
 // catalog setup. This does not claim a genuine two-setup producer or authority.
 func TestKnownMCPFailureCompleteMultiPairFormat(t *testing.T) {

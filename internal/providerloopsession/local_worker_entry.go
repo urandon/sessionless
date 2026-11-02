@@ -189,7 +189,7 @@ func (v *LocalV1) RunWorkerLoop(ctx context.Context) (result ModelStepResultV1, 
 	s.runtimeStarted = true
 	defer func() {
 		if err != nil {
-			s.claimKnownMCPFailure()
+			s.claimFailure()
 			s.runtimeFailed = true
 			s.cancel()
 		}

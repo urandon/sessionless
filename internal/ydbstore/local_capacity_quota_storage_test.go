@@ -370,6 +370,56 @@ func TestLocalCapacityQuotaWriterLegacyPresentCollisionDenial(t *testing.T) {
 	}
 }
 
+func TestLocalCapacityQuotaReaderNativeUint32(t *testing.T) {
+	for _, arm := range []string{"subscription", "local"} {
+		for _, representation := range []string{"units", "bucket", "both", "wrong units", "wrong bucket"} {
+			t.Run(arm+"/"+representation, func(t *testing.T) {
+				f, store, r := quotaCapacityFixture(t, arm == "local")
+				quotaCapacitySeed(t, f, r, true)
+				bucket, err := ydbpartition.BucketV1(string(r.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				key := quotaCapacityExpiryKey(bucket, r.ExpiresAt, string(r.TenantID), string(r.ID))
+				if representation != "bucket" && representation != "wrong bucket" {
+					f.quota[6] = uint32(r.CapacityUnits)
+				}
+				if representation != "units" {
+					f.expiry[key][0] = uint32(bucket)
+				}
+				deny := representation == "wrong units" || representation == "wrong bucket"
+				if representation == "wrong units" {
+					f.quota[6] = uint32(r.CapacityUnits + 1)
+				} else if representation == "wrong bucket" {
+					f.expiry[key][0] = uint32(bucket ^ 1)
+				}
+				beforeQuota, beforeExpiry := append([]driver.Value(nil), f.quota...), cloneLocalInstallationRows(f.expiry)
+				tx, err := store.db.BeginTx(t.Context(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = tx.Rollback() })
+				state := &stateTx{store: store, sqlTx: tx, tenantID: r.TenantID}
+				got, found, err := readWorkerQuotaReservationStorageV1(t.Context(), state, f.run, r.ID)
+				if deny {
+					if !errors.Is(err, domain.ErrMembershipDenied) || found || !reflect.DeepEqual(got, domain.QuotaReservation{}) {
+						t.Fatalf("mismatched native Uint32 accepted: found=%t err=%v", found, err)
+					}
+				} else if err != nil || !found || !reflect.DeepEqual(got, r) {
+					t.Fatalf("native Uint32 quota/projection rejected: found=%t err=%v", found, err)
+				}
+				wantQueries := 2
+				if representation == "wrong units" {
+					wantQueries = 1
+				}
+				if f.queries != wantQueries || f.oldPayloadReads != 0 || f.writes != 0 || f.commits != 0 || !reflect.DeepEqual(beforeQuota, f.quota) || !reflect.DeepEqual(beforeExpiry, f.expiry) {
+					t.Fatalf("reader changed query/write contract: queries=%d/%d payloadReads=%d writes=%d commits=%d", f.queries, wantQueries, f.oldPayloadReads, f.writes, f.commits)
+				}
+			})
+		}
+	}
+}
+
 func TestLocalCapacityQuotaReaderUsesOriginalCallbackBudget(t *testing.T) {
 	for _, fault := range []string{"normalized JSONDocument", "invalid first scalar", "oversize payload", "exhausted original budget"} {
 		t.Run(fault, func(t *testing.T) {

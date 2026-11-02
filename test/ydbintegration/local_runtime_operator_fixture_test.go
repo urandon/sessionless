@@ -24,6 +24,16 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
+// This is a non-expiry native lifecycle proof, not a five-second database
+// throughput benchmark. Use the existing admitted operation/cleanup maxima;
+// production still enforces each original absolute deadline without renewal.
+// The invocation must also cover pre-effect10 + active30 + cleanup30.
+const (
+	localRuntimeFixtureOperationBudget  = 30 * time.Second
+	localRuntimeFixtureCleanupBudget    = 30 * time.Second
+	localRuntimeFixtureInvocationBudget = 90 * time.Second
+)
+
 // Construct original, private operator declaration DATA only. Runtime identity
 // is observed from this real Go executable; model/capability/review/service
 // documents below are explicitly synthetic, not live qualification or prices.
@@ -70,7 +80,7 @@ func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant doma
 	cost := base.AdmissionCostCeiling.Clone()
 	cost.PriceObservedAt, cost.PriceExpiresAt = at, end
 	cost.MaxPreEffectDurationPerDelivery = 10 * time.Second
-	cost.MaxActiveDuration, cost.MaxCleanupAndReconcileDuration = 30*time.Second, 5*time.Second
+	cost.MaxActiveDuration, cost.MaxCleanupAndReconcileDuration = 30*time.Second, localRuntimeFixtureCleanupBudget
 	service := func(kind domain.ExternalServiceKindV1, amount uint64) *domain.ExternalServiceCostCeilingV1 {
 		return &domain.ExternalServiceCostCeilingV1{Version: 1, Kind: kind, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: string(kind) + "-" + suffix, ResourceRevision: 1, RevocationGeneration: 1, ProfileID: string(kind) + "-synthetic", ProfileRevision: 1, ScopedGrantDigest: h, Currency: cost.Currency, PriceRevision: "synthetic-service-price.v1", PriceObservedAt: at, PriceExpiresAt: end, PriceEvidenceDigest: h, TermsEvidenceDigest: h, PriceState: domain.ExternalServicePriceKnownPaidV1, MaxAmountMicrounits: &amount}
 	}
@@ -82,15 +92,15 @@ func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant doma
 	substrate.ProfileEvidenceExpiresAt = end
 	substrate.LocalHostIdentityDigest, substrate.LocalNetworkNamespaceIdentityDigest = identity.LocalHostIdentityDigest, identity.LocalNetworkNamespaceIdentityDigest
 	substrate.OuterHarnessArtifactDigest, substrate.EgressProxyArtifactDigest, substrate.EgressProxyIdentityDigest = identity.WorkerExecutableDigest, identity.WorkerExecutableDigest, connector
-	substrate.Limits.InvocationTimeout, substrate.Limits.ExecutionTimeout, substrate.Limits.CleanupTimeout = time.Minute, 30*time.Second, 5*time.Second
+	substrate.Limits.InvocationTimeout, substrate.Limits.ExecutionTimeout, substrate.Limits.CleanupTimeout = localRuntimeFixtureInvocationBudget, 30*time.Second, localRuntimeFixtureCleanupBudget
 	backend := base.HarnessBinding.Backend
 	backend.BackendKind, backend.ProviderContractKind, backend.NativeProtocolVersion = domain.HarnessBackendDirectOpenAICompatibleV1, domain.ProviderContractConfiguredEndpointV1, domain.ConfiguredInferenceProtocolChatCompletionsV1
 	backend.BackendProfileDigest = ""
 	resource := domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceLocalEndpointV1, OwnerUserID: owner, CredentialMode: domain.ProviderCredentialNoneV1}
-	limits := domain.AgentLoopLimitsV1{MaxConcurrentOperations: 1, MaxModelCalls: 8, MaxCompactionCalls: 2, MaxToolDispatches: 4, MaxWebSearches: 2, MaxInputTokensPerCall: 32768, MaxAggregateInputTokens: 131072, MaxOutputTokensPerCall: 2048, MaxAggregateOutputTokens: 16384, MaxActiveDuration: 30 * time.Second, MaxNetworkOperationDuration: 5 * time.Second, MaxCleanupDuration: 5 * time.Second, MaxContextViewBytes: 1 << 20, MaxSummaryBytes: 16 << 10, MaxToolArgumentBytes: 4 << 10, MaxToolResultBytes: 64 << 10, MaxMCPOutboundMessages: 12, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 128, MaxMCPInboundBytes: 256 << 10, MaxOperations: 12, MaxAggregateBodyBytes: 1 << 20}
+	limits := domain.AgentLoopLimitsV1{MaxConcurrentOperations: 1, MaxModelCalls: 8, MaxCompactionCalls: 2, MaxToolDispatches: 4, MaxWebSearches: 2, MaxInputTokensPerCall: 32768, MaxAggregateInputTokens: 131072, MaxOutputTokensPerCall: 2048, MaxAggregateOutputTokens: 16384, MaxActiveDuration: 30 * time.Second, MaxNetworkOperationDuration: localRuntimeFixtureOperationBudget, MaxCleanupDuration: localRuntimeFixtureCleanupBudget, MaxContextViewBytes: 1 << 20, MaxSummaryBytes: 16 << 10, MaxToolArgumentBytes: 4 << 10, MaxToolResultBytes: 64 << 10, MaxMCPOutboundMessages: 12, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 128, MaxMCPInboundBytes: 256 << 10, MaxOperations: 12, MaxAggregateBodyBytes: 1 << 20}
 	c := domain.ConfiguredInferenceProfileV1{Version: 1, TenantID: tenant, OwnerUserID: owner, Resource: resource, BaseURL: endpoint, EndpointPolicy: domain.ConfiguredInferenceLoopbackPolicyV1, NativeProtocolVersion: domain.ConfiguredInferenceProtocolChatCompletionsV1, Auth: domain.ConfiguredInferenceAuthNoneV1, ModelVendorID: "synthetic", ModelID: "local-runtime-synthetic", ResponseModelIDs: []string{"local-runtime-synthetic"}, ServerID: "synthetic-server", ServerVersion: "synthetic-v1", ChatTemplateDigest: h,
 		Capabilities: domain.ConfiguredInferenceCapabilitiesV1{Text: domain.ProviderEvidenceSupportedV1, Image: domain.ProviderEvidenceUnsupportedV1, File: domain.ProviderEvidenceUnsupportedV1, ToolCalls: domain.ProviderEvidenceSupportedV1, JSONSchema: domain.ProviderEvidenceUnknownV1}, ProviderCatalogDigest: h, ProviderRouteDigest: h, PrivacyPolicyDigest: h, EffectivePolicyDigest: h, AllowedDataClasses: []domain.ProviderDataClassV1{domain.ProviderDataPublicV1}, ModelWindowTokens: 65536, TokenEstimatorVersion: "synthetic-affine.v1",
-		Limits:                  domain.ConfiguredInferenceLimitsV1{RequestBytes: 1 << 20, ResponseBytes: 1 << 20, ResponseHeaderBytes: 16 << 10, JSONDepth: 32, JSONMembers: 256, Choices: 1, ToolCalls: 1, ToolNameBytes: 128, ToolCallIDBytes: 128, ToolArgumentsBytes: 4 << 10, FinalTextBytes: 256 << 10, Messages: 256, Tools: 16, MaxInputTokens: 32768, MaxOutputTokens: 2048, OperationTimeout: 5 * time.Second, CleanupTimeout: 5 * time.Second},
+		Limits:                  domain.ConfiguredInferenceLimitsV1{RequestBytes: 1 << 20, ResponseBytes: 1 << 20, ResponseHeaderBytes: 16 << 10, JSONDepth: 32, JSONMembers: 256, Choices: 1, ToolCalls: 1, ToolNameBytes: 128, ToolCallIDBytes: 128, ToolArgumentsBytes: 4 << 10, FinalTextBytes: 256 << 10, Messages: 256, Tools: 16, MaxInputTokens: 32768, MaxOutputTokens: 2048, OperationTimeout: localRuntimeFixtureOperationBudget, CleanupTimeout: localRuntimeFixtureCleanupBudget},
 		LocalHostIdentityDigest: identity.LocalHostIdentityDigest, LocalNetworkNamespaceIdentityDigest: identity.LocalNetworkNamespaceIdentityDigest, WorkerExecutableDigest: identity.WorkerExecutableDigest, IssuedAt: at, ExpiresAt: end}
 	body := func(id string, value any) localoperator.EvidenceBodyV1 {
 		t.Helper()
@@ -205,6 +215,14 @@ func TestLocalRuntimeOperatorFixturePrivateTemplateAndRealIntake(t *testing.T) {
 	if manifest.Configuration.Resource.ResourceID != "" || manifest.Configuration.Resource.Revision != 0 || manifest.Configuration.ProfileRevision != 0 || manifest.Configuration.LocalInstallationID != "" || manifest.Configuration.LocalInstallationRevision != 0 || manifest.Profile.Resource.ResourceID != "" || manifest.Profile.ProfileRevision != 0 || manifest.Profile.InstallationID != "" || manifest.Profile.InstalledManifest.Ref != "" || manifest.Profile.Backend.BackendProfileDigest != "" || !manifest.InvoiceTerms.IssuedAt.Equal(at) || !manifest.InvoiceTerms.ExpiresAt.After(at.Add(5*time.Minute)) {
 		t.Fatal("DATA builder chose installed identity or shortened original finite terms")
 	}
+	configuration, profile := manifest.Configuration, manifest.Profile
+	if configuration.Limits.OperationTimeout != localRuntimeFixtureOperationBudget || configuration.Limits.CleanupTimeout != localRuntimeFixtureCleanupBudget || profile.Limits.MaxNetworkOperationDuration != localRuntimeFixtureOperationBudget || profile.Limits.MaxCleanupDuration != localRuntimeFixtureCleanupBudget || profile.CostCeiling.MaxCleanupAndReconcileDuration != localRuntimeFixtureCleanupBudget || profile.Substrate.Limits.CleanupTimeout != localRuntimeFixtureCleanupBudget || profile.Substrate.Limits.InvocationTimeout != localRuntimeFixtureInvocationBudget {
+		t.Fatalf("native non-expiry budget declarations disagree: operation=%s cleanup=%s profile_operation=%s profile_cleanup=%s cost_cleanup=%s substrate_cleanup=%s invocation=%s", configuration.Limits.OperationTimeout, configuration.Limits.CleanupTimeout, profile.Limits.MaxNetworkOperationDuration, profile.Limits.MaxCleanupDuration, profile.CostCeiling.MaxCleanupAndReconcileDuration, profile.Substrate.Limits.CleanupTimeout, profile.Substrate.Limits.InvocationTimeout)
+	}
+	minimumInvocation := profile.CostCeiling.MaxPreEffectDurationPerDelivery + profile.CostCeiling.MaxActiveDuration + profile.CostCeiling.MaxCleanupAndReconcileDuration
+	if minimumInvocation > profile.Substrate.Limits.InvocationTimeout {
+		t.Fatalf("native declaration loses original pre-effect/active/cleanup coverage: minimum=%s invocation=%s", minimumInvocation, profile.Substrate.Limits.InvocationTimeout)
+	}
 	source, err := localoperator.OpenFresh(ctx, root, executable)
 	if err != nil {
 		t.Fatal("real private Source intake rejected template", err)
@@ -217,5 +235,34 @@ func TestLocalRuntimeOperatorFixturePrivateTemplateAndRealIntake(t *testing.T) {
 	config, err := source.Configuration()
 	if err != nil || config.TenantID != "synthetic-template-tenant" || config.OwnerUserID != "synthetic-template-owner" || config.Auth != domain.ConfiguredInferenceAuthNoneV1 || config.Resource.ResourceID == "" || !config.IssuedAt.Equal(at) || !config.ExpiresAt.Equal(at.Add(10*time.Minute)) || config.ValidateAt(at.Add(time.Second)) != nil {
 		t.Fatal("Source did not retain original fixture scope/window", err)
+	}
+	// Validate the actual original Source-produced intent, not a fabricated
+	// installed identity added to the deliberately uninstalled template above.
+	// Reading this private intent performs no Store publication or SQL call.
+	grant, err := source.Publication()
+	if err != nil {
+		t.Fatal("original Source publication intent", err)
+	}
+	if err := grant.Profile.CostCeiling.ValidateForSubstrate(grant.Profile.Substrate); err != nil {
+		t.Fatal("original Source finite duration/cost coverage", err)
+	}
+	for _, delta := range []time.Duration{-time.Nanosecond, 0} {
+		candidate := grant.Profile.Substrate
+		candidate.Limits.InvocationTimeout = minimumInvocation + delta
+		err := grant.Profile.CostCeiling.ValidateForSubstrate(candidate)
+		if (err == nil) != (delta == 0) {
+			t.Fatalf("pre-effect/active/cleanup coverage boundary delta=%s err=%v", delta, err)
+		}
+	}
+	for _, field := range []string{"operation", "cleanup"} {
+		candidate := config.Limits
+		if field == "operation" {
+			candidate.OperationTimeout++
+		} else {
+			candidate.CleanupTimeout++
+		}
+		if candidate.Validate() == nil {
+			t.Fatalf("existing thirty-second %s maximum was relaxed", field)
+		}
 	}
 }

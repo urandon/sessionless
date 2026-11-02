@@ -198,8 +198,18 @@ source-policy test checks this disjoint union against both adversarial future
 names and the actual repository test-name corpus; only fresh full executions
 and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
-`make test-mcp-offline`: a separate uncached race/shuffle execution with a
-five-minute bound for the explicitly tagged synthetic MCP transport fixture.
+`make test-mcp-offline`: two sequential uncached race/shuffle executions for the
+explicitly tagged synthetic MCP transport fixture. The first selects the complete
+`^TestLocalSessionCredentialedMCPOfflineWeb` prefix; the second selects the original
+complete `^TestLocalSessionCredentialedMCPOffline` prefix excluding that Web prefix.
+They are disjoint and include every current and future original-prefix member
+exactly once. Each binary keeps the five-minute bound, race detector, count1,
+shuffle190351, package, tag and overlay. The test-execution budgets now sum to
+ten minutes, in addition to compilation and two binary initializations; the former
+single-binary cumulative five-minute ceiling is not preserved. No scenario,
+subtest or assertion is shortened. Separate recipe
+lines stop at the first failure, including under `make -j`. The source-policy
+test checks the exact commands, real corpus, future names and guard mutations.
 Its fixed additive overlay introduces only absent test-support files; it must
 never replace production source or authority checks. Normal keeper/session
 packages are separately built without the overlay. This instrumentation is
@@ -244,11 +254,12 @@ same complete package patterns with race detection, count1 and a 15-minute
 binary bound. There is one more binary/package initialization, not shared
 process state or test-order dependence. The source-policy test checks both
 local and CI unions against adversarial names and the actual corpus. The existing
-`verify` job runs the unchanged `make test-mcp-offline` as a required step after
+`verify` job runs the same required `make test-mcp-offline` target after
 `make ci-core-base` instead. All three Go jobs keep their 30-minute bound; the offline
-gate keeps its five-minute binary bound, race/shuffle/uncached flags and
-additive-only overlay guards. This redistributes work across the existing jobs,
-not test coverage or budgets. The source-policy test requires exactly one CI
+gate keeps its five-minute per-binary bound across both sequential executions,
+race/shuffle/uncached flags and
+additive-only overlay guards. Redistribution across the existing jobs does not
+change test coverage or job bounds. The source-policy test requires exactly one CI
 MCP invocation and all three complete CI connected partitions; a failure in any job
 still prevents all dependent native and image gates. Local/release
 `make test-connected` remains the two normal executions followed by MCP, with

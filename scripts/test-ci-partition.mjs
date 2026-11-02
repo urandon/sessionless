@@ -57,6 +57,10 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal)' $(GO_PACKAGE_PATTERNS)",
 ];
+const offlineMcp = [
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore",
+  "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb' ./internal/ydbstore",
+];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
 const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
 const localRuntimeGateRecipe = [
@@ -134,7 +138,7 @@ function verify({ make, ci, release }) {
     'test ! -e internal/providerloopsession/mcp_offline_fixture.go',
     'mcp_fixture_format=$$(gofmt -l internal/localloopback/testdata/mcp_offline_fixture.go.txt internal/providerloopsession/testdata/mcp_offline_fixture.go.txt) && test -z "$$mcp_fixture_format"',
     'go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession',
-    "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' ./internal/ydbstore",
+    ...offlineMcp,
   ].join('\n\t'), 'exact additive offline MCP gate');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
@@ -410,6 +414,41 @@ function connectedSelections(name) {
     /^TestLocalSession/.test(name) && !/^TestLocalSession(Terminal|Worker)/.test(name),
   ];
 }
+function offlineMcpSelections(name) {
+  return [
+    /^TestLocalSessionCredentialedMCPOfflineWeb/.test(name),
+    /^TestLocalSessionCredentialedMCPOffline/.test(name) && !/^TestLocalSessionCredentialedMCPOfflineWeb/.test(name),
+  ];
+}
+test('offline MCP selectors cover current and future prefix members exactly once', () => {
+  for (const name of [
+    'TestLocalSessionCredentialedMCPOffline',
+    'TestLocalSessionCredentialedMCPOfflineWeb',
+    'TestLocalSessionCredentialedMCPOfflineWebKnownServiceError',
+    'TestLocalSessionCredentialedMCPOfflineWebFutureFamily',
+    'TestLocalSessionCredentialedMCPOfflineWebish',
+    'TestLocalSessionCredentialedMCPOfflineCanonicalTerminalComplete',
+    'TestLocalSessionCredentialedMCPOfflineFutureFamily',
+    'TestLocalSessionCredentialedMCPOfflineManagerWeb',
+    'TestLocalSessionCredentialedMCP', 'TestLocalSessionOther',
+    'ExampleLocalSessionCredentialedMCPOffline', 'FuzzLocalSessionCredentialedMCPOffline',
+  ]) {
+    assert.equal(offlineMcpSelections(name).filter(Boolean).length,
+      Number(/^TestLocalSessionCredentialedMCPOffline/.test(name)), name);
+  }
+  const counts = [0, 0];
+  for (const entry of readdirSync(new URL('../internal/ydbstore/', import.meta.url))) {
+    if (!entry.endsWith('_test.go')) continue;
+    for (const match of read(`internal/ydbstore/${entry}`).matchAll(/^func ((?:Test|Fuzz)\w+|Example\w*)\(/gm)) {
+      const name = match[1];
+      const selected = offlineMcpSelections(name);
+      assert.equal(selected.filter(Boolean).length,
+        Number(/^TestLocalSessionCredentialedMCPOffline/.test(name)), `${entry}:${name}`);
+      selected.forEach((value, index) => { counts[index] += Number(value); });
+    }
+  }
+  assert.ok(counts.every(count => count > 0), `actual nonempty offline MCP partitions: ${counts}`);
+});
 function ciConnectedSelections(name) {
   return [
     /^TestLocalSessionTerminal/.test(name),
@@ -630,6 +669,26 @@ const mutations = [
   ['liveness replaces SQL health', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', 'run: curl http://localhost:8765/monitoring/cluster', /ydb SQL\/storage readiness/],
   ['wrong readiness owner', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', /ydb-security-isolated SQL\/storage readiness/],
 ];
+for (const [index, command] of offlineMcp.entries()) {
+  for (const [name, mutate] of [
+    ['lost race', value => value.replace(' -race', '')],
+    ['cached results', value => value.replace(' -count=1', '')],
+    ['lost shuffle', value => value.replace(' -shuffle=190351', '')],
+    ['wider binary timeout', value => value.replace('-timeout=5m', '-timeout=10m')],
+    ['lost fixture tag', value => value.replace(' -tags=sessionless_mcp_offline', '')],
+    ['lost additive overlay', value => value.replace(' -overlay=test/mcp-offline-overlay.json', '')],
+    ['incomplete package', value => value.replace('./internal/ydbstore', './internal/worker')],
+    ['extra exclusion', value => value.replace(' ./internal/ydbstore', " -skip='Terminal' ./internal/ydbstore")],
+    ['short suite', value => value.replace(' ./internal/ydbstore', ' -short ./internal/ydbstore')],
+    ['background command', value => `${value} &`],
+    ['ignored failure', value => `${value} || true`],
+  ]) mutations.push([`offline MCP ${index + 1} ${name}`, 'make', command, mutate(command), /exact additive offline MCP gate/]);
+  mutations.push([`offline MCP ${index + 1} missing`, 'make', `\t${command}\n`, '', /exact additive offline MCP gate/]);
+  mutations.push([`offline MCP ${index + 1} duplicated`, 'make', command, `${command}\n\t${command}`, /exact additive offline MCP gate/]);
+}
+mutations.push(['offline MCP reversed', 'make', offlineMcp.join('\n\t'), [...offlineMcp].reverse().join('\n\t'), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP overlap', 'make', offlineMcp[1], offlineMcp[1].replace(" -skip='^TestLocalSessionCredentialedMCPOfflineWeb'", ''), /exact additive offline MCP gate/]);
+mutations.push(['offline MCP gap', 'make', offlineMcp[0], offlineMcp[0].replace('MCPOfflineWeb', 'MCPOfflineWebKnownServiceError'), /exact additive offline MCP gate/]);
 for (const [index, command] of ordinary.entries()) {
   for (const [name, mutate] of [
     ['background command', value => `${value} &`],

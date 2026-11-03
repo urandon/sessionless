@@ -25,6 +25,7 @@ type LocalTerminalCompletionSQLFixture struct {
 	cleanup               *LocalTerminalCleanupSQLFixture
 	state                 LocalTerminalCompletionSnapshot
 	active                bool
+	format                terminalCompletionFormat
 	trace                 []string
 	transactionCounts     []int
 	currentTransaction    int
@@ -32,6 +33,54 @@ type LocalTerminalCompletionSQLFixture struct {
 	completionCommitFault string
 	lostACKs              int
 	terminalExecAttempts  int
+}
+
+// TEST ONLY closed SQL storage format, selected before the first transaction.
+// This changes no row, issuer, private producer, marker decoder or authority.
+func (f *LocalTerminalCompletionSQLFixture) SelectFailureCompletionFormat() error {
+	if f == nil || f.format != terminalCompletionLocalV2 || f.active || f.currentTransaction != -1 || len(f.transactionCounts) != 0 || len(f.trace) != 0 || f.terminalExecAttempts != 0 {
+		return errors.New("failure storage format requires an unused success fixture")
+	}
+	f.format = terminalCompletionLocalF1
+	return nil
+}
+
+func newTerminalCompletionSQLFixture(cleanup *LocalTerminalCleanupSQLFixture) *LocalTerminalCompletionSQLFixture {
+	return &LocalTerminalCompletionSQLFixture{cleanup: cleanup, format: terminalCompletionLocalV2, currentTransaction: -1, state: LocalTerminalCompletionSnapshot{LeasePresent: true, material: make(map[string][]driver.Value), eventIndex: make(map[string][]driver.Value), eventRecords: make(map[string]string)}}
+}
+
+func TestLocalTerminalCompletionFormatIsolation(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	selected, untouched := newTerminalCompletionSQLFixture(nil), newTerminalCompletionSQLFixture(nil)
+	if selected.format != terminalCompletionLocalV2 || untouched.format != terminalCompletionLocalV2 || selected.SelectFailureCompletionFormat() != nil || selected.format != terminalCompletionLocalF1 || untouched.format != terminalCompletionLocalV2 || selected.SelectFailureCompletionFormat() == nil {
+		t.Fatal("closed preselection changed default or another fixture")
+	}
+	started := newTerminalCompletionSQLFixture(nil)
+	started.currentTransaction = 0
+	if started.SelectFailureCompletionFormat() == nil || started.format != terminalCompletionLocalV2 {
+		t.Fatal("SQL activity allowed format replacement")
+	}
+	statement := `INSERT INTO run_finalizations (tenant_id, run_id, terminal_status, content_digest, created_at) VALUES ($1, $2, $3, $4, $5)`
+	for _, status := range []domain.RunStatus{domain.RunSucceeded, domain.RunCancelled} {
+		state, rows, counters := untouched.state, map[string][]driver.Value{}, []driver.Value{}
+		args := []driver.NamedValue{{Value: "tenant"}, {Value: "run"}, {Value: string(status)}, {Value: "local_v2:" + strings.Repeat("a", 64)}, {Value: at}}
+		if err := applyTerminalCompletionWrite(&state, rows, &counters, untouched.format, statement, args); err != nil || state.Finalizations != 1 {
+			t.Fatal("default success/cancellation marker language changed", status, err)
+		}
+		state = selected.state
+		if err := applyTerminalCompletionWrite(&state, rows, &counters, selected.format, statement, args); err == nil || state.Finalizations != 0 {
+			t.Fatal("failure format accepted a success/cancellation marker", status)
+		}
+	}
+	state, rows, counters := untouched.state, map[string][]driver.Value{}, []driver.Value{}
+	args := []driver.NamedValue{{Value: "tenant"}, {Value: "run"}, {Value: string(domain.RunFailed)}, {Value: "local_f1:" + strings.Repeat("a", 64)}, {Value: at}}
+	if err := applyTerminalCompletionWrite(&state, rows, &counters, untouched.format, statement, args); err == nil || state.Finalizations != 0 {
+		t.Fatal("default format accepted a failure marker")
+	}
+	state = selected.state
+	if err := applyTerminalCompletionWrite(&state, rows, &counters, selected.format, statement, args); err == nil || state.Finalizations != 0 {
+		t.Fatal("failure marker without exact failed Run commitment was accepted")
+	}
 }
 
 type LocalTerminalCompletionSnapshot struct {
@@ -559,7 +608,7 @@ func (tx *terminalCompletionTx) Rollback() error {
 func (s *LocalTerminalPublicationSessionConnectedSeed) InstallTerminalCompletionSQL(t *testing.T) *LocalTerminalCompletionSQLFixture {
 	t.Helper()
 	cleanup := s.InstallTerminalCleanupSQL(t)
-	f := &LocalTerminalCompletionSQLFixture{cleanup: cleanup, currentTransaction: -1, state: LocalTerminalCompletionSnapshot{LeasePresent: true, material: make(map[string][]driver.Value), eventIndex: make(map[string][]driver.Value), eventRecords: make(map[string]string)}}
+	f := newTerminalCompletionSQLFixture(cleanup)
 	if counters := s.parent.graph.counters; len(counters) != 0 {
 		if len(counters) != 2 {
 			t.Fatal("original scheduler counter projection")
@@ -771,7 +820,7 @@ func (c *terminalCompletionConn) ExecContext(ctx context.Context, statement stri
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if err := applyTerminalCompletionWrite(&c.f.state, c.f.cleanup.seed.parent.graph.rows, &c.f.cleanup.seed.parent.graph.counters, terminalCompletionLocalV2, statement, args); err != nil {
+	if err := applyTerminalCompletionWrite(&c.f.state, c.f.cleanup.seed.parent.graph.rows, &c.f.cleanup.seed.parent.graph.counters, c.f.format, statement, args); err != nil {
 		return nil, err
 	}
 	return c.terminalCleanupConn.ExecContext(ctx, statement, args)

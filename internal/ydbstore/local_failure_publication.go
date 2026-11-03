@@ -68,11 +68,13 @@ func (h *LocalFailureV1) Prepare(ctx context.Context) (err error) {
 	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v1", Version: h.version, Parent: e.parent.Clone(), Source: e.source.Clone(), ProfileDigest: pd, FrontierDigest: fd, Stop: domain.KnownMCPServiceErrorV1, Cleanup: "joined_retained", Accounting: h.accounting.Clone(), Bodies: bodies, Derived: h.snapshot.Job.Run.Clone().DerivedContext}
 	if h.version == 2 {
 		c.Schema, c.Stop = "sessionless.terminal-failure-custody.v2", domain.ModelOutcomeUnknownV2
+	} else if h.version == 3 {
+		c.Schema, c.Stop = "sessionless.terminal-failure-custody.v3", domain.MCPOutcomeUnknownV3
 	}
 	c.CapturedAt = h.capturedAt
 	for _, op := range h.ops {
 		normalized := json.RawMessage(op.Response)
-		if h.version == 2 && op.Observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 {
+		if (h.version == 2 || h.version == 3) && op.Observation.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 {
 			normalized = json.RawMessage("null")
 		}
 		c.Operations = append(c.Operations, localFailureOperationV1{Reservation: op.Reservation.Clone(), Observation: op.Observation.Clone(), Normalized: normalized})

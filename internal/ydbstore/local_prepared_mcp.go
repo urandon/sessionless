@@ -213,6 +213,12 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 	if err != nil || bound.ID() != decoded.Call.ID || bound.Name() != decoded.Call.Name || !bytes.Equal(bound.Arguments(), decoded.Call.Arguments) {
 		return nil, domain.ErrMembershipDenied
 	}
+	// The fresh Run/call ID is not permission to replay an unresolved effect.
+	// Authenticate actual historical capsules before the first request PUT,
+	// proxy, reservation or network action, in this SAME bounded logical call.
+	if source.materializeHistoryLocked(callCtx) != nil || source.denyUnresolvedMCP(bound, grant) != nil {
+		return nil, domain.ErrMembershipDenied
+	}
 	for _, prior := range source.state.operations {
 		if prior.Reservation.Operation.CallID == bound.ID() {
 			return nil, domain.ErrMembershipDenied

@@ -488,10 +488,10 @@ Store/worker conformance suites. The Go verification CI job has a separate
 ordinary race selections, builds, integration and policy checks. Parallel
 30-minute `go-local` and `go-connected` jobs run `make test-ordinary-ci-tail` and
 `make test-connected-ci` over the complete package roots. A fourth parallel
-30-minute Go job, `go-runtime`, runs the unchanged three-part
+30-minute Go job, `go-runtime`, runs the complete four-part
 `make test-mcp-offline` gate followed by `make test-connected-worker-ci`.
-It adds no Node setup, database/service or credential. Its theoretical fifteen
-plus fifteen minutes of test ceilings, before setup/compilation, do not prove
+It adds no Node setup, database/service or credential. Its theoretical twenty
+plus fifteen minutes of test ceilings exceed the job limit before setup/compilation; they do not prove
 the combined group fits: a new exact-head CI run must qualify the actual budget.
 Local `make test` runs ordinary and connected selections sequentially, even
 under `make -j`. Both retain the race detector and 15-minute per-binary bounds.

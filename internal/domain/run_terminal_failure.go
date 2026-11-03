@@ -8,11 +8,12 @@ import (
 
 const KnownMCPServiceErrorV1 = "mcp_service_error"
 const ModelOutcomeUnknownV2 = "model_outcome_unknown"
+const MCPOutcomeUnknownV3 = "mcp_outcome_unknown"
 
 // The compact commitment keeps its original shape. Each admitted capsule schema
 // selects exactly one stop language; a crossed/unknown pair is never a fallback.
 func TerminalFailureSchemaStopValid(schema, stop string) bool {
-	return schema == "sessionless.terminal-failure-custody.v1" && stop == KnownMCPServiceErrorV1 || schema == "sessionless.terminal-failure-custody.v2" && stop == ModelOutcomeUnknownV2
+	return schema == "sessionless.terminal-failure-custody.v1" && stop == KnownMCPServiceErrorV1 || schema == "sessionless.terminal-failure-custody.v2" && stop == ModelOutcomeUnknownV2 || schema == "sessionless.terminal-failure-custody.v3" && stop == MCPOutcomeUnknownV3
 }
 
 // RunTerminalFailureV1 is retained correspondence DATA, never a producer,

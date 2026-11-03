@@ -153,6 +153,13 @@ func BuildCanonicalV1(input []sessioncontext.EventPayload, maxBytes, maxEvents u
 	for _, span := range runs {
 		intervals = append(intervals, span)
 	}
+	unresolved, err := unresolvedToolSpans(records)
+	if err != nil {
+		return nil, err
+	}
+	// Correlate the UNKNOWN pair itself through its fixed notice. Merely
+	// protecting the trailing notice would leave the tool span summarizable.
+	intervals = append(intervals, unresolved...)
 	sort.Slice(intervals, func(i, j int) bool {
 		if intervals[i].Start == intervals[j].Start {
 			return intervals[i].End > intervals[j].End

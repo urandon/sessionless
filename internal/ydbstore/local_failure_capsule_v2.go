@@ -38,7 +38,7 @@ func (c localFailureCapsuleV2) projection() localFailureCapsule {
 }
 
 func localFailureFormatValid(c localFailureCapsule) bool {
-	return c.Version == c.Accounting.Version && domain.TerminalFailureSchemaStopValid(c.Schema, c.Stop) && (c.Version == 1 && c.Schema == "sessionless.terminal-failure-custody.v1" || c.Version == 2 && c.Schema == "sessionless.terminal-failure-custody.v2")
+	return c.Version == c.Accounting.Version && domain.TerminalFailureSchemaStopValid(c.Schema, c.Stop) && (c.Version == 1 && c.Schema == "sessionless.terminal-failure-custody.v1" || c.Version == 2 && c.Schema == "sessionless.terminal-failure-custody.v2" || c.Version == 3 && c.Schema == "sessionless.terminal-failure-custody.v3")
 }
 
 // V2's explicit discriminant is checked before any consumer interprets rows.
@@ -66,6 +66,8 @@ func validateLocalFailureAccounting(v ports.OwnedOperationFailureAccountingV1, p
 		return v.ValidateFor(parent, source)
 	case 2:
 		return ports.OwnedOperationFailureAccountingV2(v).ValidateFor(parent, source)
+	case 3:
+		return ports.OwnedOperationFailureAccountingV3(v).ValidateFor(parent, source)
 	default:
 		return domain.ErrMembershipDenied
 	}
@@ -76,6 +78,8 @@ func localFailureAccountingDigest(v ports.OwnedOperationFailureAccountingV1) (st
 		return v.Digest()
 	case 2:
 		return ports.OwnedOperationFailureAccountingV2(v).Digest()
+	case 3:
+		return ports.OwnedOperationFailureAccountingV3(v).Digest()
 	default:
 		return "", domain.ErrMembershipDenied
 	}
@@ -83,6 +87,9 @@ func localFailureAccountingDigest(v ports.OwnedOperationFailureAccountingV1) (st
 func localFailureVersionDigest(version uint32, v any) (string, error) {
 	if version == 1 {
 		return localFailureDigest(v)
+	}
+	if version == 3 {
+		return localFailureV3Digest(v)
 	}
 	if version != 2 {
 		return "", domain.ErrMembershipDenied

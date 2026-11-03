@@ -29,6 +29,8 @@ func localFailureSeal(run domain.Run, events []localCapsuleEventV1) (string, err
 	version := uint32(1)
 	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v2" {
 		version = 2
+	} else if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v3" {
+		version = 3
 	}
 	d, err := localFailureVersionDigest(version, events)
 	if err != nil || d != run.TerminalFailure.EventsDigest {

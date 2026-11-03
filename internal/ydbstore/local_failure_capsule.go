@@ -70,7 +70,7 @@ func localFailureFrontierDigest(parent domain.OwnedAttemptEffectParentV1, accoun
 
 func localFailurePlan(run domain.Run, limits domain.ProductLimits, c localFailureCapsule) (*canonicaloutput.FailurePlanV1, error) {
 	deny := func() (*canonicaloutput.FailurePlanV1, error) { return nil, domain.ErrMembershipDenied }
-	if !localFailureFormatValid(c) || c.Cleanup != "joined_retained" || c.Parent.Validate() != nil || c.Source.ValidateForExecution(c.Parent.Authority.ExecutionPlacementV2, c.Parent.Authority.HarnessBinding, c.Parent.Authority.SubstrateBinding, c.Parent.Authority.AdmissionCostCeiling) != nil || len(c.Operations) < 2 || len(c.Operations) > 12 || c.ProfileDigest != c.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest || validateLocalFailureAccounting(c.Accounting, c.Parent, c.Source) != nil || len(c.Accounting.Operations) != len(c.Operations) {
+	if !localFailureFormatValid(c) || c.Version == 3 && !localFailureV3BodyLanguage(c) || c.Cleanup != "joined_retained" || c.Parent.Validate() != nil || c.Source.ValidateForExecution(c.Parent.Authority.ExecutionPlacementV2, c.Parent.Authority.HarnessBinding, c.Parent.Authority.SubstrateBinding, c.Parent.Authority.AdmissionCostCeiling) != nil || len(c.Operations) < 2 || len(c.Operations) > 12 || c.ProfileDigest != c.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest || validateLocalFailureAccounting(c.Accounting, c.Parent, c.Source) != nil || len(c.Accounting.Operations) != len(c.Operations) {
 		return deny()
 	}
 	if c.Parent.Scope.TenantID != run.TenantID || c.Parent.Scope.SessionID != run.SessionID || c.Parent.Scope.RunID != run.ID || !domain.EqualRunDerivedContextV1(c.Derived, run.DerivedContext) {
@@ -94,10 +94,10 @@ func localFailurePlan(run domain.Run, limits domain.ProductLimits, c localFailur
 	var total uint64
 	for i, item := range c.Operations {
 		r, o := item.Reservation, item.Observation
-		unknown := c.Version == 2 && i == len(c.Operations)-1
+		unknown := (c.Version == 2 || c.Version == 3) && i == len(c.Operations)-1
 		bodyValid := localFailureBytes(item.Normalized, o.ResponseBytes, o.ResponseDigest)
 		if unknown {
-			bodyValid = r.Operation.Kind == domain.AttemptOperationModelV1 && o.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 && ports.FailureModelUnknownReasonV2(o.Reason) && o.ResponseRef == "" && o.ResponseDigest == "" && o.ResponseBytes == 0 && bytes.Equal(item.Normalized, []byte("null"))
+			bodyValid = localFailureUnknownResponseAbsent(r, o) && bytes.Equal(item.Normalized, []byte("null")) && (c.Version == 2 && r.Operation.Kind == domain.AttemptOperationModelV1 || c.Version == 3 && r.Operation.Kind == domain.AttemptOperationMCPToolV1)
 		}
 		if r.Operation.Scope != c.Accounting.Scope || r.Operation.Sequence != uint64(i+1) || r.ValidateForParent(c.Parent.Authority, c.Parent.Reservation) != nil || o.ValidateForReservation(r) != nil || !bodyValid || len(item.Normalized) > 64<<10 || uint64(len(item.Normalized)) > (384<<10)-total || i > 0 && r.Operation.ValidatePredecessor(c.Operations[i-1].Reservation, c.Operations[i-1].Observation) != nil {
 			return deny()
@@ -109,6 +109,8 @@ func localFailurePlan(run domain.Run, limits domain.ProductLimits, c localFailur
 		row, err := ports.BuildOwnedOperationFailureRowV1(r, o, c.Parent, c.Source)
 		if c.Version == 2 {
 			row, err = ports.BuildOwnedOperationFailureRowV2(r, o, c.Parent, c.Source)
+		} else if c.Version == 3 {
+			row, err = ports.BuildOwnedOperationFailureRowV3(r, o, c.Parent, c.Source)
 		}
 		if err != nil || !reflect.DeepEqual(row, c.Accounting.Operations[i]) {
 			return deny()
@@ -139,6 +141,14 @@ func localFailurePlan(run domain.Run, limits domain.ProductLimits, c localFailur
 			return deny()
 		}
 		previous := c.Operations[i-1]
+		if c.Version == 3 && i == len(c.Operations)-1 {
+			pair, err := localFailureUnknownMCPPair(c.ProfileDigest, previous, item)
+			if err != nil {
+				return deny()
+			}
+			events = append(events, pair...)
+			continue
+		}
 		tool, te := mcpadmission.DecodeSealedToolResultDataV1(item.Reservation, item.Observation, item.Normalized)
 		model, me := configuredinference.DecodeSealedRetainedResponseV2(c.ProfileDigest, previous.Reservation, previous.Observation, previous.Normalized)
 		valid := te == nil && me == nil && tool.IsError() == (i == len(c.Operations)-1) && model.Call != nil && model.Stop == configuredinference.StopToolV1 && previous.Reservation.Operation.Kind == domain.AttemptOperationModelV1
@@ -181,6 +191,9 @@ func localFailurePlan(run domain.Run, limits domain.ProductLimits, c localFailur
 	if c.Version == 2 {
 		return canonicaloutput.EncodeModelAfterMCPFailureV2(run.ID, limits, events)
 	}
+	if c.Version == 3 {
+		return canonicaloutput.EncodeMCPOutcomeUnknownFailureV3(run.ID, limits, events)
+	}
 	return canonicaloutput.EncodeKnownMCPServiceFailureV1(run.ID, limits, events)
 }
 
@@ -194,7 +207,7 @@ func localFailureOperationBodies(ops []localFailureOperationV1) ([]domain.BlobRe
 		}
 		bodyRefs := []domain.BlobRef{request}
 		if o.Outcome == domain.AttemptOperationAcceptedOutcomeUnknownV1 {
-			if r.Operation.Kind != domain.AttemptOperationModelV1 || !ports.FailureModelUnknownReasonV2(o.Reason) || o.ResponseRef != "" || o.ResponseDigest != "" || o.ResponseBytes != 0 {
+			if !localFailureUnknownResponseAbsent(r, o) {
 				return nil, domain.ErrMembershipDenied
 			}
 		} else {
@@ -265,6 +278,8 @@ func encodeLocalFailureCapsule(c localFailureCapsule, limit uint64) ([]byte, err
 		body, err = json.Marshal(localFailureCapsuleV1(c))
 	case 2:
 		body, err = json.Marshal(c.wireV2())
+	case 3:
+		body, err = json.Marshal(c.wireV3())
 	default:
 		return nil, domain.ErrMembershipDenied
 	}
@@ -301,13 +316,19 @@ func decodeLocalFailureCapsule(body []byte) (localFailureCapsule, error) {
 			return c, domain.ErrMembershipDenied
 		}
 		c = wire.projection()
+	case tag.Schema == "sessionless.terminal-failure-custody.v3" && tag.Version == 3:
+		var wire localFailureCapsuleV3
+		if d.Decode(&wire) != nil {
+			return c, domain.ErrMembershipDenied
+		}
+		c = wire.projection()
 	default:
 		clearLocalFailureNormalized(c)
 		return localFailureCapsule{}, domain.ErrMembershipDenied
 	}
 	raw, err := encodeLocalFailureCapsule(c, operationbody.LocalTerminalCapsuleBytesV1)
 	defer clear(raw)
-	if err != nil || !bytes.Equal(raw, body) || !localFailureFormatValid(c) || c.Version == 2 && !localFailureV2BodyLanguage(c) {
+	if err != nil || !bytes.Equal(raw, body) || !localFailureFormatValid(c) || c.Version == 2 && !localFailureV2BodyLanguage(c) || c.Version == 3 && !localFailureV3BodyLanguage(c) {
 		clearLocalFailureNormalized(c)
 		return localFailureCapsule{}, domain.ErrMembershipDenied
 	}

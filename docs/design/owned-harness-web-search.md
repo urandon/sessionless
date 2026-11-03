@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.10, cross-process private consent reading. The BFF role below
+Version: 0.2.11, bounded same-claim consent polling. The wait limits below
+clarify per-call SQL limits and aggregate waiting costs without extending the
+original claim. The 0.2.10 cross-process private consent-reading role
 clarifies original-owner argument custody; the 0.2.9 retained formats and
 0.2.8 search-credential contracts are unchanged. The credential section
 extends 0.2.7's original actor, tool-catalog lineage
@@ -391,7 +393,8 @@ linked checklist in comments, without rewriting original assignments:
   and quality measurements remain required for the full outcome, not hidden
   prerequisites for an honest earlier actor/catalog implementation.
 
-Reuse the existing logical-call budget: three SQL callbacks total, at most 32
+Capture and creation share one existing ten-second logical-call budget: three
+SQL callbacks total, at most 32
 statements per callback/96 total and 4 MiB metadata including out-of-SQL bodies.
 Compose private capture/create phases; do not nest the current two-transaction
 `CreateWebSearchConsent` inside a capture that has consumed its allowance, reset
@@ -723,12 +726,36 @@ mint a grant, extend its scope or create a transferable dispatch capability.
 
 The original worker waits within its sole physical claim. Waiting consumes the
 same 120-second active wall-time ceiling and every shorter lease, grant, price,
-allocation and cost window; it is not a pause or deadline extension. Reads and
-UI refreshes have finite per-request and aggregate budgets. Deadline, denial,
-cancellation or revocation ends the pending request with an explicit stop and
-zero search sends. A late approval cannot reopen it. Worker loss is reconcile-
-only: even a durable approval does not authorize a new worker, renewed admission,
-resume, fresh Run replay or replacement claim to send this query.
+allocation and cost window; it is not a pause or deadline extension. Each poll
+is one existing logical call, bounded by ten seconds, three SQL callbacks,
+32 statements per callback and 96 total. Every poll is also clamped to the
+original entry, pending-request and caller-context deadlines. It never nests
+another public call or renews admission.
+
+One private counter on the original entry permits at most 24 polls shared by
+both search requests in the Attempt. The first poll may begin immediately;
+subsequent poll starts are at least five seconds apart, including across
+requests. All polls share a four-MiB aggregate metadata-materialization limit,
+including actual copies. Before each poll, seed its existing private authority
+budget with bytes already spent; charge prospective materialization before
+copying and retain charges on failure. Neither a new poll nor a second request
+resets this aggregate allowance. SQL callbacks never perform body I/O. The
+original holder retains immutable argument and grant evidence; each poll
+authenticates the existing current parent, canonical actor, Source, claim,
+fence and consent in its transaction, with current Web-session authority
+required for a recorded decision. It does not reload argument or grant bodies.
+
+Poll again only after a successful authenticated pending result. An authority,
+Source or storage error fails closed and is not retried as healthy pending.
+Exhausting the poll or byte limit denies search before send and preserves
+unreserved custody through the existing reconcile-only path; exhaustion alone
+does not invent a revoked, expired, cancelled or worker-lost terminal fact.
+An observed deadline, denial, cancellation or revocation uses its existing
+explicit stop with zero search sends. A late approval cannot reopen it. Worker
+loss is reconcile-only: even a durable approval does not authorize a new worker,
+renewed admission, resume, fresh Run replay or replacement claim to send this
+query. WebUI refreshes remain separately bounded authenticated requests and do
+not reset the worker's counter, metadata allowance or original deadlines.
 
 Approval is necessary, never sufficient. The existing reserve operation atomically
 rechecks the exact approved receipt and all current authority, then reserves the

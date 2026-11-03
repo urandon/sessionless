@@ -45,7 +45,7 @@ type ownedCurrentScope struct {
 
 type ownedCurrentSnapshot struct {
 	profile  domain.OwnedAgentProfileCurrentV1
-	spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending []domain.AttemptSpendingAuthorizationCurrentV1
 }
 
 var ownedSpendingKinds = [4]domain.AttemptSpendingComponentKindV1{
@@ -62,7 +62,7 @@ func readOwnedCurrentSnapshot(ctx context.Context, q *ownedAuthorityQuery, scope
 			return denied()
 		}
 	}
-	if scope.tenant != profileRef.Locator.TenantID || scope.owner != profileRef.Locator.OwnerUserID {
+	if scope.tenant != profileRef.Locator.TenantID || scope.owner != profileRef.Locator.OwnerUserID || profileRef.Locator.Profile != domain.AgentLoopOwnedPublicV1 {
 		return denied()
 	}
 	for i, ref := range refs {
@@ -74,7 +74,7 @@ func readOwnedCurrentSnapshot(ctx context.Context, q *ownedAuthorityQuery, scope
 	if err != nil {
 		return denied()
 	}
-	result := ownedCurrentSnapshot{profile: p}
+	result := ownedCurrentSnapshot{profile: p, spending: make([]domain.AttemptSpendingAuthorizationCurrentV1, len(refs))}
 	for i, ref := range refs {
 		if ref.locator.BillingOwnerUserID != p.BillingOwnerUserID {
 			return denied()

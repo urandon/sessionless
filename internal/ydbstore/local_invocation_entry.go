@@ -255,7 +255,7 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 	if err != nil || ctx.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	bodies, err := operationbody.NewV1(ownedOperationScope(parent), parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+	bodies, err := operationbody.NewV1(ownedOperationScope(parent), parent.Authority.HarnessBinding.AgentLoopPolicy.Profile, parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}

@@ -39,9 +39,9 @@ const (
 // documents below are explicitly synthetic, not live qualification or prices.
 // This never opens a database, installs a profile, publishes funding, reads a
 // provider credential or contacts an endpoint. The caller owns real installation.
-func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant domain.TenantID, owner domain.UserID, endpoint string, at time.Time) (root, executable, receiptPath string) {
+func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant domain.TenantID, owner domain.UserID, endpoint string, at time.Time, profile domain.AgentLoopProfileV1) (root, executable, receiptPath string) {
 	t.Helper()
-	if ctx == nil || ctx.Err() != nil || tenant.Validate() != nil || owner.Validate() != nil || at.IsZero() || at.Nanosecond()%1000 != 0 {
+	if ctx == nil || ctx.Err() != nil || tenant.Validate() != nil || owner.Validate() != nil || at.IsZero() || at.Nanosecond()%1000 != 0 || (profile != domain.AgentLoopOwnedPublicV1 && profile != domain.AgentLoopOwnedLocalTextV1) {
 		t.Fatal("invalid original operator fixture scope/clock")
 	}
 	at, end := at.UTC(), at.UTC().Add(10*time.Minute)
@@ -84,8 +84,11 @@ func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant doma
 	service := func(kind domain.ExternalServiceKindV1, amount uint64) *domain.ExternalServiceCostCeilingV1 {
 		return &domain.ExternalServiceCostCeilingV1{Version: 1, Kind: kind, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: string(kind) + "-" + suffix, ResourceRevision: 1, RevocationGeneration: 1, ProfileID: string(kind) + "-synthetic", ProfileRevision: 1, ScopedGrantDigest: h, Currency: cost.Currency, PriceRevision: "synthetic-service-price.v1", PriceObservedAt: at, PriceExpiresAt: end, PriceEvidenceDigest: h, TermsEvidenceDigest: h, PriceState: domain.ExternalServicePriceKnownPaidV1, MaxAmountMicrounits: &amount}
 	}
-	cost.MCPToolCost, cost.WebSearchCost = service(domain.ExternalServiceMCPToolV1, 30), service(domain.ExternalServiceWebSearchV1, 20000)
-	total := uint64(20030)
+	total := uint64(0)
+	if profile == domain.AgentLoopOwnedPublicV1 {
+		cost.MCPToolCost, cost.WebSearchCost = service(domain.ExternalServiceMCPToolV1, 30), service(domain.ExternalServiceWebSearchV1, 20000)
+		total = 20030
+	}
 	cost.MaxTotalAmountMicrounits = &total
 	substrate := base.SubstrateBinding
 	substrate.Kind, substrate.Region, substrate.ImageDigest = domain.SubstrateLocalDevelopmentV1, "", ""
@@ -117,41 +120,53 @@ func newLocalRuntimeOperatorFiles(t *testing.T, ctx context.Context, tenant doma
 	calibration := body("synthetic-calibration", map[string]any{"version": 1, "algorithm": "utf8_affine.v1", "input_domain": "chat_completions_text.v1", "tenant_id": tenant, "owner_user_id": owner, "model_vendor_id": c.ModelVendorID, "model_id": c.ModelID, "response_model_ids": c.ResponseModelIDs, "server_id": c.ServerID, "server_version": c.ServerVersion, "protocol": c.NativeProtocolVersion, "chat_template_digest": c.ChatTemplateDigest, "estimator_version": c.TokenEstimatorVersion, "capability_evidence_digest": capability.Reference.Digest, "model_window_tokens": c.ModelWindowTokens, "max_wire_bytes": c.Limits.RequestBytes, "max_messages": c.Limits.Messages, "max_tools": c.Limits.Tools, "byte_numerator": 1, "byte_denominator": 1, "fixed_tokens": 1, "message_tokens": 1, "tool_tokens": 1})
 	c.CalibrationDigest = calibration.Reference.Digest
 	p := domain.OwnedAgentProfileCurrentV1{Version: 1, Locator: domain.OwnedAgentProfileLocatorV1{TenantID: tenant, OwnerUserID: owner, Profile: domain.AgentLoopOwnedPublicV1, ResourceKind: resource.Kind, ModelVendorID: c.ModelVendorID, ModelID: c.ModelID, InputDataClass: domain.ProviderDataPublicV1}, Backend: backend, Resource: resource, Substrate: substrate, ReviewReceipt: review.Reference, ProviderCatalogDigest: h, ProviderRouteDigest: h, CapabilityEvidenceDigest: capability.Reference.Digest, PrivacyPolicyDigest: h, EffectivePolicyDigest: h, ProviderPriceDigest: invoice.Reference.Digest, ProviderTermsDigest: invoice.Reference.Digest, SubstratePriceDigest: invoice.Reference.Digest, SubstrateTermsDigest: invoice.Reference.Digest, SubstratePriceState: domain.ExternalServicePriceKnownFreeV1, BillingOwnerUserID: owner, InputModalities: []domain.AgentInputModalityV1{domain.AgentInputTextV1}, ModelWindowTokens: c.ModelWindowTokens, TokenEstimatorVersion: c.TokenEstimatorVersion, CalibrationDigest: c.CalibrationDigest, InstructionVersion: compactioncontext.InstructionVersionV1, CompactionPolicyDigest: compactioncontext.CompactionPolicyDigestV1(), Limits: limits, CostCeiling: cost, Window: domain.OwnedAgentAuthorityWindowV1{ObservedAt: at, PublishedAt: at, ExpiresAt: end}, UpdatedAt: at}
+	p.Locator.Profile = profile
+	if profile == domain.AgentLoopOwnedLocalTextV1 {
+		c.Capabilities.ToolCalls = domain.ProviderEvidenceUnknownV1
+		l := &p.Limits
+		l.MaxConcurrentOperations, l.MaxModelCalls, l.MaxOperations = 1, 1, 1
+		l.MaxAggregateInputTokens, l.MaxAggregateOutputTokens = l.MaxInputTokensPerCall, l.MaxOutputTokensPerCall
+		l.MaxCompactionCalls, l.MaxToolDispatches, l.MaxWebSearches = 0, 0, 0
+		l.MaxSummaryBytes, l.MaxToolArgumentBytes, l.MaxToolResultBytes = 0, 0, 0
+		l.MaxMCPOutboundMessages, l.MaxMCPCatalogPages, l.MaxMCPInboundFrames, l.MaxMCPInboundBytes = 0, 0, 0, 0
+	}
 	m := localoperator.ManifestV1{Version: 1, Configuration: c, Profile: p, InvoiceTerms: terms, Evidence: []localoperator.EvidenceBodyV1{invoice, capability, review, calibration}}
 
-	// Preserve the complete independently finite four-component declarations.
-	// The final-only model does not send MCP/search requests or read their
-	// credential locator. Synthetic reports never claim live vendor acceptance.
-	mcp := mcpadmission.MCPToolGrantV1{Version: 1, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: cost.MCPToolCost.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, ProfileID: cost.MCPToolCost.ProfileID, ProfileRevision: 1, DataPolicyDigest: h, DataClass: "public", ConsentMode: "owner_public_query", ConsentRevision: 1,
-		Endpoint: "https://developers.openai.com/mcp", Transport: "streamable_http", ProtocolVersion: mcpwire.ProtocolVersionV1, SchemaValidator: domain.ConfiguredToolSchemaValidatorV1, ModelDescription: "Synthetic unused docs lookup; model returns a final answer",
-		Descriptor: json.RawMessage("{\"annotations\":{\"readOnlyHint\":true},\"description\":\"synthetic descriptor, not a live catalog\",\"inputSchema\":{\"additionalProperties\":false,\"properties\":{\"query\":{\"maxLength\":30,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"search_openai_docs\"}"),
-		Limits:     mcpwire.LimitsV1{MessageBytes: 64 << 10, AggregateBytes: 256 << 10, JSONDepth: 32, JSONMembers: 4096, SSELineBytes: 64 << 10, SSEEventBytes: 64 << 10, SSEEvents: 128, Tools: 1, DescriptorBytes: 32 << 10, ArgumentBytes: 4 << 10, ResultTextBytes: 4096, ContentItems: 16}, IssuedAt: at, ExpiresAt: end}
-	mcpBody := body("synthetic-mcp-grant", mcp)
-	mcpPriceDoc, mcpTermsDoc := body("synthetic-mcp-price-document", "independent synthetic service price document"), body("synthetic-mcp-terms-document", "independent synthetic service terms document")
-	mcpPrice := body("synthetic-mcp-price-report", mcpadmission.MCPPriceEvidenceV1{Version: 1, GrantDigest: mcpBody.Reference.Digest, Currency: cost.Currency, PriceRevision: cost.MCPToolCost.PriceRevision, PriceState: cost.MCPToolCost.PriceState, MaxAmountMicrounits: cost.MCPToolCost.MaxAmountMicrounits, SourceURL: "https://evidence.example.invalid/mcp-price", SourceBody: mcpPriceDoc.Reference, ObservedAt: at, ExpiresAt: end})
-	mcpTerms := body("synthetic-mcp-terms-report", mcpadmission.MCPTermsEvidenceV1{Version: 1, GrantDigest: mcpBody.Reference.Digest, SourceURL: "https://evidence.example.invalid/mcp-terms", SourceBody: mcpTermsDoc.Reference, ObservedAt: at, ExpiresAt: end})
-	m.Profile.MCPToolGrantDigest, m.Profile.CostCeiling.MCPToolCost.ScopedGrantDigest = mcpBody.Reference.Digest, mcpBody.Reference.Digest
-	m.Profile.CostCeiling.MCPToolCost.PriceEvidenceDigest, m.Profile.CostCeiling.MCPToolCost.TermsEvidenceDigest = mcpPrice.Reference.Digest, mcpTerms.Reference.Digest
-	if err := mcp.ValidateForCost(*m.Profile.CostCeiling.MCPToolCost, at); err != nil {
-		t.Fatal("synthetic original MCP DATA correlation", err)
-	}
-	m.Evidence = append(m.Evidence, mcpBody, mcpPriceDoc, mcpTermsDoc, mcpPrice, mcpTerms)
+	if profile == domain.AgentLoopOwnedPublicV1 {
+		// Preserve the complete independently finite four-component declarations.
+		// The final-only model does not send MCP/search requests or read their
+		// credential locator. Synthetic reports never claim live vendor acceptance.
+		mcp := mcpadmission.MCPToolGrantV1{Version: 1, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: cost.MCPToolCost.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, ProfileID: cost.MCPToolCost.ProfileID, ProfileRevision: 1, DataPolicyDigest: h, DataClass: "public", ConsentMode: "owner_public_query", ConsentRevision: 1,
+			Endpoint: "https://developers.openai.com/mcp", Transport: "streamable_http", ProtocolVersion: mcpwire.ProtocolVersionV1, SchemaValidator: domain.ConfiguredToolSchemaValidatorV1, ModelDescription: "Synthetic unused docs lookup; model returns a final answer",
+			Descriptor: json.RawMessage("{\"annotations\":{\"readOnlyHint\":true},\"description\":\"synthetic descriptor, not a live catalog\",\"inputSchema\":{\"additionalProperties\":false,\"properties\":{\"query\":{\"maxLength\":30,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"search_openai_docs\"}"),
+			Limits:     mcpwire.LimitsV1{MessageBytes: 64 << 10, AggregateBytes: 256 << 10, JSONDepth: 32, JSONMembers: 4096, SSELineBytes: 64 << 10, SSEEventBytes: 64 << 10, SSEEvents: 128, Tools: 1, DescriptorBytes: 32 << 10, ArgumentBytes: 4 << 10, ResultTextBytes: 4096, ContentItems: 16}, IssuedAt: at, ExpiresAt: end}
+		mcpBody := body("synthetic-mcp-grant", mcp)
+		mcpPriceDoc, mcpTermsDoc := body("synthetic-mcp-price-document", "independent synthetic service price document"), body("synthetic-mcp-terms-document", "independent synthetic service terms document")
+		mcpPrice := body("synthetic-mcp-price-report", mcpadmission.MCPPriceEvidenceV1{Version: 1, GrantDigest: mcpBody.Reference.Digest, Currency: cost.Currency, PriceRevision: cost.MCPToolCost.PriceRevision, PriceState: cost.MCPToolCost.PriceState, MaxAmountMicrounits: cost.MCPToolCost.MaxAmountMicrounits, SourceURL: "https://evidence.example.invalid/mcp-price", SourceBody: mcpPriceDoc.Reference, ObservedAt: at, ExpiresAt: end})
+		mcpTerms := body("synthetic-mcp-terms-report", mcpadmission.MCPTermsEvidenceV1{Version: 1, GrantDigest: mcpBody.Reference.Digest, SourceURL: "https://evidence.example.invalid/mcp-terms", SourceBody: mcpTermsDoc.Reference, ObservedAt: at, ExpiresAt: end})
+		m.Profile.MCPToolGrantDigest, m.Profile.CostCeiling.MCPToolCost.ScopedGrantDigest = mcpBody.Reference.Digest, mcpBody.Reference.Digest
+		m.Profile.CostCeiling.MCPToolCost.PriceEvidenceDigest, m.Profile.CostCeiling.MCPToolCost.TermsEvidenceDigest = mcpPrice.Reference.Digest, mcpTerms.Reference.Digest
+		if err := mcp.ValidateForCost(*m.Profile.CostCeiling.MCPToolCost, at); err != nil {
+			t.Fatal("synthetic original MCP DATA correlation", err)
+		}
+		m.Evidence = append(m.Evidence, mcpBody, mcpPriceDoc, mcpTermsDoc, mcpPrice, mcpTerms)
 
-	searchPriceDoc, searchTermsDoc := body("synthetic-search-price-document", "independent synthetic search price document"), body("synthetic-search-terms-document", "independent synthetic search terms document")
-	searchPrice := body("synthetic-search-price-report", localoperator.OwnerAcceptedSearchPriceV2{Version: 2, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Origin: "https://evidence.example.invalid/search-price", ObservedAt: at, ExpiresAt: end, Payload: searchPriceDoc.Reference, PriceRevision: cost.WebSearchCost.PriceRevision, Currency: cost.Currency, Unit: "request", TariffMicrounits: 8000})
-	searchTerms := body("synthetic-search-terms-report", localoperator.OwnerAcceptedSearchTermsV2{Version: 2, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Origin: "https://evidence.example.invalid/search-terms", ObservedAt: at, ExpiresAt: end, Payload: searchTermsDoc.Reference, DataPolicyDigest: h, CredentialAudience: domain.WebSearchCredentialAudienceV1})
-	search := domain.WebSearchResourceGrantV2{Version: 2, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: cost.WebSearchCost.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, ConsentRevision: 1, ProfileID: domain.WebSearchProfileV1, ProfileRevision: 1, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Endpoint: domain.WebSearchEndpointV1, Method: "POST", CredentialRef: "synthetic-search-locator-no-key", CredentialAudience: domain.WebSearchCredentialAudienceV1, DataPolicyDigest: h, APISchemaDigest: strings.Repeat("b", 64), AdapterArtifactDigest: strings.Repeat("c", 64), Currency: cost.Currency, PriceRevision: cost.WebSearchCost.PriceRevision, PriceEvidenceDigest: searchPrice.Reference.Digest, TermsEvidenceDigest: searchTerms.Reference.Digest, PerCallReservationMicrounits: 10000, AggregateReservationMicrounits: 20000, IssuedAt: at, ExpiresAt: end}
-	searchBody := body("synthetic-search-grant", search)
-	searchDigest, err := search.Digest()
-	if err != nil {
-		t.Fatal("synthetic search DATA", err)
+		searchPriceDoc, searchTermsDoc := body("synthetic-search-price-document", "independent synthetic search price document"), body("synthetic-search-terms-document", "independent synthetic search terms document")
+		searchPrice := body("synthetic-search-price-report", localoperator.OwnerAcceptedSearchPriceV2{Version: 2, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Origin: "https://evidence.example.invalid/search-price", ObservedAt: at, ExpiresAt: end, Payload: searchPriceDoc.Reference, PriceRevision: cost.WebSearchCost.PriceRevision, Currency: cost.Currency, Unit: "request", TariffMicrounits: 8000})
+		searchTerms := body("synthetic-search-terms-report", localoperator.OwnerAcceptedSearchTermsV2{Version: 2, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Origin: "https://evidence.example.invalid/search-terms", ObservedAt: at, ExpiresAt: end, Payload: searchTermsDoc.Reference, DataPolicyDigest: h, CredentialAudience: domain.WebSearchCredentialAudienceV1})
+		search := domain.WebSearchResourceGrantV2{Version: 2, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: cost.WebSearchCost.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, ConsentRevision: 1, ProfileID: domain.WebSearchProfileV1, ProfileRevision: 1, Provider: "tavily", APIProfile: domain.WebSearchAPIProfileV1, Endpoint: domain.WebSearchEndpointV1, Method: "POST", CredentialRef: "synthetic-search-locator-no-key", CredentialAudience: domain.WebSearchCredentialAudienceV1, DataPolicyDigest: h, APISchemaDigest: strings.Repeat("b", 64), AdapterArtifactDigest: strings.Repeat("c", 64), Currency: cost.Currency, PriceRevision: cost.WebSearchCost.PriceRevision, PriceEvidenceDigest: searchPrice.Reference.Digest, TermsEvidenceDigest: searchTerms.Reference.Digest, PerCallReservationMicrounits: 10000, AggregateReservationMicrounits: 20000, IssuedAt: at, ExpiresAt: end}
+		searchBody := body("synthetic-search-grant", search)
+		searchDigest, err := search.Digest()
+		if err != nil {
+			t.Fatal("synthetic search DATA", err)
+		}
+		m.Profile.WebSearchGrantDigest, m.Profile.WebSearchResourceGrant = searchDigest, &domain.WebSearchResourceGrantBodyV2{Version: 2, Body: searchBody.Reference}
+		m.Profile.CostCeiling.WebSearchCost.ProfileID = search.ProfileID
+		m.Profile.CostCeiling.WebSearchCost.ScopedGrantDigest = searchDigest
+		m.Profile.CostCeiling.WebSearchCost.PriceEvidenceDigest, m.Profile.CostCeiling.WebSearchCost.TermsEvidenceDigest = searchPrice.Reference.Digest, searchTerms.Reference.Digest
+		m.SearchExpenditure = &localoperator.OwnerLocalSearchExpenditureV2{Version: 2, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: search.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, GrantDigest: searchDigest, GrantBody: searchBody.Reference, PriceEvidence: searchPrice.Reference, TermsEvidence: searchTerms.Reference, Currency: cost.Currency, PerCallReservationMicrounits: 10000, AggregateReservationMicrounits: 20000, IssuedAt: at, ExpiresAt: end}
+		m.Evidence = append(m.Evidence, searchPriceDoc, searchTermsDoc, searchPrice, searchTerms, searchBody)
 	}
-	m.Profile.WebSearchGrantDigest, m.Profile.WebSearchResourceGrant = searchDigest, &domain.WebSearchResourceGrantBodyV2{Version: 2, Body: searchBody.Reference}
-	m.Profile.CostCeiling.WebSearchCost.ProfileID = search.ProfileID
-	m.Profile.CostCeiling.WebSearchCost.ScopedGrantDigest = searchDigest
-	m.Profile.CostCeiling.WebSearchCost.PriceEvidenceDigest, m.Profile.CostCeiling.WebSearchCost.TermsEvidenceDigest = searchPrice.Reference.Digest, searchTerms.Reference.Digest
-	m.SearchExpenditure = &localoperator.OwnerLocalSearchExpenditureV2{Version: 2, TenantID: tenant, OwnerUserID: owner, BillingOwnerUserID: owner, ResourceID: search.ResourceID, ResourceRevision: 1, RevocationGeneration: 1, GrantDigest: searchDigest, GrantBody: searchBody.Reference, PriceEvidence: searchPrice.Reference, TermsEvidence: searchTerms.Reference, Currency: cost.Currency, PerCallReservationMicrounits: 10000, AggregateReservationMicrounits: 20000, IssuedAt: at, ExpiresAt: end}
-	m.Evidence = append(m.Evidence, searchPriceDoc, searchTermsDoc, searchPrice, searchTerms, searchBody)
 	policy, err := localRuntimeEgressPolicyDigest(m.Configuration)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +208,7 @@ func TestLocalRuntimeOperatorFixturePrivateTemplateAndRealIntake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	at := time.Now().UTC().Truncate(time.Microsecond)
-	root, executable, receipt := newLocalRuntimeOperatorFiles(t, ctx, "synthetic-template-tenant", "synthetic-template-owner", "http://127.0.0.1:35421/v1", at)
+	root, executable, receipt := newLocalRuntimeOperatorFiles(t, ctx, "synthetic-template-tenant", "synthetic-template-owner", "http://127.0.0.1:35421/v1", at, domain.AgentLoopOwnedPublicV1)
 	if _, err := os.Stat(receipt); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("DATA builder installed a receipt", err)
 	}
@@ -264,5 +279,40 @@ func TestLocalRuntimeOperatorFixturePrivateTemplateAndRealIntake(t *testing.T) {
 		if candidate.Validate() == nil {
 			t.Fatalf("existing thirty-second %s maximum was relaxed", field)
 		}
+	}
+}
+
+func TestLocalRuntimeOperatorTextFixturePrivateTemplateAndRealIntake(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	root, executable, receipt := newLocalRuntimeOperatorFiles(t, ctx, "text-template-tenant", "text-template-owner", "http://127.0.0.1:35421/v1", at, domain.AgentLoopOwnedLocalTextV1)
+	if _, err := os.Stat(receipt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("DATA builder installed a receipt", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	var manifest localoperator.ManifestV1
+	if err != nil || json.Unmarshal(raw, &manifest) != nil || len(manifest.Evidence) != 4 {
+		t.Fatal("bounded original text template evidence", err)
+	}
+	p := manifest.Profile
+	if p.Locator.Profile != domain.AgentLoopOwnedLocalTextV1 || manifest.Configuration.Capabilities.ToolCalls != domain.ProviderEvidenceUnknownV1 || p.CostCeiling.MCPToolCost != nil || p.CostCeiling.WebSearchCost != nil || p.MCPToolGrantDigest != "" || p.WebSearchGrantDigest != "" || p.WebSearchResourceGrant != nil || manifest.SearchExpenditure != nil || p.Limits.MaxModelCalls != 1 || p.Limits.MaxOperations != 1 || p.Limits.MaxToolDispatches != 0 || p.Limits.MaxWebSearches != 0 || p.Limits.MaxCompactionCalls != 0 {
+		t.Fatal("text DATA builder fabricated disabled service authority")
+	}
+	if err := localoperator.ValidateManifestTemplate(ctx, raw, executable); err != nil {
+		t.Fatal("actual complete text template validation", err)
+	}
+	source, err := localoperator.OpenFresh(ctx, root, executable)
+	if err != nil {
+		t.Fatal("actual text Source intake", err)
+	}
+	t.Cleanup(func() {
+		if err := source.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	publication, err := source.Publication()
+	if err != nil || publication.Profile.Locator.Profile != domain.AgentLoopOwnedLocalTextV1 || publication.Profile.CostCeiling.MCPToolCost != nil || publication.Profile.CostCeiling.WebSearchCost != nil {
+		t.Fatal("actual text Source publication intent", err)
 	}
 }

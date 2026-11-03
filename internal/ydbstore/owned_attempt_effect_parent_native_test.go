@@ -24,7 +24,7 @@ import (
 type nativeOwnedParentSourceVerifier struct {
 	sourceBytes []byte
 	profile     domain.OwnedAgentProfileCurrentV1
-	spending    [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending    []domain.AttemptSpendingAuthorizationCurrentV1
 }
 
 func (v nativeOwnedParentSourceVerifier) VerifyOwnedAttemptEffectSource(source domain.AttemptExecutionSourceV1) error {
@@ -87,7 +87,7 @@ func nativeOwnedParentGraphFromFinal(t *testing.T, g nativeOwnedFinalGraph) nati
 	if err := store.StartWorkerJob(g.ctx, loaded, lease, at); err != nil {
 		t.Fatalf("canonical queued-to-running prerequisite: %v", err)
 	}
-	verifier := nativeOwnedParentSourceVerifier{sourceBytes: []byte(g.outbox.OwnedExecutionSourceRecord), profile: g.profileReceipt.Profile.Clone()}
+	verifier := nativeOwnedParentSourceVerifier{sourceBytes: []byte(g.outbox.OwnedExecutionSourceRecord), profile: g.profileReceipt.Profile.Clone(), spending: make([]domain.AttemptSpendingAuthorizationCurrentV1, len(g.spendReceipts))}
 	for i, receipt := range g.spendReceipts {
 		verifier.spending[i] = receipt.Authorization.Clone()
 	}

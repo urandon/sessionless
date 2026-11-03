@@ -104,7 +104,7 @@ func (s *Source) verifyOriginalInstallationLocked(receipt ports.OwnedProfilePubl
 		return ErrDenied
 	}
 	manifest, err := decodeManifestTemplate(s.manifest)
-	if err != nil || validateSearchCredentialManifest(manifest) != nil || (manifest.SearchCredential == nil) != (s.searchCredential == nil) ||
+	if err != nil || validateSearchCredentialManifest(manifest) != nil || validateLocalTextEvidence(manifest, s.config) != nil || (manifest.SearchCredential == nil) != (s.searchCredential == nil) ||
 		manifest.SearchCredential != nil && *manifest.SearchCredential != *s.searchCredential {
 		return ErrDenied
 	}

@@ -64,7 +64,7 @@ func accountingV3Fixture(t *testing.T, amount uint64) (domain.OwnedAttemptEffect
 		t.Fatal(err)
 	}
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: "tenant-v3", OwnerUserID: "owner-v3", SessionID: "session-v3", RunID: "run-v3", AttemptID: "attempt-v3"}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for index, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		s := domain.AttemptSpendingAuthorizationCurrentV1{Version: 1, Locator: domain.AttemptSpendingAuthorizationLocatorV1{TenantID: scope.TenantID, AttemptID: scope.AttemptID, ComponentKind: kind, BillingOwnerUserID: scope.OwnerUserID}, RunID: scope.RunID, SessionID: scope.SessionID, OwnerUserID: scope.OwnerUserID, SourceKind: domain.AttemptSpendingOwnerLocalSourceV1, SourceInstallationID: p.InstallationID, SourceInstallationRevision: 1, SourceProfile: domain.OwnedAgentProfileReferenceV1{Locator: p.Locator, RevocationGeneration: 1, Digest: pd}, ResourceID: r.ResourceID, ResourceRevision: r.Revision, ResourceGeneration: r.CredentialGeneration, ProfileID: string(p.Locator.Profile), ProfileRevision: 1, ScopedGrantDigest: h, Currency: c.Currency, PriceRevision: c.PriceRevision, PriceEvidenceDigest: h, TermsEvidenceDigest: h, PriceState: domain.ExternalServicePriceKnownFreeV1, MaxAmountMicrounits: accountingV3Amount(0), RevocationGeneration: 1, State: domain.OwnedAgentCurrentActiveV1, Window: p.Window, UpdatedAt: at, MutationID: "spending-v3"}
 		if index == 1 {

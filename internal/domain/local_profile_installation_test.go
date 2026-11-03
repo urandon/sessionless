@@ -139,6 +139,77 @@ func TestLocalInstallationPublicationExactConfiguration(t *testing.T) {
 	}
 }
 
+func TestLocalInstallationTextProfileWithoutServiceAuthority(t *testing.T) {
+	t.Parallel()
+	g := localTextInstallationGrantFixture(t)
+	if err := g.Validate(); err != nil {
+		t.Fatalf("local text profile must need only actual MODEL/substrate authority, not tool evidence or grants: %v", err)
+	}
+	if g.Profile.Limits.Validate() == nil {
+		t.Fatal("unscoped full-profile validator accepted disabled service limits")
+	}
+}
+
+func localTextInstallationGrantFixture(t testing.TB) ports.OwnedProfilePublicationGrantV1 {
+	t.Helper()
+	g := localInstallationGrantFixture(t)
+	if err := g.Validate(); err != nil {
+		t.Fatalf("original full local profile baseline: %v", err)
+	}
+	p := &g.Profile
+	p.Locator.Profile = domain.AgentLoopProfileV1("owned_local_text_v1")
+	p.MCPToolGrantDigest, p.WebSearchGrantDigest = "", ""
+	p.CostCeiling.MCPToolCost, p.CostCeiling.WebSearchCost = nil, nil
+	p.CostCeiling.MaxTotalAmountMicrounits = new(uint64)
+	p.Substrate.AdmissionCostCeilingDigest, _ = p.CostCeiling.Digest()
+	l := &p.Limits
+	l.MaxConcurrentOperations, l.MaxModelCalls, l.MaxOperations = 1, 1, 1
+	l.MaxAggregateInputTokens, l.MaxAggregateOutputTokens = l.MaxInputTokensPerCall, l.MaxOutputTokensPerCall
+	l.MaxCompactionCalls, l.MaxToolDispatches, l.MaxWebSearches = 0, 0, 0
+	l.MaxSummaryBytes, l.MaxToolArgumentBytes, l.MaxToolResultBytes = 0, 0, 0
+	l.MaxMCPOutboundMessages, l.MaxMCPCatalogPages, l.MaxMCPInboundFrames, l.MaxMCPInboundBytes = 0, 0, 0, 0
+	g.LocalInstallation.Profile.Capabilities.ToolCalls = domain.ProviderEvidenceUnknownV1
+	p.Backend.BackendProfileDigest, _ = g.LocalInstallation.Profile.Digest()
+	p.Locator.BackendProfileDigest = p.Backend.BackendProfileDigest
+	return g
+}
+
+func TestLocalInstallationTextProfileClosedAuthority(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]func(*ports.OwnedProfilePublicationGrantV1){
+		"second_model": func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxModelCalls = 2 },
+		"compaction":   func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxCompactionCalls = 1 },
+		"tool":         func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxToolDispatches = 1 },
+		"search":       func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxWebSearches = 1 },
+		"summary":      func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxSummaryBytes = 1 },
+		"mcp_protocol": func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.Limits.MaxMCPInboundFrames = 1 },
+		"grant":        func(g *ports.OwnedProfilePublicationGrantV1) { g.Profile.MCPToolGrantDigest = strings.Repeat("a", 64) },
+		"cost": func(g *ports.OwnedProfilePublicationGrantV1) {
+			g.Profile.CostCeiling.MCPToolCost = localInstallationGrantFixture(t).Profile.CostCeiling.MCPToolCost
+		},
+		"image": func(g *ports.OwnedProfilePublicationGrantV1) {
+			g.Profile.InputModalities = []domain.AgentInputModalityV1{domain.AgentInputImageV1, domain.AgentInputTextV1}
+		},
+		"tool_capability": func(g *ports.OwnedProfilePublicationGrantV1) {
+			g.LocalInstallation.Profile.Capabilities.ToolCalls = domain.ProviderEvidenceSupportedV1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := localTextInstallationGrantFixture(t)
+			if err := g.Validate(); err != nil {
+				t.Fatalf("valid text baseline: %v", err)
+			}
+			change(&g)
+			g.Profile.Backend.BackendProfileDigest, _ = g.LocalInstallation.Profile.Digest()
+			g.Profile.Locator.BackendProfileDigest = g.Profile.Backend.BackendProfileDigest
+			g.Profile.Substrate.AdmissionCostCeilingDigest, _ = g.Profile.CostCeiling.Digest()
+			if err := g.Validate(); err == nil {
+				t.Fatal("contradictory text authority accepted")
+			}
+		})
+	}
+}
+
 func TestLocalInstallationCorrelationsBeyondMatchingConfigDigest(t *testing.T) {
 	t.Parallel()
 	base := localInstallationGrantFixture(t)

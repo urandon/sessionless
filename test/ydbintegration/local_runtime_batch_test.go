@@ -168,7 +168,7 @@ func TestLocalRuntimeYDBWebTwoMessagesAndTriggerBatch(t *testing.T) {
 		}
 	}
 	model := newLocalRuntimeModel(t)
-	root, executable, receiptPath := newLocalRuntimeOperatorFiles(t, ctx, tenant, owner, model.server.URL+"/v1", clock.Now())
+	root, executable, receiptPath := newLocalRuntimeOperatorFiles(t, ctx, tenant, owner, model.server.URL+"/v1", clock.Now(), domain.AgentLoopOwnedPublicV1)
 	if err := ydbstore.InstallLocalProfile(ctx, client.DB, root, executable, receiptPath); err != nil {
 		t.Fatal("actual trusted local installation", err)
 	}

@@ -53,7 +53,7 @@ type originalLocalRecoveryFixture struct {
 	receipt ports.OwnedProfilePublicationReceiptV1
 	scope   domain.AttemptExecutionSourceScopeV1
 	grants  [4]ports.AttemptSpendingPublicationGrantV1
-	rows    [4]domain.AttemptSpendingAuthorizationCurrentV1
+	rows    []domain.AttemptSpendingAuthorizationCurrentV1
 }
 
 func newOriginalLocalRecoveryFixture(t *testing.T, published int) *originalLocalRecoveryFixture {
@@ -82,6 +82,7 @@ func newOriginalLocalRecoveryFixture(t *testing.T, published int) *originalLocal
 		t.Fatalf("actual original recovery profile publication/receipt: %v", err)
 	}
 	r := &originalLocalRecoveryFixture{root: root, exe: exe, source: source, store: store, sql: f, receipt: receipt, scope: localSearchScope(receipt.Profile, "original-recovery")}
+	r.rows = make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	store.ownedAttemptEffectSourceVerifier = source
 	// The SQL fixture admits only these four exact locator keys. Registering an
 	// empty key is not a spending publication or source/authentication decision.

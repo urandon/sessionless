@@ -99,7 +99,7 @@ func cleanupOwner(t *testing.T, blobs ports.BlobStore, limits domain.AgentLoopLi
 	if err := limits.Validate(); err != nil {
 		t.Fatalf("valid original policy fixture required: %v", err)
 	}
-	s, err := operationbody.NewV1(bodyScope(), limits, blobs)
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, limits, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}

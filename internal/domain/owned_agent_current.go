@@ -41,7 +41,7 @@ func (v OwnedAgentProfileLocatorV1) Validate() error {
 			return err
 		}
 	}
-	if v.Profile != AgentLoopOwnedPublicV1 || v.InputDataClass != ProviderDataPublicV1 {
+	if (v.Profile != AgentLoopOwnedPublicV1 && v.Profile != AgentLoopOwnedLocalTextV1) || v.InputDataClass != ProviderDataPublicV1 || (v.Profile == AgentLoopOwnedLocalTextV1 && v.ResourceKind != ProviderResourceLocalEndpointV1) {
 		return ownedCurrentError("locator.profile", "requires the explicit owned public profile and public data")
 	}
 	switch v.ResourceKind {
@@ -187,13 +187,16 @@ func (v OwnedAgentProfileCurrentV1) Validate() error {
 	if v.State != OwnedAgentCurrentActiveV1 && v.State != OwnedAgentCurrentDisabledV1 && v.State != OwnedAgentCurrentRevokedV1 {
 		return ownedCurrentError("profile.state", "is unsupported")
 	}
-	for _, validate := range []func() error{v.Locator.Validate, v.Backend.Validate, v.Resource.Validate, v.Substrate.Validate, v.InstalledManifest.Validate, v.ReviewReceipt.Validate, v.BillingOwnerUserID.Validate, v.Limits.Validate, v.CostCeiling.Validate, v.Window.Validate} {
+	for _, validate := range []func() error{v.Locator.Validate, v.Backend.Validate, v.Resource.Validate, v.Substrate.Validate, v.InstalledManifest.Validate, v.ReviewReceipt.Validate, v.BillingOwnerUserID.Validate, func() error { return v.Limits.ValidateForProfile(v.Locator.Profile) }, v.CostCeiling.Validate, v.Window.Validate} {
 		if err := validate(); err != nil {
 			return err
 		}
 	}
 	if err := v.Resource.ValidateForBackend(v.Backend); err != nil {
 		return err
+	}
+	if v.Locator.Profile == AgentLoopOwnedLocalTextV1 && (v.Backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || v.Backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 || v.Backend.CredentialDeliveryKind != ProviderCredentialDeliveryNoneV1 || v.Resource.Kind != ProviderResourceLocalEndpointV1 || v.Resource.CredentialMode != ProviderCredentialNoneV1 || v.Substrate.Kind != SubstrateLocalDevelopmentV1 || v.Substrate.WorkloadMode != SubstrateWorkloadInProcessDirectV1 || len(v.InputModalities) != 1 || v.InputModalities[0] != AgentInputTextV1 || v.MCPToolGrantDigest != "" || v.WebSearchGrantDigest != "" || v.WebSearchResourceGrant != nil || v.CostCeiling.MCPToolCost != nil || v.CostCeiling.WebSearchCost != nil) {
+		return ownedCurrentError("profile.local_text", "requires the exact no-auth local text tuple without service authority")
 	}
 	if v.Resource.Kind == ProviderResourceLocalEndpointV1 {
 		if v.Substrate.Kind != SubstrateLocalDevelopmentV1 || v.InstallationID != v.Substrate.LocalInstallationID || v.InstallationRevision != v.Substrate.LocalInstallationRevision {
@@ -213,7 +216,7 @@ func (v OwnedAgentProfileCurrentV1) Validate() error {
 			return err
 		}
 	}
-	for _, digest := range []struct{ name, value string }{{"catalog", v.ProviderCatalogDigest}, {"route", v.ProviderRouteDigest}, {"capability", v.CapabilityEvidenceDigest}, {"privacy", v.PrivacyPolicyDigest}, {"policy", v.EffectivePolicyDigest}, {"price", v.ProviderPriceDigest}, {"terms", v.ProviderTermsDigest}, {"substrate_price", v.SubstratePriceDigest}, {"substrate_terms", v.SubstrateTermsDigest}, {"calibration", v.CalibrationDigest}, {"compaction", v.CompactionPolicyDigest}, {"mcp", v.MCPToolGrantDigest}, {"search", v.WebSearchGrantDigest}} {
+	for _, digest := range []struct{ name, value string }{{"catalog", v.ProviderCatalogDigest}, {"route", v.ProviderRouteDigest}, {"capability", v.CapabilityEvidenceDigest}, {"privacy", v.PrivacyPolicyDigest}, {"policy", v.EffectivePolicyDigest}, {"price", v.ProviderPriceDigest}, {"terms", v.ProviderTermsDigest}, {"substrate_price", v.SubstratePriceDigest}, {"substrate_terms", v.SubstrateTermsDigest}, {"calibration", v.CalibrationDigest}, {"compaction", v.CompactionPolicyDigest}} {
 		if err := ValidateSHA256Digest("owned_agent_current.profile."+digest.name, digest.value); err != nil {
 			return err
 		}
@@ -254,6 +257,12 @@ func (v OwnedAgentProfileCurrentV1) Validate() error {
 		grant string
 		cost  *ExternalServiceCostCeilingV1
 	}{{v.MCPToolGrantDigest, v.CostCeiling.MCPToolCost}, {v.WebSearchGrantDigest, v.CostCeiling.WebSearchCost}} {
+		if v.Locator.Profile == AgentLoopOwnedLocalTextV1 {
+			continue
+		}
+		if err := ValidateSHA256Digest("owned_agent_current.profile.service_grant", service.grant); err != nil {
+			return err
+		}
 		if service.cost == nil {
 			return ownedCurrentError("profile.service", "requires both explicit independently priced service grants")
 		}

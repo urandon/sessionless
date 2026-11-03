@@ -11,10 +11,11 @@ type (
 )
 
 const (
-	AgentLoopOwnedPublicV1 AgentLoopProfileV1   = "owned_agent_public_v1"
-	AgentInputTextV1       AgentInputModalityV1 = "text"
-	AgentInputImageV1      AgentInputModalityV1 = "image"
-	AgentInputFileV1       AgentInputModalityV1 = "file"
+	AgentLoopOwnedPublicV1    AgentLoopProfileV1   = "owned_agent_public_v1"
+	AgentLoopOwnedLocalTextV1 AgentLoopProfileV1   = "owned_local_text_v1"
+	AgentInputTextV1          AgentInputModalityV1 = "text"
+	AgentInputImageV1         AgentInputModalityV1 = "image"
+	AgentInputFileV1          AgentInputModalityV1 = "file"
 )
 
 // AgentLoopLimitsV1 seals the accepted public profile's ceilings. Every field
@@ -46,6 +47,19 @@ type AgentLoopLimitsV1 struct {
 }
 
 func (value AgentLoopLimitsV1) Validate() error {
+	return value.ValidateForProfile(AgentLoopOwnedPublicV1)
+}
+
+// ValidateForProfile requires the caller's explicit sealed profile. It validates
+// bounded DATA, never infers a profile or fresh authority from zero operands.
+func (value AgentLoopLimitsV1) ValidateForProfile(profile AgentLoopProfileV1) error {
+	if profile != AgentLoopOwnedPublicV1 && profile != AgentLoopOwnedLocalTextV1 {
+		return ValidationError{Field: "agent_loop_policy.profile", Reason: "requires a supported explicit profile"}
+	}
+	text := profile == AgentLoopOwnedLocalTextV1
+	if text && (value.MaxConcurrentOperations != 1 || value.MaxModelCalls != 1 || value.MaxOperations != 1 || value.MaxAggregateInputTokens != value.MaxInputTokensPerCall || value.MaxAggregateOutputTokens != value.MaxOutputTokensPerCall) {
+		return ValidationError{Field: "agent_loop_policy.limits", Reason: "text profile requires exactly one MODEL and its single token reservation"}
+	}
 	quantities := []struct {
 		field string
 		value uint64
@@ -72,6 +86,19 @@ func (value AgentLoopLimitsV1) Validate() error {
 		{"max_aggregate_body_bytes", value.MaxAggregateBodyBytes, 1 << 20},
 	}
 	for _, quantity := range quantities {
+		if text {
+			disabled := false
+			switch quantity.field {
+			case "max_compaction_calls", "max_tool_dispatches", "max_web_searches", "max_summary_bytes", "max_tool_argument_bytes", "max_tool_result_bytes", "max_mcp_outbound_messages", "max_mcp_catalog_pages", "max_mcp_inbound_frames", "max_mcp_inbound_bytes":
+				disabled = true
+			}
+			if disabled {
+				if quantity.value != 0 {
+					return ValidationError{Field: "agent_loop_policy.limits." + quantity.field, Reason: "must be disabled for the text profile"}
+				}
+				continue
+			}
+		}
 		if quantity.value == 0 || quantity.value > quantity.max {
 			return ValidationError{Field: "agent_loop_policy.limits." + quantity.field, Reason: "must be positive and within the accepted public-profile ceiling"}
 		}
@@ -165,7 +192,7 @@ func (value AgentLoopPolicyV1) Clone() AgentLoopPolicyV1 {
 // resource/revocation, lease, proxy, provider evidence or service-price freshness,
 // nor does it allocate MCP/search charges or authorize any physical effect.
 func (value AgentLoopPolicyV1) Validate() error {
-	if value.Version != AgentLoopPolicyVersionV1 || value.Profile != AgentLoopOwnedPublicV1 || value.ProfileRevision == 0 {
+	if value.Version != AgentLoopPolicyVersionV1 || (value.Profile != AgentLoopOwnedPublicV1 && value.Profile != AgentLoopOwnedLocalTextV1) || value.ProfileRevision == 0 {
 		return ValidationError{Field: "agent_loop_policy.profile", Reason: "requires explicit version 1 owned public profile and positive revision"}
 	}
 	for _, validate := range []func() error{value.TenantID.Validate, value.OwnerUserID.Validate, value.RunID.Validate, value.AttemptID.Validate, value.Backend.Validate, value.Resource.Validate} {
@@ -178,6 +205,9 @@ func (value AgentLoopPolicyV1) Validate() error {
 	}
 	if err := value.Resource.ValidateForBackend(value.Backend); err != nil {
 		return err
+	}
+	if value.Profile == AgentLoopOwnedLocalTextV1 && (value.Backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || value.Backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 || value.Backend.CredentialDeliveryKind != ProviderCredentialDeliveryNoneV1 || value.Resource.Kind != ProviderResourceLocalEndpointV1 || value.Resource.CredentialMode != ProviderCredentialNoneV1 || len(value.InputModalities) != 1 || value.InputModalities[0] != AgentInputTextV1 || value.MCPToolGrantDigest != "" || value.WebSearchGrantDigest != "" || value.AdmissionCostCeiling.MCPToolCost != nil || value.AdmissionCostCeiling.WebSearchCost != nil) {
+		return ValidationError{Field: "agent_loop_policy.profile", Reason: "local text requires the exact no-auth local MODEL tuple and no service authority"}
 	}
 	for _, token := range []struct {
 		field, value string
@@ -193,7 +223,6 @@ func (value AgentLoopPolicyV1) Validate() error {
 		{"provider_catalog_digest", value.ProviderCatalogDigest}, {"provider_route_digest", value.ProviderRouteDigest},
 		{"capability_evidence_digest", value.CapabilityEvidenceDigest}, {"privacy_policy_digest", value.PrivacyPolicyDigest},
 		{"effective_policy_digest", value.EffectivePolicyDigest}, {"compaction_policy_digest", value.CompactionPolicyDigest},
-		{"mcp_tool_grant_digest", value.MCPToolGrantDigest}, {"web_search_grant_digest", value.WebSearchGrantDigest},
 	} {
 		if err := validateSHA256("agent_loop_policy."+digest.field, digest.value); err != nil {
 			return err
@@ -212,7 +241,7 @@ func (value AgentLoopPolicyV1) Validate() error {
 		}
 		previous = modality
 	}
-	if err := value.Limits.Validate(); err != nil {
+	if err := value.Limits.ValidateForProfile(value.Profile); err != nil {
 		return err
 	}
 	if err := value.AdmissionCostCeiling.Validate(); err != nil {
@@ -227,6 +256,12 @@ func (value AgentLoopPolicyV1) Validate() error {
 		{"mcp_tool_cost", value.MCPToolGrantDigest, value.AdmissionCostCeiling.MCPToolCost},
 		{"web_search_cost", value.WebSearchGrantDigest, value.AdmissionCostCeiling.WebSearchCost},
 	} {
+		if value.Profile == AgentLoopOwnedLocalTextV1 {
+			continue
+		}
+		if err := validateSHA256("agent_loop_policy."+service.name+".grant", service.grant); err != nil {
+			return err
+		}
 		if service.cost == nil || service.cost.TenantID != value.TenantID ||
 			service.cost.OwnerUserID != value.OwnerUserID || service.cost.ScopedGrantDigest != service.grant {
 			return ValidationError{Field: "agent_loop_policy.admission_cost_ceiling." + service.name,

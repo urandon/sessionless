@@ -42,11 +42,14 @@ func (s *Source) spendingPublication(ctx context.Context, scope domain.AttemptEx
 		return zero, ErrDenied
 	}
 	p := s.receipt.Profile
+	if p.Locator.Profile == domain.AgentLoopOwnedLocalTextV1 && component != domain.AttemptSpendingProviderV1 && component != domain.AttemptSpendingSubstrateV1 {
+		return zero, ErrDenied
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if p.ValidateAt(now) != nil || s.config.ValidateAt(now) != nil || scope.TenantID != p.Locator.TenantID || scope.OwnerUserID != p.Locator.OwnerUserID {
 		return zero, ErrDenied
 	}
-	if !originalEnd.IsZero() {
+	if !originalEnd.IsZero() && p.Locator.Profile == domain.AgentLoopOwnedPublicV1 {
 		// This recovery issuer serves a complete four-component package. Bound
 		// its first missing grant by BOTH retained service windows before MAC
 		// production, so a later component cannot reveal an earlier ceiling.

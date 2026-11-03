@@ -307,7 +307,7 @@ func mixedLegacyFailureData(t *testing.T, version uint32, grant mcpadmission.MCP
 	cost.ResourceID, cost.ResourceRevision, cost.RevocationGeneration, cost.ProfileID, cost.ProfileRevision, cost.ScopedGrantDigest = grant.ResourceID, grant.ResourceRevision, grant.RevocationGeneration, grant.ProfileID, grant.ProfileRevision, gd
 	p.MCPToolGrantDigest = gd
 	p.Substrate.AdmissionCostCeilingDigest, _ = p.CostCeiling.Digest()
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		spending[i] = localRuntimeStructuralSpending(t, p, scope, kind)
 	}

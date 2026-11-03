@@ -33,7 +33,7 @@ func retainedStore(t *testing.T, blobs *bodyBlobs, limits domain.AgentLoopLimits
 	if err := limits.Validate(); err != nil {
 		t.Fatalf("retained limits fixture: %v", err)
 	}
-	s, err := operationbody.NewV1(bodyScope(), limits, blobs)
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, limits, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestRetainedPairUncertaintyPoisonsAllOriginalWritesButNotReads(t *testing.T
 		for _, fault := range []string{"put", "tenant", "key", "size", "digest", "uppercase", "open", "corrupt", "oversize", "read", "close"} {
 			t.Run(role+"_"+fault, func(t *testing.T) {
 				b := &retainedFaultBlobs{bodyBlobs: newBodyBlobs(), role: role, fault: fault}
-				s, err := operationbody.NewV1(bodyScope(), retainedLimits(), b)
+				s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, retainedLimits(), b)
 				if err != nil {
 					t.Fatal(err)
 				}

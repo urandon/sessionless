@@ -18,26 +18,27 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
-func admissionSourcesFixture(t testing.TB) (domain.AttemptExecutionSourceScopeV1, domain.OwnedAgentProfileCurrentV1, [4]domain.AttemptSpendingAuthorizationCurrentV1, time.Time) {
+func admissionSourcesFixture(t testing.TB) (domain.AttemptExecutionSourceScopeV1, domain.OwnedAgentProfileCurrentV1, []domain.AttemptSpendingAuthorizationCurrentV1, time.Time) {
 	t.Helper()
 	p, at := ownedCurrentProfileFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: "tenant-189", SessionID: "session-189", OwnerUserID: "owner-189", RunID: "run-189", AttemptID: "attempt-189"}
 	kinds := [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1}
-	var sources [4]domain.AttemptSpendingAuthorizationCurrentV1
+	sources := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range kinds {
 		sources[i] = ownedSpendingFixture(t, p, kind)
 	}
 	return scope, p, sources, at
 }
 
-func cloneAdmissionSources(s [4]domain.AttemptSpendingAuthorizationCurrentV1) [4]domain.AttemptSpendingAuthorizationCurrentV1 {
+func cloneAdmissionSources(s []domain.AttemptSpendingAuthorizationCurrentV1) []domain.AttemptSpendingAuthorizationCurrentV1 {
+	s = append([]domain.AttemptSpendingAuthorizationCurrentV1(nil), s...)
 	for i := range s {
 		s[i] = s[i].Clone()
 	}
 	return s
 }
 
-func mustAdmissionPackage(t testing.TB, scope domain.AttemptExecutionSourceScopeV1, p domain.OwnedAgentProfileCurrentV1, s [4]domain.AttemptSpendingAuthorizationCurrentV1, at time.Time) domain.OwnedAgentExecutionPackageV1 {
+func mustAdmissionPackage(t testing.TB, scope domain.AttemptExecutionSourceScopeV1, p domain.OwnedAgentProfileCurrentV1, s []domain.AttemptSpendingAuthorizationCurrentV1, at time.Time) domain.OwnedAgentExecutionPackageV1 {
 	t.Helper()
 	pkg, err := domain.BuildOwnedAgentExecutionPackageV1(scope, p, s, at)
 	if err != nil {
@@ -629,7 +630,7 @@ func TestOwnedAdmissionSourceMandatoryAtWriterBoundaries(t *testing.T) {
 // particular, model tokens permit '<', which the canonical JSON producer
 // expands to six bytes. The five profile references retain that expansion.
 // This is a structural credential-free fixture, not installed live authority.
-func maximalAdmissionProducerSourcesFixture(t testing.TB) (domain.AttemptExecutionSourceScopeV1, domain.OwnedAgentProfileCurrentV1, [4]domain.AttemptSpendingAuthorizationCurrentV1, time.Time) {
+func maximalAdmissionProducerSourcesFixture(t testing.TB) (domain.AttemptExecutionSourceScopeV1, domain.OwnedAgentProfileCurrentV1, []domain.AttemptSpendingAuthorizationCurrentV1, time.Time) {
 	t.Helper()
 	_, p, _, issued := admissionSourcesFixture(t)
 	const maxIDBytes = 160
@@ -669,7 +670,7 @@ func maximalAdmissionProducerSourcesFixture(t testing.TB) (domain.AttemptExecuti
 	if err := p.ValidateAt(issued); err != nil {
 		t.Fatalf("maximal profile must remain structurally valid/current: %v", err)
 	}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		spending[i] = ownedSpendingFixture(t, p, kind)
 		v := &spending[i]

@@ -72,6 +72,244 @@ func preparedRaw(t *testing.T, m localoperator.ManifestV1) []byte {
 	return raw
 }
 
+// No service declaration or funding publication is created. The generic
+// private-file fixture supplies only synthetic owner roles and calibration;
+// profile selection happens before original intake and receipt construction.
+func localTextTemplateFiles(t *testing.T) (string, string, localoperator.ManifestV1) {
+	t.Helper()
+	root, exe, m := sourceFitFiles(t)
+	c, p := &m.Configuration, &m.Profile
+	p.Locator.Profile = domain.AgentLoopOwnedLocalTextV1
+	c.Capabilities.ToolCalls = domain.ProviderEvidenceUnknownV1
+	p.MCPToolGrantDigest, p.WebSearchGrantDigest = "", ""
+	p.CostCeiling.MCPToolCost, p.CostCeiling.WebSearchCost = nil, nil
+	p.CostCeiling.MaxTotalAmountMicrounits = new(uint64)
+	l := &p.Limits
+	l.MaxModelCalls, l.MaxOperations, l.MaxConcurrentOperations = 1, 1, 1
+	l.MaxAggregateInputTokens, l.MaxAggregateOutputTokens = l.MaxInputTokensPerCall, l.MaxOutputTokensPerCall
+	l.MaxCompactionCalls, l.MaxToolDispatches, l.MaxWebSearches = 0, 0, 0
+	l.MaxSummaryBytes, l.MaxToolArgumentBytes, l.MaxToolResultBytes = 0, 0, 0
+	l.MaxMCPOutboundMessages, l.MaxMCPCatalogPages, l.MaxMCPInboundFrames, l.MaxMCPInboundBytes = 0, 0, 0, 0
+	preparedCostDigest(t, &m)
+	writeFitManifest(t, root, m)
+	return root, exe, m
+}
+
+func TestValidateManifestTemplateLocalTextOriginalIntake(t *testing.T) {
+	root, exe, m := localTextTemplateFiles(t)
+	if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, m), exe); err != nil {
+		t.Fatalf("complete text preparation without service evidence: %v", err)
+	}
+	source := openFitSource(t, t.Context(), root, exe)
+	receipt := acceptSearchSourceTestPostimage(t, source)
+	if receipt.Profile.Locator.Profile != domain.AgentLoopOwnedLocalTextV1 {
+		t.Fatal("original receipt lost text profile")
+	}
+	ref := domain.OwnedAgentProfileReferenceV1{Locator: receipt.Profile.Locator, RevocationGeneration: receipt.Profile.RevocationGeneration, Digest: receipt.Digest}
+	if _, err := source.ReadMCPToolGrant(t.Context(), ref, receipt.Profile.UpdatedAt); err == nil {
+		t.Fatal("text Source supplied MCP grant")
+	}
+	if _, err := source.ReadWebSearchResourceGrant(t.Context(), ref, 4<<10); err == nil {
+		t.Fatal("text Source supplied search grant")
+	}
+	scope := domain.AttemptExecutionSourceScopeV1{TenantID: ref.Locator.TenantID, OwnerUserID: ref.Locator.OwnerUserID, SessionID: "text-session", RunID: "text-run", AttemptID: "text-attempt"}
+	for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1} {
+		g, err := source.SpendingPublicationBefore(t.Context(), scope, kind, receipt.Profile.Window.ExpiresAt)
+		if err != nil || source.VerifyAttemptSpendingPublication(g, g.IssuedAt) != nil {
+			t.Fatalf("actual text %s issuer: %v", kind, err)
+		}
+		if err := source.VerifyOriginalSpendingSources(receipt, []domain.AttemptSpendingAuthorizationCurrentV1{g.Authorization}); err != nil {
+			t.Fatalf("original component authentication %s: %v", kind, err)
+		}
+	}
+	for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
+		if _, err := source.SpendingPublication(t.Context(), scope, kind); err == nil {
+			t.Fatalf("text Source issued disabled %s", kind)
+		}
+	}
+	reopened, err := localoperator.OpenExisting(t.Context(), root, exe, receipt)
+	if err != nil {
+		t.Fatalf("reopen original text receipt: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if err := reopened.VerifyOriginalSpendingSources(receipt, nil); err != nil {
+		t.Fatalf("reopened original private custody: %v", err)
+	}
+}
+
+func TestValidateManifestTemplateLocalTextEvidenceRoles(t *testing.T) {
+	for _, name := range []string{"unreferenced", "same_digest_wrong_role_ref", "calibration_missing", "calibration_duplicate", "calibration_foreign", "service_cost", "service_grant"} {
+		t.Run(name, func(t *testing.T) {
+			root, exe, m := localTextTemplateFiles(t)
+			if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, m), exe); err != nil {
+				t.Fatalf("valid original text baseline: %v", err)
+			}
+			switch name {
+			case "unreferenced":
+				m.Evidence = append(m.Evidence, fitEvidence("extra-unreferenced", []byte("opaque synthetic bytes")))
+			case "same_digest_wrong_role_ref":
+				m.Configuration.CapabilityEvidence.Ref = "absent-exact-role-ref"
+			case "calibration_missing":
+				removePreparedBody(t, &m, m.Configuration.CalibrationDigest)
+			case "calibration_duplicate":
+				body := m.Evidence[3]
+				body.Reference.Ref = "other-calibration"
+				m.Evidence = append(m.Evidence, body)
+			case "calibration_foreign":
+				ref := replacePreparedBody(t, &m, m.Configuration.CalibrationDigest, map[string]any{"version": 1})
+				m.Configuration.CalibrationDigest, m.Profile.CalibrationDigest = ref.Digest, ref.Digest
+			case "service_cost":
+				_, _, full := sourceFitFiles(t)
+				m.Profile.CostCeiling.MCPToolCost = full.Profile.CostCeiling.MCPToolCost
+			case "service_grant":
+				m.Profile.WebSearchGrantDigest = strings.Repeat("a", 64)
+			}
+			if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, m), exe); !errors.Is(err, localoperator.ErrDenied) {
+				t.Fatalf("contradictory %s preparation err=%v", name, err)
+			}
+			writeFitManifest(t, root, m)
+			denied, err := localoperator.OpenFresh(t.Context(), root, exe)
+			if denied != nil {
+				t.Cleanup(func() { _ = denied.Close() })
+			}
+			if !errors.Is(err, localoperator.ErrDenied) || denied != nil {
+				t.Fatalf("contradictory %s original intake err=%v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateManifestTemplateLocalTextSharedRoleAndOpaqueReview(t *testing.T) {
+	for _, name := range []string{"shared_role", "opaque_review"} {
+		t.Run(name, func(t *testing.T) {
+			root, exe, m := localTextTemplateFiles(t)
+			if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, m), exe); err != nil {
+				t.Fatalf("original role baseline: %v", err)
+			}
+			if name == "shared_role" {
+				removePreparedBody(t, &m, m.Profile.ReviewReceipt.Digest)
+				m.Profile.ReviewReceipt = m.Configuration.CapabilityEvidence
+			} else {
+				m.Profile.ReviewReceipt = replacePreparedBody(t, &m, m.Profile.ReviewReceipt.Digest, map[string]any{"mcp_tool": "opaque review text is not service authority", "url": "https://example.invalid/review"})
+			}
+			if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, m), exe); err != nil {
+				t.Fatalf("valid exact roles need not be four distinct bodies/content-classified: %v", err)
+			}
+			writeFitManifest(t, root, m)
+			source := openFitSource(t, t.Context(), root, exe)
+			receipt := acceptSearchSourceTestPostimage(t, source)
+			if err := source.VerifyOriginalSpendingSources(receipt, nil); err != nil {
+				t.Fatalf("same original role policy on authentication: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateManifestTemplateLocalTextReplacementPreservesMode(t *testing.T) {
+	root, exe, _ := localTextTemplateFiles(t)
+	original := openFitSource(t, t.Context(), root, exe)
+	receipt := acceptSearchSourceTestPostimage(t, original)
+	nextRoot, nextExe, next := localTextTemplateFiles(t)
+	next.Profile.ReviewReceipt = replacePreparedBody(t, &next, next.Profile.ReviewReceipt.Digest, "distinct synthetic text successor review")
+	writeFitManifest(t, nextRoot, next)
+	successor, err := original.Replacement(t.Context(), nextRoot, nextExe, receipt)
+	if err != nil {
+		t.Fatalf("same-tag original text replacement: %v", err)
+	}
+	t.Cleanup(func() { _ = successor.Close() })
+	grant, err := successor.Publication()
+	if err != nil || grant.Profile.Locator.Profile != domain.AgentLoopOwnedLocalTextV1 || grant.LocalInstallation == nil || grant.LocalInstallation.Predecessor == nil || grant.Profile.Resource.ResourceID != receipt.Profile.Resource.ResourceID || grant.Profile.Resource.Revision != receipt.Profile.Resource.Revision+1 || grant.Profile.CostCeiling.MCPToolCost != nil || grant.Profile.CostCeiling.WebSearchCost != nil {
+		t.Fatalf("same-tag replacement changed resource/mode/service authority: %v", err)
+	}
+	fullRoot, fullExe, full := sourceFitFiles(t)
+	full.Profile.ReviewReceipt = replacePreparedBody(t, &full, full.Profile.ReviewReceipt.Digest, "different synthetic full-profile review")
+	writeFitManifest(t, fullRoot, full)
+	// Historical full one-shot intake remains independently valid; rejection
+	// must not be attributed to missing complete MCP/search preparation.
+	fullSource := openFitSource(t, t.Context(), fullRoot, fullExe)
+	if _, err := fullSource.Publication(); err != nil {
+		t.Fatalf("valid original full intake baseline: %v", err)
+	}
+	denied, err := original.Replacement(t.Context(), fullRoot, fullExe, receipt)
+	if denied != nil {
+		t.Cleanup(func() { _ = denied.Close() })
+	}
+	if !errors.Is(err, localoperator.ErrDenied) || denied != nil {
+		t.Fatal("text-to-full replacement acquired another mode", err)
+	}
+	fullReceipt := acceptSearchSourceTestPostimage(t, fullSource)
+	textRoot, textExe, text := localTextTemplateFiles(t)
+	text.Profile.ReviewReceipt = replacePreparedBody(t, &text, text.Profile.ReviewReceipt.Digest, "distinct synthetic reverse-mode review")
+	writeFitManifest(t, textRoot, text)
+	if err := localoperator.ValidateManifestTemplate(t.Context(), preparedRaw(t, text), textExe); err != nil {
+		t.Fatal("valid independent text template before reverse replacement", err)
+	}
+	denied, err = fullSource.Replacement(t.Context(), textRoot, textExe, fullReceipt)
+	if denied != nil {
+		t.Cleanup(func() { _ = denied.Close() })
+	}
+	if !errors.Is(err, localoperator.ErrDenied) || denied != nil {
+		t.Fatal("full-to-text replacement acquired another mode", err)
+	}
+}
+
+func TestSourceLocalTextRejectsRehashedDisabledSpendingBeforeMACWithoutPanic(t *testing.T) {
+	for _, consumer := range []string{"original_sources", "publication"} {
+		for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
+			t.Run(consumer+"/"+string(kind), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					root, exe, _ := localTextTemplateFiles(t)
+					source := openFitSource(t, t.Context(), root, exe)
+					receipt := acceptSearchSourceTestPostimage(t, source)
+					scope := domain.AttemptExecutionSourceScopeV1{TenantID: receipt.Profile.Locator.TenantID, OwnerUserID: receipt.Profile.Locator.OwnerUserID, SessionID: "text-guard-session", RunID: "text-guard-run", AttemptID: "text-guard-attempt"}
+					var actual []domain.AttemptSpendingAuthorizationCurrentV1
+					var provider ports.AttemptSpendingPublicationGrantV1
+					for _, allowed := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1} {
+						g, err := source.SpendingPublication(t.Context(), scope, allowed)
+						if err != nil || g.Validate() != nil || source.VerifyAttemptSpendingPublication(g, g.IssuedAt) != nil {
+							t.Fatal("genuine allowed text publication baseline", allowed, err)
+						}
+						actual = append(actual, g.Authorization.Clone())
+						if allowed == domain.AttemptSpendingProviderV1 {
+							provider = g.Clone()
+						}
+					}
+					if err := source.VerifyOriginalSpendingSources(receipt, actual); err != nil {
+						t.Fatal("genuine original provider/substrate source baseline", err)
+					}
+					// Preserve the real grant's authenticator, which is NOT valid for
+					// changed DATA. Rehashing is not a new source approval or service grant.
+					forged := provider.Clone()
+					forged.Authorization.Locator.ComponentKind, forged.Authorization.ResourceGeneration = kind, 1
+					raw, err := forged.Authorization.SourceCanonicalBytes()
+					if err != nil {
+						t.Fatal(err)
+					}
+					ref := fitEvidence("unissued-service-data", raw).Reference
+					ref.Ref = forged.Authorization.SourceAuthorization.Ref
+					forged.Authorization.SourceAuthorization = ref
+					if forged.Validate() != nil || forged.Authorization.ValidateAt(forged.IssuedAt) != nil {
+						t.Fatal("rehashed same-text forbidden component is valid DATA before verification")
+					}
+					defer func() {
+						if value := recover(); value != nil {
+							t.Errorf("disabled service must fail closed before MAC without panic: %v", value)
+						}
+					}()
+					if consumer == "original_sources" {
+						err = source.VerifyOriginalSpendingSources(receipt, []domain.AttemptSpendingAuthorizationCurrentV1{forged.Authorization})
+					} else {
+						err = source.VerifyAttemptSpendingPublication(forged, forged.IssuedAt)
+					}
+					if !errors.Is(err, localoperator.ErrDenied) {
+						t.Fatalf("same-text disabled service verification=%v", err)
+					}
+				})
+			})
+		}
+	}
+}
+
 func replacePreparedBody(t *testing.T, m *localoperator.ManifestV1, digest string, value any) domain.OwnedAgentAuthorityBodyRefV1 {
 	t.Helper()
 	for i, body := range m.Evidence {

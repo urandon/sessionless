@@ -17,8 +17,10 @@ import (
 // credential, SQL, network, process execution or publication is involved.
 //
 // Unlike the historical one-shot OpenFresh intake, complete preparation also
-// requires retained calibration and both complete MCP/search declarations,
-// including MCP inputSchema support in the actual closed model-wire compiler.
+// requires retained calibration. The full profile also requires both complete
+// MCP/search declarations, including MCP inputSchema support in the closed
+// model-wire compiler; local text instead requires only its exact evidence roles
+// and no disabled-service declaration or evidence residue.
 // These are structural/current-window checks, not model qualification,
 // independent review, service-price truth or current Store authorization.
 // KeyFingerprint is checked for form only; no possession of source.key is
@@ -59,12 +61,14 @@ func ValidateManifestTemplate(ctx context.Context, raw []byte, executable string
 	if _, err := configuredinference.DecodeContextCalibrationV1(c, calibration.Body); err != nil {
 		return sourceDenial("calibration evidence")
 	}
-	if err := validateTemplateMCP(m, c, p, at); err != nil {
-		return err
-	}
-	search, err := acceptSearchEvidence(m, p, at)
-	if err != nil || search == nil {
-		return sourceDenial("search expenditure")
+	if p.Locator.Profile == domain.AgentLoopOwnedPublicV1 {
+		if err := validateTemplateMCP(m, c, p, at); err != nil {
+			return err
+		}
+		search, err := acceptSearchEvidence(m, p, at)
+		if err != nil || search == nil {
+			return sourceDenial("search expenditure")
+		}
 	}
 	if ctx.Err() != nil {
 		return ErrDenied
@@ -143,7 +147,46 @@ func materializeManifestTemplate(raw []byte, m ManifestV1, resource, installatio
 	if c.ValidateForOwnedProfile(p) != nil || c.ValidateAt(at) != nil || p.ValidateInitial() != nil {
 		return deny(sourceDenial("profile correlation"))
 	}
+	if validateLocalTextEvidence(m, c) != nil {
+		return deny(sourceDenial("local text evidence"))
+	}
 	return c, p, nil
+}
+
+// The restricted mode has exact retained roles, not a JSON/text classifier.
+// Full-profile evidence intake retains its existing language. Sharing a body
+// between named roles is legitimate when the existing exact-reference rules
+// permit it; calibration remains unique by digest.
+func validateLocalTextEvidence(m ManifestV1, c domain.ConfiguredInferenceProfileV1) error {
+	if m.Profile.Locator.Profile != domain.AgentLoopOwnedLocalTextV1 {
+		return nil
+	}
+	p := m.Profile
+	if m.SearchExpenditure != nil || m.SearchCredential != nil || p.WebSearchResourceGrant != nil || p.MCPToolGrantDigest != "" || p.WebSearchGrantDigest != "" || p.CostCeiling.MCPToolCost != nil || p.CostCeiling.WebSearchCost != nil || len(m.Evidence) == 0 || len(m.Evidence) > 16 ||
+		!hasBody(m.Evidence, c.CapabilityEvidence) || !hasBody(m.Evidence, p.ReviewReceipt) || !hasBody(m.Evidence, c.OperatorTerms) {
+		return ErrDenied
+	}
+	calibration, ok := templateBodyByDigest(m, c.CalibrationDigest, configuredinference.MaxContextCalibrationBytesV1, true)
+	if !ok {
+		return ErrDenied
+	}
+	for i, body := range m.Evidence {
+		ref := body.Reference
+		if ref.Validate() != nil || ref.Bytes != uint64(len(body.Body)) || ref.Digest != hash(body.Body) ||
+			(ref != c.CapabilityEvidence && ref != p.ReviewReceipt && ref != c.OperatorTerms && ref != calibration.Reference) {
+			return ErrDenied
+		}
+		for j := 0; j < i; j++ {
+			if m.Evidence[j].Reference.Ref == ref.Ref {
+				return ErrDenied
+			}
+		}
+	}
+	_, err := configuredinference.DecodeContextCalibrationV1(c, calibration.Body)
+	if err != nil {
+		return ErrDenied
+	}
+	return nil
 }
 
 // Match existing calibration's unique digest and MCP's bounded digest lookup.

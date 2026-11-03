@@ -19,7 +19,7 @@ const (
 type RegisteredAllocationDigestV2 string
 type RegisteredProxyAttestationDigestV2 string
 
-// References preserve the exact original four heads, without embedding their
+// References preserve the exact original profile-selected heads, without embedding their
 // bodies or introducing another spending/source authority.
 type RegisteredSpendingReferenceV1 struct {
 	Locator              AttemptSpendingAuthorizationLocatorV1 `json:"locator"`
@@ -54,7 +54,7 @@ type RegisteredAllocationV2 struct {
 	LocalRuntime                *LocalRuntimeAttestationV2       `json:"local_runtime,omitempty"`
 	SourceDigest                string                           `json:"source_digest"`
 	Profile                     OwnedAgentProfileReferenceV1     `json:"profile"`
-	Spending                    [4]RegisteredSpendingReferenceV1 `json:"spending"`
+	Spending                    RegisteredSpendingListV1         `json:"spending"`
 	SourceIssuedAt              time.Time                        `json:"source_issued_at"`
 	SourceExpiresAt             time.Time                        `json:"source_expires_at"`
 	AllocationID                string                           `json:"allocation_id"`
@@ -66,6 +66,7 @@ type RegisteredAllocationV2 struct {
 }
 
 func (v RegisteredAllocationV2) Clone() RegisteredAllocationV2 {
+	v.Spending = append(RegisteredSpendingListV1(nil), v.Spending...)
 	v.ParentReservation = v.ParentReservation.Clone()
 	if v.LocalRuntime != nil {
 		local := v.LocalRuntime.Clone()
@@ -132,7 +133,10 @@ func (v RegisteredAllocationV2) Validate() error {
 	} else if v.LocalRuntime != nil {
 		return bad()
 	}
-	kinds := [4]AttemptSpendingComponentKindV1{AttemptSpendingProviderV1, AttemptSpendingSubstrateV1, AttemptSpendingMCPToolV1, AttemptSpendingWebSearchV1}
+	kinds := OwnedSpendingComponentsV1(v.Profile.Locator.Profile)
+	if len(kinds) == 0 || len(v.Spending) != len(kinds) {
+		return bad()
+	}
 	for i, s := range v.Spending {
 		if s.Locator.Validate() != nil || s.RevocationGeneration == 0 || ValidateSHA256Digest("registered_allocation.spending_digest", s.Digest) != nil ||
 			s.Locator.TenantID != v.Scope.TenantID || s.Locator.AttemptID != v.Scope.AttemptID || s.Locator.ComponentKind != kinds[i] ||
@@ -157,14 +161,18 @@ func LocalAllocationActiveDeadlineV2(authority ServerlessInvocationAuthorityV1, 
 	cost := authority.AdmissionCostCeiling
 	if authority.SubstrateBinding.Kind != SubstrateLocalDevelopmentV1 ||
 		authority.HarnessBinding.Backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || authority.HarnessBinding.Backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 ||
-		authority.HarnessBinding.Resource.Kind != ProviderResourceLocalEndpointV1 || policy == nil || cost.MCPToolCost == nil || cost.WebSearchCost == nil ||
+		authority.HarnessBinding.Resource.Kind != ProviderResourceLocalEndpointV1 || policy == nil ||
 		authority.HarnessBinding.EvidenceExpiresAt == nil || authority.ValidateAt(parent.ReservedAt) != nil || parent.ValidateForAuthority(authority) != nil ||
 		source.ValidateForExecution(authority.ExecutionPlacementV2, authority.HarnessBinding, authority.SubstrateBinding, cost) != nil || source.IssuedAt.After(parent.ReservedAt) {
 		return bad()
 	}
 	deadline := parent.ReservedAt.Add(policy.Limits.MaxActiveDuration)
-	for _, bound := range []time.Time{authority.InvocationDeadline, authority.Lease.ExpiresAt, source.ExpiresAt, authority.SubstrateBinding.ProfileEvidenceExpiresAt,
-		policy.ExpiresAt, *authority.HarnessBinding.EvidenceExpiresAt, cost.PriceExpiresAt, cost.MCPToolCost.PriceExpiresAt, cost.WebSearchCost.PriceExpiresAt} {
+	bounds := []time.Time{authority.InvocationDeadline, authority.Lease.ExpiresAt, source.ExpiresAt, authority.SubstrateBinding.ProfileEvidenceExpiresAt,
+		policy.ExpiresAt, *authority.HarnessBinding.EvidenceExpiresAt, cost.PriceExpiresAt}
+	if policy.Profile == AgentLoopOwnedPublicV1 {
+		bounds = append(bounds, cost.MCPToolCost.PriceExpiresAt, cost.WebSearchCost.PriceExpiresAt)
+	}
+	for _, bound := range bounds {
 		if bound.Before(deadline) {
 			deadline = bound
 		}
@@ -215,6 +223,7 @@ func BuildRegisteredAllocationV2(authority ServerlessInvocationAuthorityV1, pare
 		LocalRuntime: prepared.LocalRuntime,
 		SourceDigest: sd, Profile: source.Profile, SourceIssuedAt: source.IssuedAt, SourceExpiresAt: source.ExpiresAt,
 		AllocationID: allocationID, AllocationGeneration: allocationGeneration, State: RegisteredPreparationActiveV1, RevocationGeneration: 1, Window: window, UpdatedAt: window.PublishedAt}
+	v.Spending = make(RegisteredSpendingListV1, len(source.Spending))
 	for i, s := range source.Spending {
 		d, _ := s.Digest()
 		v.Spending[i] = RegisteredSpendingReferenceV1{Locator: s.Locator, RevocationGeneration: s.RevocationGeneration, Digest: d, Window: s.Window.Clone()}
@@ -478,7 +487,7 @@ func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocatio
 	case RegisteredProxyWebSearchV1:
 		i = 3
 	}
-	if i < 0 {
+	if i < 0 || i >= len(source.Spending) {
 		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.service_kind", "is unsupported")
 	}
 	if service == RegisteredProxyProviderV1 && policyDigest != allocation.Substrate.EgressPolicyDigest {
@@ -535,7 +544,7 @@ func BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation RegisteredA
 		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.local_mcp_builder", "requires exact original local runtime, MCP spending and bounded observation")
 	}
 	sd, err := source.Digest()
-	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || source.Validate() != nil || window.Validate() != nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.LocalRuntime == nil ||
+	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || source.Validate() != nil || source.Profile.Locator.Profile != AgentLoopOwnedPublicV1 || window.Validate() != nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.LocalRuntime == nil ||
 		allocation.SourceDigest != sd || allocation.Scope != source.Scope || window.ObservedAt.Before(allocation.ParentReservation.ReservedAt) || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ObservedAt.Before(source.IssuedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) || window.ExpiresAt.After(source.ExpiresAt) {
 		return deny()
 	}

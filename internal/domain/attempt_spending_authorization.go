@@ -225,6 +225,16 @@ func (v AttemptSpendingAuthorizationCurrentV1) ValidateAgainstProfile(p OwnedAge
 	if err := p.ValidateAt(now); err != nil {
 		return err
 	}
+	allowed := false
+	for _, kind := range OwnedSpendingComponentsV1(p.Locator.Profile) {
+		if v.Locator.ComponentKind == kind {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return ownedCurrentError("spending.component", "requires an actual component selected by the sealed profile")
+	}
 	digest, err := p.Digest()
 	if err != nil {
 		return err

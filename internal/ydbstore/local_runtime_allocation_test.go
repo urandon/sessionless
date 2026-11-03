@@ -424,7 +424,7 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	if len(prebuild) == 1 {
 		scope = prebuild[0].scope
 	}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range ownedSpendingKinds {
 		if acceptReceipt && (i < 2 || (len(prebuild) == 1 && prebuild[0].authenticFunding)) {
 			grant, err := source.SpendingPublication(t.Context(), scope, kind)

@@ -266,6 +266,13 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 		if err != nil {
 			return err
 		}
+		if profile.Locator.Profile == domain.AgentLoopOwnedLocalTextV1 {
+			if policy.Profile != domain.AgentLoopOwnedLocalTextV1 || len(source.state.operations) != 0 || profile.MCPToolGrantDigest != "" || profile.WebSearchGrantDigest != "" {
+				return q.budget.deny()
+			}
+			at = q.at
+			return nil
+		}
 		grant, err = entry.owner.source.ReadMCPToolGrant(ctx, entry.source.Profile, q.at)
 		if err != nil {
 			return q.budget.deny()
@@ -296,6 +303,9 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if retained != nil {
 		parent = retained.Parent()
 	}
+	if policy.Profile == domain.AgentLoopOwnedLocalTextV1 && parent != nil {
+		return deny()
+	}
 	price, err := store.readOwnedProviderPriceEvidence(ctx, profile)
 	if err != nil || price == nil || price.local == nil || price.price != nil {
 		return deny()
@@ -316,13 +326,23 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 			clear(records[i].Payload)
 		}
 	}()
-	operations := make([]compactioncontext.CompletedOperationV1, len(source.state.operations))
-	descriptor, err := mcpwire.ParseDescriptorV1(grant.Descriptor, grant.Limits)
-	if err != nil {
-		return deny()
+	if policy.Profile == domain.AgentLoopOwnedLocalTextV1 {
+		for _, record := range records {
+			if record.Event.Kind != domain.SessionEventUserMessage && record.Event.Kind != domain.SessionEventAssistantMessage {
+				return deny()
+			}
+		}
 	}
-	tools := []configuredinference.ToolV1{{Name: descriptor.Name(), Description: grant.ModelDescription, Parameters: descriptor.InputSchema()}}
-	defer clear(tools[0].Parameters)
+	operations := make([]compactioncontext.CompletedOperationV1, len(source.state.operations))
+	var tools []configuredinference.ToolV1
+	if policy.Profile == domain.AgentLoopOwnedPublicV1 {
+		descriptor, err := mcpwire.ParseDescriptorV1(grant.Descriptor, grant.Limits)
+		if err != nil {
+			return deny()
+		}
+		tools = []configuredinference.ToolV1{{Name: descriptor.Name(), Description: grant.ModelDescription, Parameters: descriptor.InputSchema()}}
+		defer clear(tools[0].Parameters)
+	}
 	var bytes uint64
 	for i, o := range source.state.operations {
 		var request struct {

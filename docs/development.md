@@ -95,10 +95,12 @@ The complete prepared template must explicitly supply:
   and response-model IDs, server/version/template identity, protocol and auth;
   capability/data-class declarations, model window, estimator and finite limits.
 - Existing profile/backend/substrate and cost declarations. Retain actual
-  capability/review/calibration bodies, canonical owner-local invoice terms,
-  MCP grant and independent price/terms documents, and search resource grant,
-  expenditure and independent source documents. Exact bytes/references and
-  semantic correlations must agree. Hashes do not turn declarations into proof.
+  capability/review/calibration bodies and canonical owner-local invoice terms.
+  The full agent profile also requires MCP grant and independent price/terms
+  documents, plus search resource grant, expenditure and independent source
+  documents. The restricted text profile must not contain those service
+  declarations. Exact bytes/references and semantic correlations must agree.
+  Hashes do not turn declarations into proof.
 - Observed worker/boot-host/network identity, original body hashes/lengths and
   key fingerprint. The checker validates the fingerprint's form only; it does
   not read, create, rotate or authenticate a key.
@@ -109,11 +111,11 @@ The original installer, not this checker or a copied test, owns those fields.
 Internally, validation uses a private deterministic DATA-only projection to run
 the same installed-shape checks; no projected identity or authority is returned.
 
-This complete-template check also requires original calibration and both
-MCP/search declarations; it does not change the historical one-shot intake's
-contract or enable either tool. Windows, invoice and service evidence use their
-existing canonical validators. The later installer still authenticates actual
-private files/key, current SQL publication and its real receipt independently.
+This complete-template check requires original calibration and the selected
+profile's exact evidence roles; it does not enable a tool or change the
+historical one-shot intake's contract. Windows, invoice and applicable service
+evidence use their canonical validators. The later installer still authenticates
+actual private files/key, current SQL publication and its real receipt independently.
 
 Template **preparation** remains separate: the read-only checker neither
 authors evidence nor generates the private installation. Do not copy synthetic
@@ -129,7 +131,34 @@ digests; and substrate host/network, outer-harness artifact, egress-proxy
 artifact/identity, egress-policy and admission-cost digests. Installation-owned
 fields must also remain empty. Nonempty derived fields are rejected, not
 silently replaced. All model/capability/price/invoice/MCP/search evidence and
-body/reference correlations still come from the operator, not from this tool.
+body/reference correlations applicable to the selected profile still come from
+the operator, not from this tool.
+
+Select the mode explicitly in the template's `profile.locator.profile` before
+preparation; there is no separate CLI flag or browser override:
+
+- `owned_agent_public_v1` retains the full bounded agent contract and all four
+  actual provider/substrate/MCP/search authorizations. Its tool capability and
+  independent service evidence must be qualified, not copied from a fixture.
+- `owned_local_text_v1` is the restricted local qualification mode from
+  [configured local inference](design/configured-local-inference.md#local-text-qualification-profile).
+  Use the configured owner-local, no-auth endpoint, public text only, exactly
+  one MODEL operation and an empty tool catalog. Declare tool-call capability
+  as `unknown` or `unsupported`, never as proven supported. Disabled service,
+  compaction and tool budgets are zero; MCP/search grant digests are empty,
+  their cost objects and grant bodies are absent, and the manifest has no
+  search expenditure/credential or extra service evidence bodies. Retain the
+  actual capability, review, calibration and owner-local invoice-terms roles
+  with their exact body references. Admission publishes exactly two actual
+  provider/substrate funding records, not four zero-valued placeholders.
+
+Neither mode is inferred from missing fields. An existing installation cannot
+be switched across these tags by editing its manifest or receipt; use the
+reviewed fresh-installation procedure if a different mode is required. The text
+mode does not support files/images, tools, search or derived compaction. It is
+not a replacement for the full managed or attached MVP path, and it does not
+authorize another model call. The same validation, preparation, installation
+and normal BFF/reconciler/worker commands below apply to either selected tag.
 
 Choose an **unused** canonical absolute installation path whose existing
 parent is owned by the operator with exact mode `0700`. Redirect a finite

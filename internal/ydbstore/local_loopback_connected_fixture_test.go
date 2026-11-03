@@ -307,7 +307,7 @@ func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.Owne
 		f.body = &loopbackOperationBody{scope: scope, ref: requestRef, body: bytes.Clone(f.payload)}
 		bodyReader = f.body
 	} else {
-		adapter, err := operationbody.NewV1(scope, f.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+		adapter, err := operationbody.NewV1(scope, f.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Profile, f.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 		if err != nil {
 			t.Fatalf("original scoped production body adapter: %v", err)
 		}

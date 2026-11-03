@@ -246,7 +246,7 @@ func (b *canonicalFaultBlobs) Put(ctx context.Context, tenant domain.TenantID, k
 
 func canonicalFaultStore(t *testing.T, b ports.BlobStore) (*operationbody.StoreV1, *operationbody.TerminalOutputV1) {
 	t.Helper()
-	s, err := operationbody.NewV1(bodyScope(), retainedLimits(), b)
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, retainedLimits(), b)
 	if err != nil {
 		t.Fatal(err)
 	}

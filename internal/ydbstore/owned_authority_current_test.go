@@ -101,7 +101,7 @@ type ownedReaderFixture struct {
 	store    *Store
 	driver   *ownedCurrentSQLFixture
 	profile  domain.OwnedAgentProfileCurrentV1
-	spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending []domain.AttemptSpendingAuthorizationCurrentV1
 	ref      domain.OwnedAgentProfileReferenceV1
 	refs     [4]ownedSpendingReference
 	scope    ownedCurrentScope
@@ -116,6 +116,7 @@ func newOwnedReaderFixture(t *testing.T) *ownedReaderFixture {
 func newOwnedReaderFixtureAt(t *testing.T, at time.Time, nonce string) *ownedReaderFixture {
 	t.Helper()
 	f := &ownedReaderFixture{driver: &ownedCurrentSQLFixture{ratedSQLFixture: &ratedSQLFixture{rows: make(map[string][]driver.Value), slots: make(map[uint32][]driver.Value)}, at: at}}
+	f.spending = make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	f.scope = ownedCurrentScope{tenant: domain.TenantID("tenant-189" + nonce), owner: domain.UserID("owner-189" + nonce), run: domain.RunID("run-189" + nonce), session: domain.SessionID("session-189" + nonce), attempt: domain.AttemptID("attempt-189" + nonce)}
 	a, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(f.scope.tenant, f.scope.owner, f.scope.run, f.scope.attempt, "fixture-connection", at)
 	if err != nil {

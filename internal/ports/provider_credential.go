@@ -282,8 +282,14 @@ type ProviderCredentialBindingStore interface {
 	AcknowledgeProviderCredentialCleanup(context.Context, ProviderCredentialCleanupV1) error
 }
 
-// ProviderCredentialSecretStore owns plaintext and candidate promotion. No
-// implementation may put secret bytes into its reference or error surfaces.
+// ProviderCredentialSecretStore owns plaintext and logical candidate promotion.
+// An immutable-object backend writes and verifies ciphertext before CAS; Commit
+// and Recover only verify it and must never recreate bytes after cleanup ACK.
+// Inventory covers every object, including ambiguous pre-CAS writes. Current
+// active binding authority, not a second promotion ledger, excludes an object
+// from uncommitted inventory. Physical cursors may advance past filtered objects;
+// later complete sweeps discover writes that became visible behind a cursor.
+// No implementation may put secret bytes into its reference or error surfaces.
 type ProviderCredentialSecretStore interface {
 	ReadProviderCredentialSecret(context.Context, domain.ProviderCredentialBindingV1, int64) ([]byte, error)
 	PutProviderCredentialCandidate(context.Context, ProviderCredentialCandidateScopeV1, []byte) (ProviderCredentialSecretCandidateV1, error)

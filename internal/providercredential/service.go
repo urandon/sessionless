@@ -242,6 +242,9 @@ func (service *Service) reconcileCandidates(ctx context.Context, locator ports.P
 				}
 				continue
 			}
+			if err := service.joinCandidateBorrowers(ctx, candidate); err != nil {
+				return err
+			}
 			if err := service.secrets.DeleteProviderCredentialCandidate(ctx, candidate); err != nil {
 				return ErrBackend
 			}
@@ -278,11 +281,37 @@ func (service *Service) DrainAbandonedCandidates(ctx context.Context, before tim
 			}
 			continue
 		}
+		if err := service.joinCandidateBorrowers(ctx, candidate); err != nil {
+			return ports.ProviderCredentialCandidatePageV1{}, err
+		}
 		if err := service.secrets.DeleteProviderCredentialCandidate(ctx, candidate); err != nil {
 			return ports.ProviderCredentialCandidatePageV1{}, ErrBackend
 		}
 	}
 	return page, nil
+}
+
+// The transactional candidate fence prevents a later publication, but an old
+// immutable object may still have a live local borrower from before rotation.
+// Join only generations older than the validated current binding: using the
+// orphan's generation+1 could revoke the valid current generation instead.
+func (service *Service) joinCandidateBorrowers(ctx context.Context, candidate ports.ProviderCredentialSecretCandidateV1) error {
+	current, found, err := service.bindings.LoadProviderCredential(ctx, candidate.Scope.Locator)
+	if err != nil {
+		return ErrBackend
+	}
+	if !found {
+		return nil
+	}
+	if validateBindingForLocator(current, candidate.Scope.Locator) != nil {
+		return ErrBackend
+	}
+	if current.CredentialGeneration > candidate.Scope.CredentialGeneration {
+		if err := service.revoker.FenceProviderCredentialInvocations(ctx, candidate.Scope.Locator, current.CredentialGeneration); err != nil {
+			return ErrBackend
+		}
+	}
+	return nil
 }
 
 func (service *Service) drainCleanups(ctx context.Context, locator ports.ProviderCredentialLocatorV1) error {

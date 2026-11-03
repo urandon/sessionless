@@ -143,8 +143,8 @@ func TestLocalRuntimeYDBLocalTextExactServiceAbsenceBeforeIdempotency(t *testing
 		t.Fatal(err)
 	}
 	result, err := ingress.IngestBound(ctx, sessioningress.BoundUserInput{Actor: sessioningress.Actor{TenantID: tenant, UserID: owner, Frontend: domain.FrontendWeb, ExternalConversationID: string(session.ID)}, Binding: binding, ExternalEventID: "text-source-message", ReceivedAt: clock.Now(), Text: "one bounded text message"})
-	if err != nil {
-		t.Fatal("actual two-head canonical commit / native 24 NULL service facts", err)
+	if err != nil || !result.Created {
+		t.Fatal("actual new two-head canonical commit / native 24 NULL service facts", result.Created, err)
 	}
 	r := observer.request
 	original, err := domain.DecodeAttemptExecutionSourceV1([]byte(r.OwnedExecutionSourceRecord))
@@ -165,7 +165,9 @@ func TestLocalRuntimeYDBLocalTextExactServiceAbsenceBeforeIdempotency(t *testing
 	duplicate := func(t *testing.T) {
 		t.Helper()
 		got, err := store.CommitCanonicalUserEvent(ctx, r)
-		if err != nil || !reflect.DeepEqual(got, result) {
+		expectedDuplicate := result
+		expectedDuplicate.Created = false
+		if err != nil || got.Created || !reflect.DeepEqual(got, expectedDuplicate) {
 			t.Fatal("restored original public commit", err)
 		}
 		assertUnchanged(t)

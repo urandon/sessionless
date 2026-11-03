@@ -111,6 +111,15 @@ profile bytes remain unchanged. Source publication alone supplies neither
 current database authority nor runtime dispatch permission. See the
 [resource-grant contract](../design/owned-harness-web-search.md#reusable-resource-grant-and-original-invocation-scope).
 
+The optional Source-pinned `search_credential` declaration is nonsecret DATA in
+the same immutable installation manifest. Its `web_search_account` binding,
+audit, candidate fencing and cleanup reuse the existing provider-credential
+records and invocation handle registry; no table, secret ledger or approval
+owner is added. Credential revision/generation are independent of search grant
+resource revision/revocation. Only the fixed `tavily.search` direct SEARCH
+consumer may borrow that credential; every MODEL backend rejects it. Declaration
+or lifecycle success alone grants neither consent nor search execution.
+
 `OwnerLocalSearchExpenditureV2` and closed owner-accepted price/terms snapshots
 are nonsecret declarations within the same private installation manifest and
 bounded original Source holder. They are not new YDB records, a payer registry,

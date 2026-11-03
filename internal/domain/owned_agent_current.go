@@ -33,6 +33,9 @@ type OwnedAgentProfileLocatorV1 struct {
 }
 
 func (v OwnedAgentProfileLocatorV1) Validate() error {
+	if v.ResourceKind == ProviderResourceWebSearchAccountV1 {
+		return ownedCurrentError("locator.resource_kind", "search credentials cannot identify a MODEL profile")
+	}
 	for _, validate := range []func() error{v.TenantID.Validate, v.OwnerUserID.Validate} {
 		if err := validate(); err != nil {
 			return err

@@ -49,6 +49,7 @@ const (
 	ProviderResourceAPIAccountV1            ProviderResourceKindV1 = "api_account"
 	ProviderResourceRouterAccountV1         ProviderResourceKindV1 = "router_account"
 	ProviderResourceLocalEndpointV1         ProviderResourceKindV1 = "local_endpoint"
+	ProviderResourceWebSearchAccountV1      ProviderResourceKindV1 = "web_search_account"
 
 	ProviderCredentialNoneV1       ProviderCredentialModeV1 = "none"
 	ProviderCredentialInvocationV1 ProviderCredentialModeV1 = "invocation"
@@ -162,7 +163,7 @@ func (resource ProviderResourceBindingV1) Validate() error {
 			return ValidationError{Field: "harness_binding.resource", Reason: "none requires an explicit fixture or local endpoint with generation zero"}
 		}
 	case ProviderCredentialInvocationV1:
-		if resource.Kind != ProviderResourceSubscriptionV1 && resource.Kind != ProviderResourceAPIAccountV1 && resource.Kind != ProviderResourceRouterAccountV1 && resource.Kind != ProviderResourceLocalEndpointV1 {
+		if resource.Kind != ProviderResourceSubscriptionV1 && resource.Kind != ProviderResourceAPIAccountV1 && resource.Kind != ProviderResourceRouterAccountV1 && resource.Kind != ProviderResourceLocalEndpointV1 && resource.Kind != ProviderResourceWebSearchAccountV1 {
 			return ValidationError{Field: "harness_binding.resource.kind", Reason: "does not support invocation credentials"}
 		}
 		if resource.CredentialGeneration == 0 {
@@ -175,6 +176,9 @@ func (resource ProviderResourceBindingV1) Validate() error {
 }
 
 func (resource ProviderResourceBindingV1) ValidateForBackend(backend HarnessBackendDescriptorV1) error {
+	if resource.Kind == ProviderResourceWebSearchAccountV1 {
+		return ValidationError{Field: "harness_binding.resource.kind", Reason: "search credentials cannot serve a MODEL backend"}
+	}
 	if err := backend.Validate(); err != nil {
 		return err
 	}

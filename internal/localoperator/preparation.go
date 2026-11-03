@@ -84,6 +84,9 @@ func decodeManifestTemplate(raw []byte) (ManifestV1, error) {
 }
 
 func validateManifestTemplateData(m ManifestV1, identity RuntimeIdentity) error {
+	if validateSearchCredentialManifest(m) != nil {
+		return sourceDenial("search credential declaration")
+	}
 	c, p := m.Configuration, m.Profile
 	if c.Resource.ResourceID != "" || c.Resource.Revision != 0 || c.ProfileRevision != 0 || c.LocalInstallationID != "" || c.LocalInstallationRevision != 0 ||
 		p.Resource.ResourceID != "" || p.Resource.Revision != 0 || p.ProfileRevision != 0 || p.InstallationID != "" || p.InstallationRevision != 0 || p.RevocationGeneration != 0 || p.MutationID != "" || p.State != "" ||

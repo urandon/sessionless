@@ -9,6 +9,24 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
+func TestSearchCredentialBindingUsesDistinctResourceKind(t *testing.T) {
+	ref, err := domain.NewCredentialSecretRef("synthetic/search-generation-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := domain.ProviderCredentialBindingV1{Version: 1, TenantID: "tenant-a", OwnerUserID: "user-a", ResourceKind: domain.ProviderResourceKindV1("web_search_account"), ResourceID: "search-account", ResourceRevision: 3, CredentialGeneration: 7, CandidateMutationID: "search-mutation", State: domain.ProviderCredentialActiveV1, SecretRef: ref, SecretFingerprint: domain.FingerprintCredential([]byte("synthetic-search-marker")), UpdatedAt: time.Unix(100, 0).UTC()}
+	if err := binding.Validate(); err != nil {
+		t.Fatalf("distinct search binding rejected: %v", err)
+	}
+	resource, err := binding.ResourceBinding()
+	if err != nil || resource.CredentialMode != domain.ProviderCredentialInvocationV1 || resource.Kind != binding.ResourceKind {
+		t.Fatalf("search resource=%+v err=%v", resource, err)
+	}
+	if _, err := domain.NewProviderCredentialAuditEventV1(binding, domain.ProviderCredentialAuditIngestedV1); err != nil {
+		t.Fatalf("search audit rejected: %v", err)
+	}
+}
+
 func TestProviderCredentialBindingSeparatesActiveAndRevokedAuthority(t *testing.T) {
 	ref, err := domain.NewCredentialSecretRef("lockbox/provider/secret/version-1")
 	if err != nil {

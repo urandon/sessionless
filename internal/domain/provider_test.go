@@ -8,6 +8,57 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
+func TestSearchResourceNeverAdmitsAnyModelBackend(t *testing.T) {
+	resource := domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceWebSearchAccountV1, ResourceID: "search-account", OwnerUserID: "user-1", Revision: 3, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 7}
+	if err := resource.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []domain.HarnessBackendKindV1{domain.HarnessBackendDirectOpenRouterV1, domain.HarnessBackendDirectOpenAICompatibleV1, domain.HarnessBackendCodexExecV1, domain.HarnessBackendCodexOpenRouterV1, domain.HarnessBackendOpenCodeV1, domain.HarnessBackendDeterministicFixtureV1} {
+		t.Run(string(kind), func(t *testing.T) {
+			binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
+			switch kind {
+			case domain.HarnessBackendDeterministicFixtureV1:
+				// Keep its complete credentialless fixture contract unchanged.
+			case domain.HarnessBackendDirectOpenAICompatibleV1:
+				binding = localContractBinding(t)
+			default:
+				binding.Backend.BackendKind = kind
+				binding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+				binding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1
+				binding.Resource = domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceAPIAccountV1, ResourceID: "model-account", OwnerUserID: "user-1", Revision: 3, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 7}
+				expires := time.Unix(100, 0).UTC()
+				binding.EvidenceExpiresAt = &expires
+			}
+			if err := binding.Backend.Validate(); err != nil {
+				t.Fatalf("invalid MODEL descriptor before SEARCH substitution kind=%s: %v", kind, err)
+			}
+			if err := binding.ValidateAt(time.Unix(20, 0).UTC()); err != nil {
+				t.Fatalf("invalid MODEL binding before SEARCH substitution kind=%s: %v", kind, err)
+			}
+			binding.Resource = resource
+			if err := resource.ValidateForBackend(binding.Backend); err == nil {
+				t.Fatalf("search admitted MODEL backend %s", kind)
+			}
+			if err := binding.Validate(); err == nil {
+				t.Fatalf("search admitted MODEL binding %s", kind)
+			}
+		})
+	}
+	none := resource
+	none.CredentialMode, none.CredentialGeneration = domain.ProviderCredentialNoneV1, 0
+	if none.Validate() == nil {
+		t.Fatal("search accepted credentialless mode")
+	}
+	locator := domain.OwnedAgentProfileLocatorV1{TenantID: "tenant-1", OwnerUserID: "user-1", Profile: domain.AgentLoopOwnedPublicV1, BackendProfileDigest: strings.Repeat("a", 64), ResourceKind: domain.ProviderResourceAPIAccountV1, ResourceID: "model-account", ModelVendorID: "model-vendor", ModelID: "model-id", InputDataClass: domain.ProviderDataPublicV1}
+	if err := locator.Validate(); err != nil {
+		t.Fatalf("invalid MODEL locator before SEARCH substitution: %v", err)
+	}
+	locator.ResourceKind = domain.ProviderResourceWebSearchAccountV1
+	if locator.Validate() == nil {
+		t.Fatal("search accepted MODEL profile locator")
+	}
+}
+
 func TestHarnessBindingDigestBindsEveryAuthorityField(t *testing.T) {
 	t.Parallel()
 	base := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding

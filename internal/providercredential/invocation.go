@@ -45,6 +45,8 @@ type InvocationService struct {
 type providerInvocationState struct {
 	mu       sync.Mutex
 	handle   ports.ProviderInvocationCredentialV1
+	purpose  invocationCredentialPurpose
+	search   ports.SearchInvocationCredentialV1
 	template ports.ProviderCredentialDeliveryTemplateV1
 	file     *credentiallifecycle.PinnedSecretFile
 	consumed bool
@@ -124,11 +126,18 @@ func (service *InvocationService) IssueProviderCredential(ctx context.Context, r
 	if _, exists := service.handles[handle.HandleID]; exists {
 		return ports.ProviderInvocationCredentialV1{}, ErrBackend
 	}
-	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template}
+	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, purpose: invocationCredentialModel, template: template}
 	return handle, nil
 }
 
 func (service *InvocationService) MaterializeProviderCredential(ctx context.Context, handle ports.ProviderInvocationCredentialV1, consume ports.ProviderCredentialConsumerV1) error {
+	if handle.ProviderResource.Kind == domain.ProviderResourceWebSearchAccountV1 {
+		return ErrInvalid
+	}
+	return service.materializeInvocationCredential(ctx, handle, invocationCredentialModel, ports.SearchInvocationCredentialV1{}, consume)
+}
+
+func (service *InvocationService) materializeInvocationCredential(ctx context.Context, handle ports.ProviderInvocationCredentialV1, purpose invocationCredentialPurpose, search ports.SearchInvocationCredentialV1, consume ports.ProviderCredentialConsumerV1) error {
 	if ctx == nil || consume == nil || handle.Validate() != nil {
 		return ErrInvalid
 	}
@@ -140,7 +149,7 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.handle != handle || state.revoked || state.released {
+	if state.handle != handle || state.purpose != purpose || state.search != search || state.revoked || state.released {
 		return ErrNotFound
 	}
 	if state.consumed {
@@ -150,14 +159,20 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 		return ErrExpired
 	}
 	state.consumed = true
+	if err := service.searchBorrowCurrent(ctx, handle, purpose); err != nil {
+		return err
+	}
 
 	locator := ports.ProviderCredentialLocatorV1{TenantID: handle.TenantID, OwnerUserID: handle.OwnerUserID, ResourceKind: handle.ProviderResource.Kind, ResourceID: handle.ProviderResource.ResourceID}
 	binding, found, err := service.bindings.LoadProviderCredential(ctx, locator)
 	if err != nil {
 		return ErrBackend
 	}
-	if !found || !providerCredentialBindingMatchesResource(binding, handle.ProviderResource) {
+	if !found || purpose == invocationCredentialSearch && binding.TenantID != handle.TenantID || !providerCredentialBindingMatchesResource(binding, handle.ProviderResource) {
 		return ErrNotFound
+	}
+	if err := service.searchBorrowCurrent(ctx, handle, purpose); err != nil {
+		return err
 	}
 	maxBytes := service.maxBytes
 	if handle.ProviderResource.Kind == domain.ProviderResourceLocalEndpointV1 && maxBytes > domain.ConfiguredInferenceMaxCredentialBytesV1 {
@@ -165,11 +180,17 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	}
 	secret, err := service.secrets.ReadProviderCredentialSecret(ctx, binding, maxBytes)
 	if err != nil {
+		if purpose == invocationCredentialSearch {
+			zero(secret)
+		}
 		return ErrBackend
 	}
 	defer zero(secret)
 	if len(secret) == 0 || int64(len(secret)) > maxBytes || domain.FingerprintCredential(secret) != binding.SecretFingerprint {
 		return ErrNotFound
+	}
+	if err := service.searchBorrowCurrent(ctx, handle, purpose); err != nil {
+		return err
 	}
 	plan, err := service.materializationPlanLocked(state, secret)
 	if err != nil {
@@ -182,10 +203,17 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	if err := consume(plan, callbackSecret); err != nil {
 		return ErrBackend
 	}
-	return nil
+	return service.searchBorrowCurrent(ctx, handle, purpose)
 }
 
 func (service *InvocationService) ReleaseProviderCredential(ctx context.Context, handle ports.ProviderInvocationCredentialV1) error {
+	if handle.ProviderResource.Kind == domain.ProviderResourceWebSearchAccountV1 {
+		return ErrInvalid
+	}
+	return service.releaseInvocationCredential(ctx, handle, invocationCredentialModel, ports.SearchInvocationCredentialV1{})
+}
+
+func (service *InvocationService) releaseInvocationCredential(ctx context.Context, handle ports.ProviderInvocationCredentialV1, purpose invocationCredentialPurpose, search ports.SearchInvocationCredentialV1) error {
 	if ctx == nil || handle.Validate() != nil {
 		return ErrInvalid
 	}
@@ -216,7 +244,7 @@ func (service *InvocationService) ReleaseProviderCredential(ctx context.Context,
 	}
 	// The stored handle is immutable. Compare its entire tuple before
 	// disclosing per-handle contention.
-	if state.handle != handle {
+	if state.handle != handle || state.purpose != purpose || state.search != search {
 		return ErrNotFound
 	}
 	if finite {

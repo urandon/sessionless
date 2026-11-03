@@ -21,8 +21,8 @@ func (locator ProviderCredentialLocatorV1) Validate() error {
 	if err := locator.OwnerUserID.Validate(); err != nil {
 		return err
 	}
-	if locator.ResourceKind != domain.ProviderResourceAPIAccountV1 && locator.ResourceKind != domain.ProviderResourceRouterAccountV1 && locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
-		return domain.ValidationError{Field: "provider_credential.resource_kind", Reason: "must be an API, router or local endpoint credential resource"}
+	if locator.ResourceKind != domain.ProviderResourceAPIAccountV1 && locator.ResourceKind != domain.ProviderResourceRouterAccountV1 && locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 && locator.ResourceKind != domain.ProviderResourceWebSearchAccountV1 {
+		return domain.ValidationError{Field: "provider_credential.resource_kind", Reason: "must be an API, router, local endpoint or search credential resource"}
 	}
 	return domain.ValidateOpaqueID("provider_credential.resource_id", locator.ResourceID)
 }

@@ -1053,3 +1053,210 @@ search activation; deterministic proof alone does not authorize a paid/live call
 Reuse common MCP/loop/cost groundwork; do not duplicate ledgers or supervisors.
 #94's broader provider matrix, NEEDLE reproduction, private queries and
 PageFetchV1/browser research remain open, not hidden extra MVP gates.
+
+## 0.2.9 candidate: original-loop retained search formats
+
+Draft for independent review and primary acceptance; not an accepted writer,
+runtime registration or activation. This amendment is bounded to #194/#195's
+original controlled loop. #197 still owns the complete typed citation manifest,
+WebUI citation UX and useful-service evaluation. All 0.2.8 authority, custody,
+deadline and accounting requirements above remain prerequisites.
+
+The existing [V3 accounting](../../internal/ports/owned_operation_accounting_v3.go),
+[V3 residual](../../internal/ports/owned_operation_residual_v3.go),
+[V2 capsule](../../internal/ydbstore/local_terminal_capsule_v2_read.go) and
+[V2 context witness](../../internal/compactioncontext/conservative_v2.go)
+deliberately support MCP, not consent-bearing search. Do not widen their closed
+grammars or reinterpret old rows to make a new search turn appear supported.
+The [V2 residual](../../internal/ports/owned_operation_residual_v2.go) already
+supports two consent states and both physical body-key arms; its measured
+accounting and last-reservation equality do not support this paid-search tail.
+Reuse that physical inventory shape, not another store or inventory protocol.
+Use the following explicit successor DATA formats under the same original
+Source/Store, parent, operation ledger, body owner and terminal finalizer:
+
+- `OwnedOperationAccountingDispositionV4`: existing disposition fields with
+  `version:4`, plus `consent_states_digest` and `consent_reserved_bytes`.
+  Each operation row retains its sequence/kind/operation/reservation/observation
+  digests, reserved debit, usage and disposition. The closed MODEL/COMPACTION
+  arm keeps the existing original invoice rule. MCP and SEARCH rows carry
+  `tool_spending_digest`, with their actual component identity, never a renamed
+  MCP witness. Tool disposition `unknown_reserved` means the authenticated
+  full MCP component or the exact SEARCH call reservation, never measured USD.
+  SEARCH requires `search_wire`, the original accepted V2 grant,
+  exact receipt and a 10,000-microunit reservation. Known typed result and
+  unknown vendor USD are distinct; neither reported credits nor a lower report
+  refunds that debit. The SEARCH component remains at most 20,000 per Attempt.
+- `OwnedOperationResidualInventoryV4`: the existing inventory field order and
+  shape with `version:4` and the V4 accounting disposition. `consents` contains
+  the actual one or two nonpending states; every original argument reference
+  must match its exact inventoried consent-key object. Each SEARCH has the
+  same approved request/decision digests as its operation. Unsupported or
+  pending consent, missing inventory and manufactured erasure still deny.
+- `sessionless.terminal-custody.v3`, `codec_version:3`: the V2 capsule fields
+  with V4 `accounting_disposition`, then `consents` and `model_catalogs`.
+  `model_catalogs` is ordered by MODEL sequence and contains exactly one entry
+  per MODEL: `sequence` and optional `tools`. Omitted tools and an authentic
+  empty array retain their own representation; null is rejected. The original
+  writer extracts only the exact supported catalog from each authenticated
+  frozen request before erasure and seals that correspondence with the capsule.
+  COMPACTION has no tools and gets no MODEL catalog entry. Historical DATA
+  cannot replace an old catalog with the current ordinary surface.
+- `ContextDataV3`/`HistoricalRunV3` retain complete MODEL/tool pairs and use a
+  required `version:3` discriminator in each container and a closed correlated
+  tool witness keyed by original scope and sequence. Its
+  kind selects the unchanged MCP witness or the SEARCH V4 spending/reservation
+  row plus exact typed `WebSearchResultV1`. The genuine writer authenticates
+  those facts; the DATA decoder cannot authorize dispatch or current funding.
+  Preserve source IDs, operation/query/wire/result correspondence and the
+  original catalog when fitting, compacting or restoring derived context.
+- `sessionless.terminal-failure-custody.v4`, `version:4`, is a distinct retained,
+  `joined_retained` failure grammar, not successful accounting or erasure.
+  It keeps the existing failure capsule's parent/source, profile/frontier,
+  stop/cleanup/capture time, actual operations, canonical event commitments,
+  retained bodies and optional derived-context fields; `accounting` uses
+  `OwnedOperationFailureAccountingV4`, followed by `consents` and
+  `model_catalogs`. Only the five tail cases below are admitted.
+
+### Retained compaction V3, including mixed parents
+
+The [retained codec dispatch](../../internal/compactioncontext/retained_v2.go)
+and [core decoder](../../internal/compactioncontext/retained.go) currently admit
+only versions 1/2. Add explicit V3 build, decode, sealed-DATA decode and dependency
+reader arms before any V3 writer: summary schema
+`sessionless.retained-compaction-summary.v3`, manifest schema
+`sessionless.compaction-manifest.v3`, and identical summary/manifest `core`
+with `version:3`. The model's seven-field `sessionless.compaction-summary.v1`
+payload remains unchanged and its exact bytes are retained, not silently
+re-encoded. `DerivedContextPlanV1` and existing summary/manifest object keys
+remain unchanged; the plan still commits each object's exact size/raw SHA.
+
+Keep every existing core correspondence: original scope/generation/COMPACTION
+sequence, reservation/observation and normalized-response digests, source-view
+and canonical-frontier identities, profile/policy/bundle/compatibility/calibration
+digests, generation/next-request fits, cut/summary digests and summary token
+bound. V3's cut commits the closed search/MCP witness and canonical projection
+correspondences, original source IDs, ordering and covered/protected/suffix
+partition. Complete MODEL/tool pairs remain indivisible; protected originals
+and the initiating canonical task are not replaced by summary claims.
+
+A V3 child may use an explicitly decoded V1, V2 or V3 parent only after the
+existing exact parent-plan, compatibility, scope, generation and closure checks:
+closure at most two; parent generation one; child generation two in the identical
+original operation scope, or generation one in a distinct Run of the same
+tenant/owner/Session.
+Covered sources strictly grow while preserving every parent's exact original
+source/projection/witness identity under its own codec, not a retagged V2 search
+row. Missing, crossed, cyclic or incompatible parents deny, without trying a
+different decoder. Old V1/V2 readers must reject a V3 parent/container explicitly;
+their old byte encodings, valid mixed-V1/V2 parent rules and goldens stay intact.
+
+Use the same final V3 serializers for prospective summary/manifest/capsule and
+canonical-output bounds, including JSON quoting of worst-case typed results,
+grant/consent/accounting metadata and the retained catalogs. The generation
+request remains tool-free; minimum successor encoding and the actual rebuilt
+next MODEL fit use the invocation's full frozen ordinary catalog and original
+calibration, source and parent commitments. A small tools-disabled probe or
+successful DATA decode is not next-MODEL fit. Admit these bounded artifacts
+before the affected PUT/POST, then validate the actual summary/next request;
+keep the existing 32-KiB retained summary, 128-KiB manifest and all shorter
+admitted/aggregate/capsule/output limits, without a new allowance.
+
+### Closed V4 failure tails and accounting
+
+All rows before the selected tail are the actual complete, bounded causal
+prefix: MODEL/COMPACTION `completed/none` bodies and matched MCP or SEARCH
+pairs; successful SEARCH results are exactly `known_results` or `known_empty`.
+Unknown effects cannot appear inside that prefix. Each reserved SEARCH binds
+the preceding durable MODEL call, exact arguments/query, original actor/source/
+grant/claim and the stored approval receipt. A later valid monotonic stop may
+retain that immutable approval; it never grants another send. No missing row,
+observation, response, human decision or stop evidence is fabricated.
+
+For the table, `R` is the closed reason set `authority_denied`, `cancelled`,
+`deadline`, `transport_unknown`, `worker_lost`; `U` is `R` plus `malformed` and
+`overflow`. A reason string is not failure authority: the original owned
+observer must authenticate the actual zero-send versus possible-send facts
+and persist the corresponding observation under the existing observation
+grant. A guard denial alone cannot manufacture a receipt or observation.
+
+| Stop | Exact durable tail and response | Consent/call binding and truthful projection |
+| --- | --- | --- |
+| `search_consent_stopped` | Last actual operation is MODEL `completed/none`, with its exact durable normalized `web_search` call. No SEARCH reservation or observation exists for this call. | Its exact request is `denied`, `expired`, `cancelled`, `revoked` or `reconcile_only`, with the existing valid revision/decision/stop evidence. Denial retains its actual deny decision; other stops may have no decision or retain an earlier approve decision. Project the authentic earlier prefix plus a fixed not-executed failure notice, including an empty prefix; no SEARCH call/result execution pair is invented. |
+| `search_rejected_before_send` | Last operation is actual SEARCH `rejected_before_send`, reason in `R`, all response-ref/digest/byte fields absent/zero and normalized body exactly JSON `null`. | Exact preceding MODEL call and original approval receipt match the reserved operation; retain any later stop. Project its redacted call and an authenticated not-sent status bound to actual operation/reservation/observation digests, never a vendor result. No continuation or retry follows. |
+| `search_service_error` | Last operation is SEARCH `completed/service_error`; exact durable response bytes decode as `WebSearchResultV1` with `known_service_error`, no sources, and match the reservation/observation. | The same MODEL/request/approve receipt and physical claim bind this result. Project the redacted call and actual bounded typed service-error status plus a fixed failure notice, never raw vendor errors or a final answer. |
+| `search_outcome_unknown` | Last operation is SEARCH `accepted_outcome_unknown`, reason in `U`; response fields absent/zero, normalized body exactly JSON `null`. | Preserve the same actual MODEL/consent/approval/operation bindings and possible-send evidence. Project a redacted call and explicitly unknown operation status with authentic digests, not `WebSearchResultV1`, an empty result or rollback. Retain charge/custody; prohibit replay and MODEL continuation. |
+| `model_after_search_failure` | Last operation is actual MODEL2: either `rejected_before_send/transport_unknown`, or `accepted_outcome_unknown` with `transport_unknown`, `malformed` or `worker_lost`. Both have absent/zero response fields and normalized body exactly JSON `null`. | At least one prior known durable SEARCH result and its exact approved call/receipt remain in the actual complete prefix; any intervening completed COMPACTION stays tool-free. Preserve MODEL2's own reservation, observation, outcome and reported/unknown usage, not the preceding SEARCH as a substitute tail. Project only the true prefix and an explicit not-sent/unknown MODEL failure notice, never a MODEL2 answer or another call/result. |
+
+`OwnedOperationFailureAccountingV4` has canonical fields `version:4`, `scope`,
+`accounting_digest`, `aggregate_debit`, `component_amounts`,
+`consent_states_digest`, `consent_reserved_bytes`, `operations`. Each row has
+`sequence`, `kind`, `operation_digest`, `reservation_digest`,
+`observation_digest`, `outcome`, `reason`, `reserved`, `usage`, and
+`tool_spending_digest` only for MCP/SEARCH. These are exact actual reservation/
+observation projections, not success-disposition rows or invented observed USD.
+The failure digest domain is `sessionless.failure-accounting.v4`, distinct from
+`sessionless.operation-accounting-disposition.v4`. SEARCH keeps its authenticated
+10,000 reservation and original unknown USD usage, including a no-send rejection;
+provider credits are not monetary usage. Preserve actual MODEL usage, including
+an overrun/unknown tail, without refund or continuation. Operation count equals
+actual rows (one MODEL suffices for the consent-stop case), never a phantom
+SEARCH or consent operation. Other missing-observation/unreserved preparation
+denials remain explicit existing reconcile-only cases, not new failure authority.
+
+The existing [consent append](../../internal/ydbstore/web_search_consent.go)
+already charges the same durable Attempt accounting
+`2 * ownedAuthorityHeadBytes` (64 KiB) plus exact `Arguments.Size` in BODY bytes
+only, after the MODEL reservation, without an operation/tool/monetary debit.
+Derive each charge frontier from the request's unique exact durable MODEL
+response/call/argument correspondence in the original ordered states and
+authenticate its body through the original inventory. For reservation sequence
+`i`, include charges whose MODEL frontier is strictly before `i`, in addition
+to setup and actual operation debits through `i`. Final accounting includes
+all actual consent charges, even when the last stopped request was appended
+after the last MODEL reservation: its body-only tail is not in that reservation's
+aggregate. Component amounts and all non-body counters remain unchanged by
+consent. Capture/finalization and historical verification must authenticate the
+actual existing parent accounting row/digest, including its own `UpdatedAt`,
+and consent projection together; do not regenerate that row at the last
+reservation time or impose last-reservation equality on the consent-only tail.
+`consent_reserved_bytes` is that exact sum and `consent_states_digest` commits
+the canonical retained states. Exact lost-ACK recovery and decision/stop updates
+do not recharge. Retain all original nonrefundable reservation/count debits.
+This reconstructs the existing ledger, not a new debit table or authority.
+Prospective terminal/failure fit includes every new field, retained catalog,
+consent, source and bounded worst-case result before the first affected PUT or
+send. Existing operation, body, metadata and capsule ceilings do not increase.
+
+The new canonical SEARCH call projection contains only call/tool identity and
+argument/query digests, never query/argument text. Exact receipt correlation
+stays private.
+The result projection preserves the actual bounded typed sources and their
+operation identity; public metadata omits private receipt and credential facts.
+Private capsule/context call correlation uses the original normalized MODEL
+bytes, not this redacted public projection. A final text mentioning a source
+is not a verified citation manifest or a claim that its page was fetched.
+
+All successor readers select an explicit version/schema before decoding;
+unknown, crossed, duplicate/aliased/null/noncanonical fields deny. Old V1/V2/V3
+bytes, digests, MCP semantics and historical STOP remain unchanged, including
+mixed history. Historical/deletion readers authenticate the original retained
+parent/admission/capsule/terminal seal and cannot recreate a serving holder or
+reconstruct erased request bytes to grant execution. No new table, migration,
+controller, approval registry or signing key follows from these DATA formats.
+
+Required causal proof joins genuine MODEL, original pending/body/canonical
+actor, authenticated BFF decision, same-claim wait, exact receipt-bound reserve
+and before-send, distinct SEARCH key/owned HTTPS, durable typed result, MODEL2,
+then honest terminal/cleanup or supported retained failure. Failure publication
+uses the existing original finalizer and exact mixed physical custody; unknown
+or tainted writes, failed join, missing ownership or uncertain inventory retain
+reconcile-only custody rather than a success erasure receipt. No global
+quiescence gate or renewed cleanup/deadline is added. Cover two Attempts
+sharing one unchanged installed resource profile, cross-substitution denial,
+denial/late approval/cancellation/revocation/unknown effects, lost persistence
+ACKs, actual mixed-inventory cleanup and strict history/compaction/deletion.
+Keep the old goldens and held fixtures unchanged. If an end-to-end baseline
+cannot compile the new vertical, label a temporary candidate mutation restoring
+only the old original-producer denial as mutation RED; do not call a missing
+API, missing catalog or fixture bypass the producer's causal RED.

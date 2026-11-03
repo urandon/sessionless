@@ -56,33 +56,35 @@ type InvoiceTermsV1 struct {
 // fingerprint, so resume cannot silently rotate it. OriginalSource and installed
 // manifest references are derived from the actual retained manifest bytes.
 type ManifestV1 struct {
-	Version           uint32                              `json:"version"`
-	KeyFingerprint    string                              `json:"key_fingerprint"`
-	Configuration     domain.ConfiguredInferenceProfileV1 `json:"configuration"`
-	Profile           domain.OwnedAgentProfileCurrentV1   `json:"profile"`
-	InvoiceTerms      InvoiceTermsV1                      `json:"invoice_terms"`
-	Evidence          []EvidenceBodyV1                    `json:"evidence"`
-	SearchExpenditure *OwnerLocalSearchExpenditureV2      `json:"search_expenditure,omitempty"`
+	Version           uint32                               `json:"version"`
+	KeyFingerprint    string                               `json:"key_fingerprint"`
+	Configuration     domain.ConfiguredInferenceProfileV1  `json:"configuration"`
+	Profile           domain.OwnedAgentProfileCurrentV1    `json:"profile"`
+	InvoiceTerms      InvoiceTermsV1                       `json:"invoice_terms"`
+	Evidence          []EvidenceBodyV1                     `json:"evidence"`
+	SearchExpenditure *OwnerLocalSearchExpenditureV2       `json:"search_expenditure,omitempty"`
+	SearchCredential  *ports.SearchCredentialDeclarationV1 `json:"search_credential,omitempty"`
 }
 
 // Source has one immutable installed declaration, not a registry or per-Attempt
 // approval map. Its private key binds carriers only; provenance is the actual
 // private-file intake, exact retained bodies and runtime correlation below.
 type Source struct {
-	mu       sync.Mutex
-	self     *Source
-	ctx      context.Context
-	cancel   context.CancelFunc
-	key      *sourceKey
-	closed   bool
-	config   domain.ConfiguredInferenceProfileV1
-	profile  domain.OwnedAgentProfileCurrentV1
-	manifest []byte
-	bodies   []EvidenceBodyV1
-	grant    *ports.OwnedProfilePublicationGrantV1
-	receipt  *ports.OwnedProfilePublicationReceiptV1
-	search   *searchAcceptance
-	parent   *Source // original authenticated keeper while replacement is pending
+	mu               sync.Mutex
+	self             *Source
+	ctx              context.Context
+	cancel           context.CancelFunc
+	key              *sourceKey
+	closed           bool
+	config           domain.ConfiguredInferenceProfileV1
+	profile          domain.OwnedAgentProfileCurrentV1
+	manifest         []byte
+	bodies           []EvidenceBodyV1
+	grant            *ports.OwnedProfilePublicationGrantV1
+	receipt          *ports.OwnedProfilePublicationReceiptV1
+	search           *searchAcceptance
+	searchCredential *ports.SearchCredentialDeclarationV1
+	parent           *Source // original authenticated keeper while replacement is pending
 }
 
 // Keep raw key bytes behind a private pointer even if trusted code mistakenly
@@ -192,6 +194,10 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 	}
 	lifetime, cancel := context.WithDeadline(ctx, c.ExpiresAt)
 	s := &Source{ctx: lifetime, cancel: cancel, key: &sourceKey{bytes: key}, config: c, profile: p, manifest: append([]byte(nil), raw...), bodies: manifest.Evidence, search: search, parent: parent}
+	if manifest.SearchCredential != nil {
+		declaration := *manifest.SearchCredential
+		s.searchCredential = &declaration
+	}
 	s.self = s
 	if original != nil && parent == nil {
 		digest, err := p.Digest()
@@ -369,6 +375,7 @@ func (s *Source) Close() error {
 	s.grant = nil
 	s.receipt = nil
 	s.search = nil
+	s.searchCredential = nil
 	s.manifest = nil
 	s.bodies = nil
 	return nil

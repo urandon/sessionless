@@ -103,6 +103,11 @@ func (s *Source) verifyOriginalInstallationLocked(receipt ports.OwnedProfilePubl
 		hash(s.manifest) != s.config.OriginalSource.Digest || s.receipt.Profile.InstalledManifest != s.config.OriginalSource {
 		return ErrDenied
 	}
+	manifest, err := decodeManifestTemplate(s.manifest)
+	if err != nil || validateSearchCredentialManifest(manifest) != nil || (manifest.SearchCredential == nil) != (s.searchCredential == nil) ||
+		manifest.SearchCredential != nil && *manifest.SearchCredential != *s.searchCredential {
+		return ErrDenied
+	}
 	digest, err := receipt.Profile.Digest()
 	p := s.receipt.Profile
 	if err != nil || digest != s.receipt.Digest || s.config.ValidateForOwnedProfile(p) != nil ||

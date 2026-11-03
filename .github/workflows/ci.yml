@@ -62,12 +62,6 @@ jobs:
       - name: Run repository CI contract
         run: make ci-core-base
 
-      - name: Run additive offline MCP connected fixtures
-        run: make test-mcp-offline
-
-      - name: Run connected-worker tests over all packages
-        run: make test-connected-worker-ci
-
   go-local:
     name: Go ordinary local-tail verification
     runs-on: ubuntu-latest
@@ -138,6 +132,44 @@ jobs:
       - name: Run connected-session tests over all packages
         run: make test-connected-ci
 
+  go-runtime:
+    name: Go MCP and connected-worker verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Prove cold Go caches are absent or empty
+        if: "startsWith(github.event.head_commit.message, 'ci(cold-go): ')"
+        shell: bash
+        run: |
+          set -eu
+          test "$GOCACHE" = "$GITHUB_WORKSPACE/.git/sessionless-go-cache/go-build"
+          test "$GOMODCACHE" = "$GITHUB_WORKSPACE/.git/sessionless-go-cache/go-mod"
+          test ! -L "$GITHUB_WORKSPACE/.git/sessionless-go-cache"
+          for cache_dir in "$GOCACHE" "$GOMODCACHE"; do
+            test ! -L "$cache_dir"
+            if test -e "$cache_dir"; then
+              test -d "$cache_dir"
+              entries=$(find "$cache_dir" -mindepth 1 -maxdepth 1 -print -quit)
+              test -z "$entries"
+            fi
+          done
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+          cache: "${{ !startsWith(github.event.head_commit.message, 'ci(cold-go): ') }}"
+
+      - name: Run additive offline MCP connected fixtures
+        run: make test-mcp-offline
+
+      - name: Run connected-worker tests over all packages
+        run: make test-connected-worker-ci
+
   web-browser:
     name: Web browser and accessibility
     runs-on: ubuntu-latest
@@ -164,7 +196,7 @@ jobs:
 
   ydb:
     name: YDB schema and state store
-    needs: [verify, go-connected, go-local]
+    needs: [verify, go-connected, go-local, go-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -271,7 +303,7 @@ jobs:
 
   ydb-security-isolated:
     name: Attached-worker isolated YDB security gate
-    needs: [verify, go-connected, go-local]
+    needs: [verify, go-connected, go-local, go-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -345,7 +377,7 @@ jobs:
 
   local-stand:
     name: Local multi-service stand
-    needs: [verify, go-connected, go-local]
+    needs: [verify, go-connected, go-local, go-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -393,7 +425,7 @@ jobs:
 
   terraform:
     name: Terraform environments
-    needs: [verify, go-connected, go-local]
+    needs: [verify, go-connected, go-local, go-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -435,6 +467,7 @@ jobs:
       - verify
       - go-connected
       - go-local
+      - go-runtime
       - ydb
       - ydb-security-isolated
       - local-stand

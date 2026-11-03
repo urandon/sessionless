@@ -49,9 +49,9 @@ const localTerminalLegacyEvidenceSQL = `SELECT
  OR p.operation_accounting_record IS NOT NULL OR p.operation_accounting_digest IS NOT NULL
  OR p.web_search_consent_record IS NOT NULL OR p.web_search_consent_digest IS NOT NULL
  THEN CAST(1 AS Uint64) ELSE CAST(0 AS Uint64) END
- FROM substrate_execution_evidence AS e INNER JOIN attempt_effect_reservations AS p
- ON p.tenant_id=e.tenant_id AND p.attempt_id=e.attempt_id AND p.kind=$3
- WHERE e.tenant_id=$1 AND e.attempt_id=$2`
+ FROM (SELECT $1 AS tenant_id,$2 AS attempt_id,$3 AS kind) AS k
+ INNER JOIN attempt_effect_reservations AS p ON p.tenant_id=k.tenant_id AND p.attempt_id=k.attempt_id AND p.kind=k.kind
+ INNER JOIN substrate_execution_evidence AS e ON e.tenant_id=k.tenant_id AND e.attempt_id=k.attempt_id`
 
 func localTerminalLegacyManifestsSQL(count int) string {
 	if count < 1 || count > 4096 {

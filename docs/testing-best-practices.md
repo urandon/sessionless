@@ -198,15 +198,17 @@ source-policy test checks this disjoint union against both adversarial future
 names and the actual repository test-name corpus; only fresh full executions
 and exact-head CI establish the runtime budget.
 After the two normal connected partitions, `make test-connected` runs
-`make test-mcp-offline`: two sequential uncached race/shuffle executions for the
+`make test-mcp-offline`: three sequential uncached race/shuffle executions for the
 explicitly tagged synthetic MCP transport fixture. The first selects the complete
-`^TestLocalSessionCredentialedMCPOfflineWeb` prefix; the second selects the original
-complete `^TestLocalSessionCredentialedMCPOffline` prefix excluding that Web prefix.
+`^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError` family; the second
+selects the complete `^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure`
+family. The third selects the original complete
+`^TestLocalSessionCredentialedMCPOffline` prefix excluding both families.
 They are disjoint and include every current and future original-prefix member
 exactly once. Each binary keeps the five-minute bound, race detector, count1,
 shuffle190351, package, tag and overlay. The test-execution budgets now sum to
-ten minutes, in addition to compilation and two binary initializations; the former
-single-binary cumulative five-minute ceiling is not preserved. No scenario,
+fifteen minutes, in addition to compilation and three binary initializations;
+the previous two-execution ten-minute aggregate ceiling is not preserved. No scenario,
 subtest or assertion is shortened. Separate recipe
 lines stop at the first failure, including under `make -j`. The source-policy
 test checks the exact commands, real corpus, future names and guard mutations.
@@ -227,7 +229,7 @@ selections; both connected executions explicitly disable result caching. The CI 
 30-minute budget is unchanged and still needs actual verification. See the Go
 command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
 
-GitHub CI has ten required jobs. Its 30-minute Go verification job runs
+GitHub CI has eleven required jobs. Its 30-minute Go verification job runs only
 `make ci-core-base`: the same canonical ordered prerequisite list as `ci-core`,
 with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
 position before build and integration. The base runs the
@@ -245,8 +247,11 @@ Local/release `make test-ordinary` and `ci-core` retain the complete four-comman
 ordinary contract. A parallel 30-minute `go-connected` job runs
 `make test-connected-ci`: complete Terminal and non-Terminal/non-Worker
 selections over the same full package patterns, without the additive MCP gate.
-The existing `verify` job runs the complete connected Worker family through
-`make test-connected-worker-ci` after its complete core and offline MCP checks.
+The parallel 30-minute `go-runtime` job runs the unchanged complete
+`make test-mcp-offline` target, then the complete connected Worker family through
+`make test-connected-worker-ci`. Separate unconditional steps preserve
+stop-on-failure order. This job needs only checkout, the cold-cache guard and
+pinned Go; no Node/Web build, database environment, service or credential is added.
 The ordinary local tail and the two other connected selections remain in their
 own parallel jobs. CI thus
 uses three disjoint normal connected executions instead of the local two:
@@ -255,24 +260,31 @@ selected once, including future families; each invocation still covers the
 same complete package patterns with race detection, count1 and a 15-minute
 binary bound. There is one more binary/package initialization, not shared
 process state or test-order dependence. The source-policy test checks both
-local and CI unions against adversarial names and the actual corpus. The existing
-`verify` job runs the same required `make test-mcp-offline` target after
-`make ci-core-base` instead. All three Go jobs keep their 30-minute bound; the offline
-gate keeps its five-minute per-binary bound across both sequential executions,
+local and CI unions against adversarial names and the actual corpus. All four
+Go verification jobs keep a 30-minute bound; the offline
+gate keeps its five-minute per-binary bound across all three sequential executions,
 race/shuffle/uncached flags and
-additive-only overlay guards. Redistribution across the existing jobs does not
-change test coverage or job bounds. The source-policy test requires exactly one CI
+additive-only overlay guards. Moving these unchanged commands does not
+change test coverage or widen any job bound. Adding the eleventh job adds a
+separate runner/setup and another 30-minute job allowance; it does not preserve
+the previous aggregate workflow resource ceiling. The runtime group's theoretical
+test ceilings are fifteen minutes for MCP plus fifteen minutes for Worker,
+before compilation, package initialization and action setup. Those ceilings
+alone therefore do not prove that the combined job fits its 30-minute limit.
+Actual complete execution and a new exact-head eleven-job CI run must establish
+that fit, including cold Go cache qualification when explicitly requested.
+The source-policy test requires exactly one CI
 MCP invocation and all three complete CI connected partitions; a failure in any job
 still prevents all dependent native and image gates. Local/release
 `make test-connected` remains the two normal executions followed by MCP, with
 stop-on-failure ordering unchanged. The connected job needs no Web build:
 the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
-join all three Go jobs, preserving their original complete-unit-test predecessor.
+join all four Go verification jobs, preserving every original predecessor.
 Moving the unchanged Worker command does not increase a binary or job timeout.
 A cancelled Worker step after a long preceding ordinary tail is not proof that
 its own binary timed out or that its complete package corpus passed. Source-policy
-tests require exactly one Worker step after both core and MCP, rejecting early,
+tests require exactly one Worker step after MCP in `go-runtime`, rejecting early,
 duplicate, omitted, conditional or ignored executions. Timing estimates from
 separate jobs do not qualify the redistributed job: its own exact-head CI must
 prove completion inside the unchanged 30-minute ceiling.
@@ -282,20 +294,20 @@ and the complete unchanged `serverless-egress-conformance` target run in the
 existing isolated YDB security job before that job starts YDB.
 That offline step removes the job's YDB connection and credential environment
 variables. Local and release `make ci` still require core, connected tests and
-both offline gates. Images retain all seven original predecessors and also
-require `go-connected` and `go-local`. `make ci-partition-test` checks exact local
+both offline gates. Images retain all their original predecessors and also
+directly require `go-runtime`. `make ci-partition-test` checks exact local
 and CI complements, original core prerequisite order and its sole substitution,
 and the complete dependency graph.
 The 25-minute isolated-job bound is unchanged: actual exact-head CI must prove
-all three parallel 30-minute Go jobs and the checks/native gates fit on a cold
-cache miss; the partition alone is not proof. No previous-head CI qualifies a
+all four parallel 30-minute Go verification jobs and the checks/native gates fit
+on a cold cache miss; the partition alone is not proof. No previous-head CI qualifies a
 changed graph.
 
 A reviewed push whose HEAD commit message starts with `ci(cold-go): ` requests
 explicit cold Go build/module-cache qualification. GitHub's `startsWith` is
 case-insensitive; a quoted prefix later in a PR/merge-message body does not
-trigger it. All six host-Go jobs (`verify`, `go-local`, `go-connected`, `ydb`,
-`ydb-security-isolated`, `local-stand`) disable setup-go cache restore and
+trigger it. All seven host-Go jobs (`verify`, `go-local`, `go-connected`,
+`go-runtime`, `ydb`, `ydb-security-isolated`, `local-stand`) disable setup-go cache restore and
 post-save for that intent. Immediately after checkout, before setup-go or any
 other Go/repository command, each job proves its configured repository
 `GOCACHE` and `GOMODCACHE` paths are
@@ -309,7 +321,7 @@ message retain default caching.
 This controls only these host Go caches, not toolchain, npm, Docker or runner
 coldness, test selection, permissions or provider-publication authority. A new
 intent-bearing source HEAD still requires independent review and a complete
-successful ten-job run with actual timings; static policy tests and prior warm
+successful eleven-job run with actual timings; static policy tests and prior warm
 runs are not cold-cache evidence.
 The complete `cache` and `if` expressions are quoted YAML scalars because the
 intent prefix contains colon-space. Exact source-policy tests reject unquoted

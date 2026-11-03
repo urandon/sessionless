@@ -50,6 +50,14 @@ type privateConsentViewFixture struct {
 	consentAbsent          bool
 	consentStates          []domain.WebSearchConsentStateV1
 	consentRowOverride     []driver.Value
+	triggerSequence        uint64
+	triggerRecord          *string // exact canonical DATA, never a caller actor fact
+	triggerReads           int
+	otherPrincipalUser     domain.UserID
+	otherMembership        []driver.Value
+	otherParticipant       []driver.Value
+	otherPrincipalReads    int
+	callbackStatements     []int
 }
 
 type privateConsentViewConnector struct{ f *privateConsentViewFixture }
@@ -93,6 +101,7 @@ func (tx privateConsentViewTx) Commit() error {
 		if tx.f.commits == 1 {
 			tx.f.intentBytes = b.bytes
 		}
+		tx.f.callbackStatements = append(tx.f.callbackStatements, b.callbackStatements)
 		b.mu.Unlock()
 	}
 	if tx.f.afterCommit != nil {
@@ -110,6 +119,7 @@ func (tx privateConsentViewTx) Rollback() error {
 }
 
 const privateConsentWebSessionSQL = `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`
+const privateConsentTriggerSQL = `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM session_events WHERE tenant_id = $1 AND session_id = $2 AND sequence = $3`
 
 func (c privateConsentViewConn) QueryContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
 	f := c.f
@@ -121,6 +131,33 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 		return &explanationFixtureRows{}, nil
 	}
 	switch statement {
+	case ownedAdmissionPrincipalSQL:
+		if f.otherPrincipalUser == "" || len(args) != 4 || args[2].Value != string(f.otherPrincipalUser) {
+			return c.allocationConn.QueryContext(ctx, statement, args)
+		}
+		bucket, err := webBucket(string(f.otherPrincipalUser))
+		if err != nil || args[0].Value != string(parent.parent.Scope.TenantID) || args[1].Value != string(parent.parent.Scope.SessionID) || args[3].Value != int64(bucket) || len(f.otherMembership) != 4 || len(f.otherParticipant) != 4 {
+			return nil, errors.New("additional participant requires exact canonical principal keys")
+		}
+		parent.base.recordQuery(statement, args)
+		f.otherPrincipalReads++
+		values := append(append(append([]driver.Value{}, parent.base.session...), f.otherMembership...), f.otherParticipant...)
+		return &explanationFixtureRows{values: values}, nil
+	case privateConsentTriggerSQL:
+		if f.triggerSequence == 0 || len(args) != 3 || args[0].Value != string(parent.parent.Scope.TenantID) || args[1].Value != string(parent.parent.Scope.SessionID) || args[2].Value != int64(f.triggerSequence) {
+			return nil, errors.New("consent trigger requires its exact full primary key")
+		}
+		parent.base.recordQuery(statement, args)
+		f.triggerReads++
+		if f.triggerRecord == nil {
+			return &explanationFixtureRows{}, nil
+		}
+		// Match the actual SQL SUBSTRING ceiling, including its sentinel.
+		raw := *f.triggerRecord
+		if len(raw) > ownedAuthorityHeadBytes+1 {
+			raw = raw[:ownedAuthorityHeadBytes+1]
+		}
+		return &explanationFixtureRows{values: []driver.Value{raw}}, nil
 	case ownedSpendingCurrentSQL:
 		// Stop reconciliation point-reads the same exact original spending
 		// heads as admission's joined read; retain the existing key validator.
@@ -311,7 +348,15 @@ func newPrivateConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetu
 		bindReaderSpendingSource(t, &v)
 		sources.spending[i] = v
 	}
-	a := newOwnedAllocationFixture(t, ownedFinalPrebuild{at: seed.at, sources: &sources})
+	prebuild := ownedFinalPrebuild{at: seed.at, sources: &sources}
+	if p.WebSearchResourceGrant != nil {
+		// Declare canonical input before the original job/admission/parent seals.
+		// The deterministic legacy fixture keeps its original blob-only grammar.
+		state := currentWorkerAuthorityFixture(t)
+		state.Job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 1}
+		prebuild.state = &state
+	}
+	a := newOwnedAllocationFixture(t, prebuild)
 	if _, err := a.parent.store.publishBoundedOwnedAllocation(t.Context(), a.publication); err != nil {
 		t.Fatal("private-view actual original allocation publication", err)
 	}

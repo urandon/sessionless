@@ -1,7 +1,9 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.8, closed search-credential custody amendment candidate. The
-credential section below extends 0.2.7's original actor, tool-catalog lineage
+Version: 0.2.10, cross-process private consent reading. The BFF role below
+clarifies original-owner argument custody; the 0.2.9 retained formats and
+0.2.8 search-credential contracts are unchanged. The credential section
+extends 0.2.7's original actor, tool-catalog lineage
 and executable-readiness contracts without replacing them.
 Predecessor 0.2.6 defines original-grant consumption and
 historical stop; this amendment preserves those contracts.
@@ -740,10 +742,12 @@ public queries remain supported; there is no static-query substitute.
 
 ### Original-owner argument custody
 
-The consent argument `BlobRef` remains in its original Attempt namespace. It
-must be produced and read by the same scoped operation-body owner that owns
-ordinary request/result bytes; a map fixture or an arbitrary BlobStore reader
-is not integration evidence. Add one closed physical-key arm:
+The consent argument `BlobRef` remains in its original Attempt namespace. The
+worker's original scoped operation-body owner produces it and performs serving
+reads alongside ordinary request/result bytes. It remains the sole owner of
+physical inventory, uncertain writes, cleanup and erasure. A separate BFF DATA
+reader does not reconstruct or replace that owner. A map fixture or a matching
+key/hash alone is not original producer provenance. Use the closed physical-key arm:
 
 ```text
 <SessionRunObjectPrefix>attempts/<AttemptID>/consent-arguments-v1/<scope-hash>/consent-args-v1.<size>.<sha256>
@@ -758,7 +762,7 @@ foreign Attempt/hash, malformed metadata and arbitrary historical paths;
 never normalize a path or fall back to a broad prefix reader. Existing
 ordinary relative references and physical keys remain byte-for-byte unchanged.
 
-Both arms share the original Store state, synchronous I/O gate, caller context,
+Both worker arms share the original Store state, synchronous I/O gate, caller context,
 operation deadline, sticky uncertain-write latch, prospective physical write
 and byte charges, and bounded inventory. Charge and remember the actual
 predicted `BlobRef` before copying or PUT; failed or ambiguous PUT/readback
@@ -804,6 +808,47 @@ shared copy/concurrency gates; combined count/byte exhaustion; uncertain PUT,
 failed/late readback and Close; mixed cleanup failure before any delete; strict
 ordinary operation lookup; and unchanged unsupported terminal/deletion denial.
 No table, migration, credential, live call or runtime activation is introduced.
+
+#### Private consent reads in the BFF
+
+The BFF may read the exact original consent object through a separate read-only
+adapter implementing `AttemptOperationBodyStoreV1`. It accepts only the scope,
+reference and cap selected by the authenticated Store intent read, uses the
+existing `ParseAttemptOperationConsentArgumentsRefV1`, and rejects ordinary
+operation references, grant locators, foreign scopes and arbitrary paths. Check
+the positive canonical size, lowercase digest and 4-KiB ceiling before Open.
+One synchronous bounded Open/read/Close verifies the actual length and SHA256,
+returns fresh caller-owned bytes and clears failed buffers. The adapter retains
+only an Open-capable dependency; it exposes no write, delete, list, cache,
+inventory, receipt, cleanup or dispatch operation. It cannot prove who wrote an
+object or create a serving holder from its bytes.
+
+The existing Store owns disclosure: authenticated intent selection precedes
+body I/O, exact argument validation follows it, and a fresh current-authority
+transaction rechecks the original actor, Web session, membership, participation,
+grant, claim/fence and expiry before releasing query data. The same reopened
+Source supplies the BFF's existing verifiers and V2 grant custody. Grant bytes
+never come from this consent-body adapter. Construct the BFF's single Store with
+those dependencies; do not add a mutable reader setter or a fake worker entry.
+Mount consent routes only in the explicitly selected local composition. This
+does not make SEARCH ready for the model catalog or enable a live profile.
+
+The read uses the existing ten-second logical-call deadline and prospective
+body/copy charges within three SQL callbacks, 32 statements per callback and
+4 MiB metadata. The private response remains at most 8 KiB. Missing, deleted,
+corrupt or unjoinable data denies without repair, re-PUT, fallback or a
+manufactured stop. Revocation, cancellation, permission loss or Source closure
+during I/O must deny disclosure at the original checks. Concurrent worker
+cleanup may make the read fail; the BFF neither delays cleanup indefinitely nor
+infers an erasure receipt or recreates an object. Returned readers must honor
+context and synchronous Close; no detached goroutine manufactures cancellation.
+
+Prove the seam with an original `WriteConsentArguments` producer and a separate
+BFF Store/reader sharing only authenticated durable facts and BlobStore. Cover
+the closed key/cap/integrity rules, no writes/deletes, cleanup/read races and
+revocation during body I/O. A synthetic pending row is reader-seam evidence,
+not the genuine MODEL producer; the joined bridge still requires original
+pending creation, authenticated decision and the same-claim continuation.
 
 ## Adapter and network boundary
 

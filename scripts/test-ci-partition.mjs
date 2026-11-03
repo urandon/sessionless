@@ -59,6 +59,8 @@ const ordinaryTail = [
   "go test -race -count=1 -timeout=15m -run='^TestLocal(Failure|Source)' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal|Failure|Source)' $(GO_PACKAGE_PATTERNS)",
 ];
+const ordinaryRetainedTail = [ordinaryTail[0], ordinaryTail[2]];
+const ordinaryFailureSourceStep = 'Run ordinary failure and Source tests over all packages';
 const offlineMcp = [
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebKnownServiceError' ./internal/ydbstore",
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebModelAfterMCPFailure' ./internal/ydbstore",
@@ -126,13 +128,15 @@ function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'test-ordinary'), words('prepare fmt-check lint'), 'ordinary preparation');
   assert.deepEqual(target(make, 'test-ordinary-ci-base'), words('prepare fmt-check lint'), 'CI base preparation');
   assert.deepEqual(target(make, 'test-ordinary-ci-tail'), ['prepare'], 'CI tail preparation');
+  assert.deepEqual(target(make, 'test-ordinary-ci-failure-source'), ['prepare'], 'CI failure/source preparation');
   assert.deepEqual(target(make, 'test-connected'), ['prepare'], 'connected preparation');
   assert.deepEqual(target(make, 'test-connected-ci'), ['prepare'], 'CI connected preparation');
   assert.deepEqual(target(make, 'test-connected-worker-ci'), ['prepare'], 'CI worker preparation');
   assert.deepEqual(assignment(make, 'GO_PACKAGE_PATTERNS'), words('./cmd/... ./internal/... ./migrations/...'), 'complete Go corpus');
   assert.equal(recipe(make, 'test-ordinary'), ordinary.join('\n\t'), 'exact sequential ordinary partition');
   assert.equal(recipe(make, 'test-ordinary-ci-base'), ordinary.slice(0, 3).join('\n\t'), 'exact CI base partition');
-  assert.equal(recipe(make, 'test-ordinary-ci-tail'), ordinaryTail.join('\n\t'), 'exact CI tail partition');
+  assert.equal(recipe(make, 'test-ordinary-ci-tail'), ordinaryRetainedTail.join('\n\t'), 'exact CI tail partition');
+  assert.equal(recipe(make, 'test-ordinary-ci-failure-source'), ordinaryTail[1], 'exact CI tail partition');
   assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}\n\t$(MAKE) test-mcp-offline`, 'exact sequential connected partition');
   assert.equal(recipe(make, 'test-connected-ci'), `${connectedCiTerminal}\n\t${connectedOther}`, 'exact CI normal connected partition');
   assert.equal(recipe(make, 'test-connected-worker-ci'), connectedWorker, 'exact CI worker connected partition');
@@ -188,8 +192,10 @@ function verify({ make, ci, release }) {
   assert.doesNotMatch(runtime, /^    (?:needs|permissions|env|services|container|defaults|strategy):/m, 'runtime is parallel, offline, inherits read-only policy');
   assert.equal(step(runtime, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact runtime checkout');
   assert.deepEqual([...runtime.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
-    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages'], 'exact runtime steps and MCP-before-Worker order');
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages', ordinaryFailureSourceStep], 'exact runtime steps and MCP-before-Worker order');
   assert.equal(step(runtime, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
+  assert.equal(step(runtime, ordinaryFailureSourceStep), 'run: make test-ordinary-ci-failure-source', 'complete ordinary failure/source invocation');
+  assert.equal([...ci.matchAll(/\bmake test-ordinary-ci-failure-source\b/g)].length, 1, 'one required CI failure/source execution');
   assert.equal([...ci.matchAll(/^        run: make test-connected-worker-ci$/gm)].length, 1, 'one required CI connected Worker execution');
   assert.equal([...ci.matchAll(/\bmake test-connected-worker-ci\b/g)].length, 1, 'no alternate or duplicate CI Worker invocation');
   assert.deepEqual([...core.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
@@ -386,6 +392,7 @@ test('runtime job stays parallel, Go-only, bounded and MCP-before-Worker', () =>
   const before = `  go-runtime:\n${runtime}`;
   const mcp = '      - name: Run additive offline MCP connected fixtures\n        run: make test-mcp-offline\n';
   const worker = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
+  const failureSource = `      - name: ${ordinaryFailureSourceStep}\n        run: make test-ordinary-ci-failure-source\n`;
   for (const [name, mutate, expected] of [
     ['missing job', () => '', /unique go-runtime job/],
     ['renamed job', value => value.replace('  go-runtime:', '  other-runtime:'), /unique go-runtime job/],
@@ -410,7 +417,7 @@ test('runtime job stays parallel, Go-only, bounded and MCP-before-Worker', () =>
     assert.notEqual(after, before, `runtime ${name} mutation must be effective`);
     assert.throws(() => verify({ ...original, ci: original.ci.replace(before, after) }), expected, name);
   }
-  for (const [name, stepText] of [['MCP', mcp], ['Worker', worker]]) {
+  for (const [name, stepText] of [['MCP', mcp], ['Worker', worker], ['Failure/Source', failureSource]]) {
     for (const [fault, mutate] of [
       ['step environment', value => value.replace('        run:', '        env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local\n        run:')],
       ['background command', value => value.replace(/(make [^\n]+)/, '$1 &')],
@@ -425,6 +432,24 @@ test('runtime job stays parallel, Go-only, bounded and MCP-before-Worker', () =>
   const leaked = original.ci.replace('env:\n', 'env:\n  YDB_CONNECTION_STRING: grpc://localhost:2136/local\n');
   assert.notEqual(leaked, original.ci);
   assert.throws(() => verify({ ...original, ci: leaked }), /only shared Go caches in workflow environment/);
+});
+
+test('moved Failure/Source family stays required and follows complete MCP and Worker', () => {
+  const moved = `      - name: ${ordinaryFailureSourceStep}\n        run: make test-ordinary-ci-failure-source\n`;
+  const worker = '      - name: Run connected-worker tests over all packages\n        run: make test-connected-worker-ci\n';
+  const mcp = '      - name: Run additive offline MCP connected fixtures\n        run: make test-mcp-offline\n';
+  const tail = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
+  for (const ci of [
+    original.ci.replace(moved, ''),
+    original.ci.replace(moved, moved + '\n' + moved),
+    original.ci.replace(moved, '').replace(worker, moved + '\n' + worker),
+    original.ci.replace(moved, '').replace(mcp, moved + '\n' + mcp),
+    original.ci.replace(moved, '').replace(tail, tail + '\n' + moved),
+    ...['if: false', 'continue-on-error: true'].map(guard => original.ci.replace(moved, moved.replace('        run:', `        ${guard}\n        run:`))),
+  ]) {
+    assert.notEqual(ci, original.ci, 'moved-family mutation must change the workflow');
+    assert.throws(() => verify({ ...original, ci }));
+  }
 });
 
 test('ordered core expansion changes only the ordinary prerequisite for CI', () => {
@@ -442,7 +467,11 @@ test('ordered core expansion changes only the ordinary prerequisite for CI', () 
 });
 
 function ciOrdinaryTailSelections(name) {
-  return recipe(original.make, 'test-ordinary-ci-tail').split('\n\t').map(command => {
+  // Membership comes from BOTH actual recipes, not a constant selector that
+  // could keep passing after the moved family disappears from its target.
+  const retained = recipe(original.make, 'test-ordinary-ci-tail').split('\n\t');
+  const moved = recipe(original.make, 'test-ordinary-ci-failure-source').split('\n\t');
+  return [retained[0], ...moved, ...retained.slice(1)].map(command => {
     const run = command.match(/ -run='([^']+)'/);
     const skip = command.match(/ -skip='([^']+)'/);
     assert.ok(run, 'each CI tail command has its declared run selector');
@@ -454,10 +483,12 @@ test('CI base and tail preserve the complete local ordinary coverage', () => {
   const local = commands('test-ordinary');
   const base = commands('test-ordinary-ci-base');
   const tail = commands('test-ordinary-ci-tail');
+  const moved = commands('test-ordinary-ci-failure-source');
   assert.deepEqual(base, local.slice(0, 3));
   assert.deepEqual(local, ordinary);
-  assert.deepEqual(tail, ordinaryTail);
-  assert.equal(new Set([...base, ...tail]).size, 6, 'no duplicate CI command');
+  assert.deepEqual(tail, ordinaryRetainedTail);
+  assert.deepEqual(moved, [ordinaryTail[1]]);
+  assert.equal(new Set([...base, ...tail, ...moved]).size, 6, 'no duplicate CI command');
   for (const name of [
     'TestLocal', 'TestLocalFuture', 'TestLocalTerminal', 'TestLocalTerminalFuture',
     'TestLocalTerminalCompaction', 'TestLocalTerminalSession', 'TestLocalCompactionTerminal',
@@ -716,8 +747,8 @@ for (const mode of ['absent', 'empty', 'build-nonempty', 'modules-nonempty', 'wr
 const mutations = [
   ['missing tail remainder', 'make', `${ordinaryTail[2]}\n`, '', /exact CI tail partition/],
   ['missing failure/source partition', 'make', `${ordinaryTail[1]}\n`, '', /exact CI tail partition/],
-  ['duplicate tail remainder', 'make', ordinaryTail.join('\n\t'), `${ordinaryTail.join('\n\t')}\n\t${ordinaryTail[2]}`, /exact CI tail partition/],
-  ['reversed tail partitions', 'make', ordinaryTail.join('\n\t'), [...ordinaryTail].reverse().join('\n\t'), /exact CI tail partition/],
+  ['duplicate tail remainder', 'make', ordinaryRetainedTail.join('\n\t'), `${ordinaryRetainedTail.join('\n\t')}\n\t${ordinaryTail[2]}`, /exact CI tail partition/],
+  ['reversed tail partitions', 'make', ordinaryRetainedTail.join('\n\t'), [...ordinaryRetainedTail].reverse().join('\n\t'), /exact CI tail partition/],
   ['tail partitions overlap', 'make', ordinaryTail[2], ordinaryTail[2].replace('|Failure|Source', ''), /exact CI tail partition/],
   ['failure family gap', 'make', ordinaryTail[1], ordinaryTail[1].replace('(Failure|Source)', 'Source'), /exact CI tail partition/],
   ['source family gap', 'make', ordinaryTail[1], ordinaryTail[1].replace('(Failure|Source)', 'Failure'), /exact CI tail partition/],
@@ -891,7 +922,8 @@ for (const [half, command] of [['terminal', connectedTerminal], ['other', connec
 }
 for (const [name, commands, prerequisites, expected] of [
   ['test-ordinary-ci-base', ordinary.slice(0, 3), 'prepare fmt-check lint', /exact CI base partition/],
-  ['test-ordinary-ci-tail', ordinaryTail, 'prepare', /exact CI tail partition/],
+  ['test-ordinary-ci-tail', ordinaryRetainedTail, 'prepare', /exact CI tail partition/],
+  ['test-ordinary-ci-failure-source', [ordinaryTail[1]], 'prepare', /exact CI tail partition/],
 ]) {
   const before = `${name}: ${prerequisites}\n\t${commands.join('\n\t')}\n`;
   mutations.push([`${name} missing command`, 'make', before,

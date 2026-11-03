@@ -170,6 +170,9 @@ jobs:
       - name: Run connected-worker tests over all packages
         run: make test-connected-worker-ci
 
+      - name: Run ordinary failure and Source tests over all packages
+        run: make test-ordinary-ci-failure-source
+
   web-browser:
     name: Web browser and accessibility
     runs-on: ubuntu-latest

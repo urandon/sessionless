@@ -196,7 +196,7 @@ test:
 	$(MAKE) test-ordinary
 	$(MAKE) test-connected
 
-.PHONY: test-ordinary test-ordinary-ci-base test-ordinary-ci-tail test-connected test-mcp-offline
+.PHONY: test-ordinary test-ordinary-ci-base test-ordinary-ci-tail test-ordinary-ci-failure-source test-connected test-mcp-offline
 test-ordinary: prepare fmt-check lint
 	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
@@ -211,8 +211,11 @@ test-ordinary-ci-base: prepare fmt-check lint
 
 test-ordinary-ci-tail: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalTerminal' $(GO_PACKAGE_PATTERNS)
-	go test -race -count=1 -timeout=15m -run='^TestLocal(Failure|Source)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction|Terminal|Failure|Source)' $(GO_PACKAGE_PATTERNS)
+
+# CI schedules this unchanged complete family after MCP and Worker in go-runtime.
+test-ordinary-ci-failure-source: prepare
+	go test -race -count=1 -timeout=15m -run='^TestLocal(Failure|Source)' $(GO_PACKAGE_PATTERNS)
 
 test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)

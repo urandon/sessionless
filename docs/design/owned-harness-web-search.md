@@ -1,7 +1,9 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.7, original actor, tool-catalog lineage and executable-readiness
-amendment candidate. Predecessor 0.2.6 defines original-grant consumption and
+Version: 0.2.8, closed search-credential custody amendment candidate. The
+credential section below extends 0.2.7's original actor, tool-catalog lineage
+and executable-readiness contracts without replacing them.
+Predecessor 0.2.6 defines original-grant consumption and
 historical stop; this amendment preserves those contracts.
 Predecessor 0.2.5 defines reusable resource-grant custody; this amendment
 preserves that contract. Predecessor 0.2.4
@@ -421,6 +423,238 @@ reviewed CI invocation and real aggregate timing. Do not disguise search tests
 as MCP or add a tagged test that no required job selects. Preserve held fixtures
 and existing MCP/legacy semantics. No live model/search/credential/substrate
 proof, new table/migration or profile activation follows from this amendment.
+
+## Closed search credentials and immutable object custody
+
+This amendment supplies the missing credential boundary for the existing
+MODEL → consent → search HTTPS → durable result → MODEL path. It is not another
+catalog-only foundation or proof that search is executable. Preserve all prior
+grant, canonical-actor, catalog, original-loop, historical STOP, body-custody,
+accounting and readiness contracts, including old canonical bytes and goldens.
+
+### Source-pinned search resource, never an LLM credential
+
+Add one closed `web_search_account` resource kind to the existing provider
+credential binding/audit/locator contracts. Its only supported service audience
+is `tavily.search`, with direct invocation delivery. Explicitly reject this kind
+in every MODEL `HarnessBinding` backend and MODEL profile locator; extending a
+generic resource validator alone must not accidentally admit it as an LLM.
+Do not model Tavily as an API/router LLM account, subscription or MCP server.
+
+Keep `WebSearchResourceGrantV2` and its semantic/raw commitments unchanged. Add
+an optional, strictly decoded nonsecret `search_credential` declaration to the
+original authenticated installation manifest: version 1, the exact credential
+resource kind/ID/owner/revision/generation/invocation mode, and fixed audience.
+Its resource ID equals the original grant's `CredentialRef`; owner and tenant
+equal the original private profile/grant owner, and revision/generation equal
+the exact current credential binding admitted for that declaration. Search
+grant resource revisions and credential-binding revisions remain distinct:
+validate each against its own original commitment, never infer their equality.
+No `SecretRef`, key, file path or caller-selected backend belongs in this DATA.
+
+The existing whole-manifest `OriginalSource`/`InstalledManifest` commitment
+authenticates this declaration along with the original grant and expenditure
+evidence. The original Source retains and resolves it; the request cannot supply
+another credential locator or audience. Omission preserves old bytes and means
+search credentials are disabled, not environment discovery or selection of the
+latest generation. Reject null, duplicate/aliased/unknown fields and versions.
+Deploy compatible readers before enabling writers; no retained V2 grant is
+rewritten and no new grant, source, credential or funding authority is inferred.
+
+### One invocation service, distinct SEARCH issue arm
+
+Extend the same `providercredential.InvocationService` with a closed SEARCH
+issue arm, not a fake MODEL binding or general audience/plugin selector. Its
+input comes from the original receipt-bound prepared search and Source-owned
+declaration. Authenticate the exact original durable MODEL call, query/consent,
+canonical initiating actor, private owner/payer, grant/profile/resource and
+price/terms revisions, original spending/allocation and current lease/fence.
+Issue and materialization must match the declared credential revision and
+generation; rotation cannot silently substitute a fresh key into an old claim.
+
+Reuse the existing handle map, synchronous at-most-once materializer, generation
+fencing and release/join machinery. A distinct search handle binds the original
+Run/Attempt/worker/lease/fence, search operation/receipt and fixed audience. Only
+its SEARCH consumer can borrow that key, directly, for the one owned search
+wire; never pass the MODEL bearer to search or the search key to MODEL/MCP.
+The original reserve and before-send gates still authorize the actual POST;
+an issued/materialized credential alone authorizes neither debit nor send.
+
+A no-auth local MODEL must still own this search credential lifecycle. Remove
+the existing MODEL-bearer-only composition assumption through an explicit
+service-credential arm under the same original cleanup owner, not a pretend
+bearer or second controller. Search handles, borrowed bytes, owned header copies
+and actual sockets join within the original remaining operation/cleanup windows.
+No credential adds time: retain the 120-second-or-shorter claim, 15-second-or-
+shorter search limit and existing SQL/body budgets without reset or nesting.
+Clear owned mutable secret copies after actual I/O joins, then release the
+one-shot handle before the next MODEL. Cancel, Source close or failed cleanup
+cannot detach a consumer, reopen materialization or authorize replay.
+
+### Production encrypted backend in the existing Object Storage adapter
+
+Implement `ProviderCredentialSecretStore` inside `internal/s3store`, using its
+actual private SDK/IAM object clients and a typed production constructor. Inject
+one explicit epoch and dedicated 32-byte encryption key; key acquisition/KMS,
+real cloud credentials and live qualification remain separately authorized.
+Reject other epochs; do not borrow the Source HMAC key or discover environment
+keys. This common backend requires no user-host filesystem. Reuse the existing
+YDB binding/CAS/cleanup/candidate-fence records as the sole resource/generation
+authority; no table, active-binding ledger, generic `BlobStore.List` or copied
+subscription-store state is added.
+
+Use one private constant namespace, outside ordinary artifact/presign paths:
+
+```text
+<private-root>/<hash(exact locator)>/<fixed UTC microsecond time>.<hash(candidate scope)>.<random object ID>
+```
+
+Hash canonical unambiguous fields. The opaque bounded reference carries only
+the version/epoch/time/scope/object identity needed to derive that exact key;
+it is at most the existing 512 bytes and remains redacted on formatting, errors,
+public JSON and telemetry. Callers never choose a path. Persist only this V1
+wire: eight ASCII magic bytes `SLPCS001`, uint32 big-endian metadata length,
+uint32 big-endian ciphertext length, raw 12-byte nonce, canonical metadata JSON,
+raw ciphertext including its 16-byte tag, then a raw 32-byte MAC. Metadata is
+at most 4 KiB; ciphertext is at most 64 KiB + 16 bytes and also respects the
+configured secret limit. Reject inconsistent lengths, trailing bytes and
+oversize before allocation; no plaintext JSON/base64 or alternate wire encoding.
+Metadata field order is exactly `version`, `epoch`, `tenant_id`, `owner_user_id`,
+`resource_kind`, `resource_id`, `resource_revision`, `credential_generation`,
+`mutation_id`, `reference`, `fingerprint`, `created_at`. Version is 1; include
+the complete scope, persisted raw opaque reference, fingerprint and original
+canonical microsecond UTC CreatedAt. Reject unknown/duplicate/null fields and
+noncanonical values; exact re-encoding must match the metadata bytes.
+
+Use AES-256-GCM with fresh `crypto/rand` 12-byte nonce and 16-byte tag. Generate
+a fresh random 32-byte object ID; HKDF-SHA256 derives separate 32-byte AEAD/MAC
+keys from the injected root with that object ID as salt and fixed distinct info
+domains `sessionless.provider-credential.object.v1/aead` and
+`sessionless.provider-credential.object.v1/mac`. AEAD authenticates the fixed
+magic/length header and metadata as AAD. HMAC-SHA256 covers all preceding wire
+bytes, including header, nonce, metadata and ciphertext; verify with `hmac.Equal`
+before metadata authorizes listing/deletion, without decrypting plaintext.
+These sizes and key separation use the official Go [GCM](https://pkg.go.dev/crypto/cipher#NewGCM),
+[HKDF](https://pkg.go.dev/crypto/hkdf#Key) and [HMAC](https://pkg.go.dev/crypto/hmac#Equal)
+contracts. Prove envelope/page/aggregate bounds; clear owned plaintext and
+derived-key buffers on every terminal path.
+
+The constructor owns an independent root-key copy. Close rejects new users and
+joins active key users under its supplied finite context and their original
+operation deadlines before zeroing root/derived keys. Timeout retains closing
+ownership and buffers, not successful closure or zeroing under active users;
+a later Close may finish that join but never renew an operation deadline.
+
+Write this one immutable ciphertext object and verify exact bounded readback
+BEFORE returning a usable candidate and BEFORE the binding CAS. A unique object
+identity has one physical PUT, no hidden SDK/HTTP replay, and no overwrite or
+retry under the same key. Exact conditional-PUT behavior must be proved with
+scripted SDK and IAM transports; unsupported semantics deny, not unconditional
+fallback. Actual Object Storage compatibility is separate qualification.
+
+`CommitProviderCredentialCandidate` is logical promotion: verify the exact
+object/current binding, without writing, copying or renaming ciphertext.
+`RecoverProviderCredentialCandidate` verifies the exact authoritative object;
+missing means false, other failures deny. It never repairs absence by another
+PUT. No post-CAS method may recreate secret bytes. Consequently a delayed
+Commit/Recover cannot resurrect an old secret after cleanup deletion/ACK.
+Conditional COPY and an unproved destination-copy precondition are unnecessary.
+
+Successful pre-CAS PUT/readback establishes the candidate; an unknown PUT fails
+before CAS and retains any possibly written object for inventory reconciliation.
+All ciphertext objects share the discoverable namespace, including ambiguous
+pre-CAS writes. No separate staging key, commit marker or cleanup-only index can
+hide one. Exact-reference deletion is idempotent and never reads plaintext;
+only its success allows the existing YDB cleanup ACK. Failed/unknown deletion
+retains the cleanup obligation. No claim of absolute remote erasure follows.
+
+### Inventory, physical cursors and local borrower fencing
+
+Define uncommitted inventory by current YDB authority, not historical promotion:
+an authenticated object not referenced by the exact active binding is eligible
+for existing candidate reconciliation. The backend uses a narrow existing
+`LoadProviderCredential` reader; it creates no second binding authority. A
+superseded committed object can therefore become a candidate as well as retain
+its existing cleanup obligation; both deletions remain exact and idempotent.
+
+`ListUncommitted(locator, limit)` uses only the exact locator prefix and bounded
+MaxKeys. Validate a found binding and its exact requested locator before using
+it for exclusion or generation comparisons; lookup failure is never absence.
+Successful not-found grants no active-object exemption, not deletion authority.
+Exclude at most the one exact active object and inspect at most `limit+1`
+objects; a second bounded physical page may be necessary to advance past that
+excluded object. Never report empty
+completion while an unseen continuation may contain eligible objects. Existing
+Service reconciliation processes/deletes or verifies a batch and relists, up
+to its existing four batches; exhaustion fails bounded and a later retry resumes.
+
+Global abandoned listing uses one bounded physical page, authenticated CreatedAt
+and the existing typed candidate cursor. Its scope/time/reference reconstruct
+the exact key for StartAfter; order is physical, not a required Go tuple sort.
+Return the cursor of the last authenticated scanned object even when filtering
+produces empty Items with HasMore. Current bindings may be filtered with bounded
+reads, but never inferred from LastModified or a marker. Malformed envelopes,
+out-of-prefix keys or nonprogressing pages fail bounded instead of fabricating
+a cursor. A completed sweep starts again from the beginning on a later pass:
+a failed pre-CAS PUT can appear behind an earlier cursor. No single sweep proves
+that all remote failed writes are globally quiescent. Retain the same original
+remaining context and charge all actual listing/metadata work; add no renewed
+deadline, unbounded prefix scan or hidden larger authority allowance.
+
+Noncurrent inventory must not bypass active local credential borrowers. In
+BOTH existing `Service.reconcileCandidates` and `DrainAbandonedCandidates`,
+after a nonauthoritative transactional candidate fence, reload the current
+binding. Validate any found row and exact locator before using its generation;
+successful absence still relies on that fence, while a failed/invalid lookup
+retains the object. If a validated found binding's generation is greater than
+the candidate's, join the existing revoker with
+`beforeGeneration=current.CredentialGeneration` BEFORE deleting.
+Failed lookup or join retains the object and reports failure. Never use
+`candidate.Generation+1`: a future orphan must not invalidate the valid current
+generation. Equal-generation different-candidate and future-orphan cases rely
+on the exact existing transactional fence, without broadening revocation.
+An authoritative candidate instead follows exact read-only recovery. Keep the
+binding fence's protection against a later CAS; classification alone is not
+deletion authority. This is the existing local borrower join, not fabricated
+cross-process/global quiescence. Existing autonomous cleanup's cross-process
+join limitation remains explicit, not an exhaustive new MVP rollout gate.
+
+### Causal proof and bounded implementation handoff
+
+Before source acceptance, use actual encryption and the real Service plus
+InvocationService against scripted S3/IAM and binding ports, not a body-key map.
+Prove a blocked materialization consumer → rotation → noncurrent inventory GC:
+both reconciliation entry points must wait for its existing revoker join before
+deletion; RED must expose premature deletion on the old implementation. Cover
+lookup/join failure retention, authoritative recovery, equal-generation rivals
+and a future orphan without invalidating the current consumer.
+
+Also prove encrypted Put/readback → CAS → read-only Commit/Recover → one-shot
+materialization; delayed Commit after cleanup ACK must issue zero ciphertext
+writes. Cover unknown pre-CAS PUT, CAS ambiguity, readback/delete failures,
+late inventory visibility and sweep wrap, exact scoped prefixes, physical cursor
+progress/empty filtered pages, bounds, tampering/redaction and concurrent
+rotation/revoke/cancel. Metadata listing/deletion must not decrypt plaintext.
+Distinct synthetic MODEL/SEARCH keys prove no cross-wire use, including no-auth
+MODEL; wrong audience/owner/revision/generation/claim/receipt denies before
+secret delivery/send. Preserve old goldens, historical STOP, existing MCP,
+unsupported terminal/deletion denial and the documented deterministic/race
+testing practices. Scripted transport proof is not actual cloud qualification.
+
+Develop #194/#195 MODEL → pending → decision → same-claim wait in parallel with
+concrete controlled credential/HTTP peers; production advertisement/activation
+still waits for the complete joined bridge and qualified backend.
+
+Keep the execution checklist in existing issue comments: #194 owns the closed
+resource/Source declaration, shared custody/backend and actual original producer;
+#195 joins consent and the same-claim worker wait; #190 joins the distinct
+credentialed search HTTPS/reserve/before-send owner; #191 consumes the durable
+typed result and continuation/history/accounting; #197 supplies cited-answer
+projection. Do not rewrite their original assignments or create another broad
+hardening epic. The backend alone is not search readiness, a demo, activation or
+completion of any full outcome. Complete the existing joined controlled proof
+before advertising search; real keys, paid calls and cloud rollout still need
+their own authority. No new table, migration or local-host dependency follows.
 
 ## Query consent within the existing claim
 

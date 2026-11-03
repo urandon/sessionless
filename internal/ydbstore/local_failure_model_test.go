@@ -14,6 +14,11 @@ func TestLocalFailureCapsuleV2StrictAbsentDiscriminant(t *testing.T) {
 	// Codec DATA only, deliberately not a valid parent/accounting producer.
 	// Parsing this shape authenticates no operation and cannot admit a writer.
 	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v2", Version: 2, Stop: domain.ModelOutcomeUnknownV2, Cleanup: "joined_retained", Accounting: ports.OwnedOperationFailureAccountingV1{Version: 2}, Operations: make([]localFailureOperationV1, 3)}
+	// Preserve the historical fixed-array zero-record wire fixture, not funding.
+	c.Source.Spending = make(domain.OwnedSpendingListV1, 4)
+	if c.Source.Validate() == nil {
+		t.Fatal("deliberately invalid codec Source became authority")
+	}
 	for i := range c.Operations {
 		c.Operations[i].Reservation.Operation.Kind = domain.AttemptOperationModelV1
 		c.Operations[i].Observation.Outcome = domain.AttemptOperationCompletedV1

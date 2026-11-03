@@ -411,6 +411,238 @@ func TestProviderCustodyConnectedServiceInvocationAndRotation(t *testing.T) {
 	}
 }
 
+// This joins the actual encrypted SDK/IAM adapter, credential mutation service
+// and distinct SEARCH invocation arm. Declaration/correlation values are DATA,
+// not proof of an original MODEL, Source/Store consent or permission to search.
+// The existing RoundTripper owns every request; no socket or service is used.
+func TestProviderCustodyConnectedSearchCredentialUnion(t *testing.T) {
+	for _, iam := range []bool{false, true} {
+		name := "sdk"
+		if iam {
+			name = "iam"
+		}
+		t.Run(name, func(t *testing.T) {
+			secrets, peer, bindings, ctx, scope := custodyFixture(t, iam)
+			clock := custodyClock{time.Unix(100, 0).UTC()}
+			ids := &custodyIDs{}
+			invocations, err := providercredential.NewInvocationService(providercredential.InvocationConfig{Clock: clock, IDs: ids}, custodyPlanner{}, bindings, secrets)
+			if err != nil {
+				t.Fatal("construct actual invocation lifecycle", err)
+			}
+			observed := custodyObservedRevoker{delegate: invocations, entered: make(chan uint64, 8)}
+			service, err := providercredential.New(providercredential.Config{Clock: clock, IDs: ids}, custodyAuthorizer{}, observed, bindings, secrets)
+			if err != nil {
+				t.Fatal("construct actual mutation service", err)
+			}
+			wait, cancel := context.WithTimeout(ctx, 5*time.Second)
+			t.Cleanup(cancel)
+			expectGeneration := func(want uint64, operation string) {
+				t.Helper()
+				var got uint64
+				select {
+				case got = <-observed.entered:
+				case <-wait.Done():
+					select {
+					case got = <-observed.entered:
+					default:
+						t.Fatalf("%s did not reach generation join: %v", operation, wait.Err())
+					}
+				}
+				if got != want {
+					t.Fatalf("%s joined generation=%d want=%d", operation, got, want)
+				}
+			}
+			modelRequest := ports.ProviderCredentialIngestRequestV1{Principal: ports.ProviderCredentialPrincipalV1{TenantID: scope.Locator.TenantID, OwnerUserID: scope.Locator.OwnerUserID, Channel: ports.ProviderCredentialChannelLocalOperatorV1}, ResourceKind: domain.ProviderResourceRouterAccountV1, ResourceID: scope.Locator.ResourceID}
+			modelKey := []byte("SYNTHETIC-UNION-MODEL-KEY")
+			modelReceipt, err := service.Ingest(ctx, modelRequest, modelKey)
+			if err != nil {
+				t.Fatal("ingest distinct MODEL resource", err)
+			}
+			expectGeneration(1, "MODEL ingest")
+			searchRequest := modelRequest
+			searchRequest.ResourceKind, searchRequest.ResourceID = domain.ProviderResourceWebSearchAccountV1, "search-custody"
+			first, second := []byte("SYNTHETIC-UNION-SEARCH-FIRST"), []byte("SYNTHETIC-UNION-SEARCH-SECOND")
+			searchReceipt, err := service.Ingest(ctx, searchRequest, first)
+			if err != nil || searchReceipt.Resource.Kind != domain.ProviderResourceWebSearchAccountV1 {
+				t.Fatalf("normal SEARCH ingest resource=%+v err=%v", searchReceipt.Resource, err)
+			}
+			expectGeneration(1, "SEARCH ingest")
+			expiry := clock.at.Add(time.Hour)
+			binding := domain.HarnessBindingV2{Version: 2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: scope.Locator.TenantID, OwnerUserID: scope.Locator.OwnerUserID, RunID: "run-search-union", AttemptID: "attempt-search-union", Resource: modelReceipt.Resource,
+				Backend:       domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendDirectOpenRouterV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "openrouter-http.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryDirectV1},
+				ModelVendorID: "openrouter", ModelID: "synthetic-model", InputDataClass: domain.ProviderDataPublicV1, ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: strings.Repeat("8", 64), EvidenceExpiresAt: &expiry}
+			modelHandle, err := invocations.IssueProviderCredential(ctx, ports.ProviderCredentialIssueRequestV1{HarnessBinding: binding, WorkerID: "worker-search-union", LeaseID: "lease-search-union", LeaseFence: 1, ExpiresAt: expiry})
+			if err != nil {
+				t.Fatal("issue MODEL handle", err)
+			}
+			t.Cleanup(func() {
+				if err := invocations.ReleaseProviderCredential(ctx, modelHandle); err != nil {
+					t.Error("release owned MODEL handle", err)
+				}
+			})
+			hash := strings.Repeat("a", 64)
+			searchIssue := ports.SearchCredentialIssueRequestV1{
+				Declaration: ports.SearchCredentialDeclarationV1{Version: 1, TenantID: scope.Locator.TenantID, Resource: searchReceipt.Resource, Audience: domain.WebSearchCredentialAudienceV1, DeliveryKind: domain.ProviderCredentialDeliveryDirectV1},
+				Correlation: ports.SearchCredentialCorrelationV1{Scope: domain.AttemptOperationScopeV1{TenantID: scope.Locator.TenantID, SessionID: "session-search-union", OwnerUserID: scope.Locator.OwnerUserID, RunID: binding.RunID, AttemptID: binding.AttemptID, LeaseID: modelHandle.LeaseID, FenceToken: modelHandle.LeaseFence, PhysicalInvocationClaimID: "claim-search-union", EffectReservationDigest: domain.AttemptEffectReservationDigestV1(hash), InvocationAuthorityDigest: domain.ServerlessInvocationAuthorityDigestV1(hash), HarnessBindingDigest: domain.HarnessBindingDigestV2(hash), AgentLoopPolicyDigest: domain.AgentLoopPolicyDigestV1(hash)}, OperationDigest: domain.AttemptOperationDigestV1(hash), ConsentRequestDigest: domain.WebSearchConsentRequestDigestV1(hash), ConsentDecisionDigest: domain.WebSearchConsentDecisionDigestV1(hash)},
+				WorkerID:    modelHandle.WorkerID, ExpiresAt: expiry}
+			searchHandle, err := invocations.IssueSearchCredential(ctx, searchIssue)
+			if err != nil || searchHandle.Validate() != nil || searchHandle.Credential.HandleID == modelHandle.HandleID {
+				t.Fatalf("issue distinct SEARCH handle=%+v err=%v", searchHandle, err)
+			}
+			t.Cleanup(func() {
+				if err := invocations.ReleaseSearchCredential(ctx, searchHandle); err != nil {
+					t.Error("release owned SEARCH handle", err)
+				}
+			})
+			beforeDenied := len(peer.requests)
+			if err := invocations.MaterializeProviderCredential(ctx, searchHandle.Credential, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+				t.Error("SEARCH key reached MODEL callback")
+				return nil
+			}); err == nil {
+				t.Error("MODEL materialized SEARCH handle")
+			}
+			if err := invocations.ReleaseProviderCredential(ctx, searchHandle.Credential); err == nil {
+				t.Error("MODEL released SEARCH handle")
+			}
+			foreign := searchHandle
+			foreign.Credential.HandleID = modelHandle.HandleID
+			if err := invocations.MaterializeSearchCredential(ctx, foreign, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+				t.Error("MODEL key reached SEARCH callback")
+				return nil
+			}); err == nil || len(peer.requests) != beforeDenied {
+				t.Errorf("cross-purpose denial err=%v added-storage-requests=%d", err, len(peer.requests)-beforeDenied)
+			}
+			var modelBorrow []byte
+			if err := invocations.MaterializeProviderCredential(ctx, modelHandle, func(plan ports.ProviderCredentialMaterializationV1, value []byte) error {
+				modelBorrow = value
+				if plan.Validate() != nil || plan.Kind != domain.ProviderCredentialDeliveryDirectV1 || !bytes.Equal(value, modelKey) {
+					return errors.New("MODEL delivery differed from its own ingested key")
+				}
+				return nil
+			}); err != nil || len(modelBorrow) == 0 || !bytes.Equal(modelBorrow, make([]byte, len(modelBorrow))) {
+				t.Fatal("MODEL materialization/owned buffer clearing failed", err)
+			}
+			old, found, err := bindings.LoadProviderCredential(ctx, searchRequest.Locator())
+			if err != nil || !found {
+				t.Fatalf("load actual SEARCH binding found=%v err=%v", found, err)
+			}
+			oldKey, err := providerObjectKey(searchRequest.Locator(), old.SecretRef)
+			if err != nil {
+				t.Fatal("derive actual old ciphertext identity", err)
+			}
+			entered, release, materialized, rotated := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			var borrowed []byte
+			var materializeErr, rotateErr error
+			var rotatedReceipt ports.ProviderCredentialReceiptV1
+			rotationStarted := false
+			t.Cleanup(func() {
+				releaseOnce.Do(func() { close(release) })
+				cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer done()
+				waitCustodySearchEvent(t, cleanup, materialized, "SEARCH callback cleanup")
+				if rotationStarted {
+					waitCustodySearchEvent(t, cleanup, rotated, "SEARCH rotation cleanup")
+				}
+			})
+			go func() {
+				defer close(materialized)
+				materializeErr = invocations.MaterializeSearchCredential(ctx, searchHandle, func(plan ports.ProviderCredentialMaterializationV1, value []byte) error {
+					if plan.Validate() != nil || plan.Kind != domain.ProviderCredentialDeliveryDirectV1 || !bytes.Equal(value, first) {
+						return errors.New("SEARCH delivery differed from its own ingested key")
+					}
+					borrowed = value
+					close(entered)
+					<-release
+					return nil
+				})
+			}()
+			waitCustodySearchEvent(t, wait, entered, "SEARCH callback entry")
+			bindings.casApplied = make(chan uint64, 1)
+			rotationStarted = true
+			go func() {
+				defer close(rotated)
+				rotatedReceipt, rotateErr = service.Ingest(ctx, searchRequest, second)
+			}()
+			expectGeneration(2, "SEARCH rotation")
+			// Both acknowledgements/completion may be ready; an entry notification
+			// is not evidence of noncompletion. Check actual retained custody too.
+			select {
+			case <-rotated:
+				t.Errorf("rotation completed while SEARCH callback still borrowed key: %v", rotateErr)
+			default:
+			}
+			peer.mu.Lock()
+			_, retained := peer.objects[oldKey]
+			peer.mu.Unlock()
+			if !retained {
+				t.Error("old encrypted SEARCH object deleted before borrower join")
+			}
+			releaseOnce.Do(func() { close(release) })
+			waitCustodySearchEvent(t, wait, materialized, "SEARCH callback completion")
+			waitCustodySearchEvent(t, wait, rotated, "SEARCH rotation completion")
+			if materializeErr != nil || rotateErr != nil || len(borrowed) == 0 || !bytes.Equal(borrowed, make([]byte, len(borrowed))) {
+				t.Fatalf("joined SEARCH materialization=%v rotation=%v owned-buffer-bytes=%d", materializeErr, rotateErr, len(borrowed))
+			}
+			if rotatedReceipt.Resource.CredentialGeneration != 2 || rotatedReceipt.Resource.Revision != 2 {
+				t.Fatalf("rotation resource=%+v want revision/generation2", rotatedReceipt.Resource)
+			}
+			if err := invocations.MaterializeSearchCredential(ctx, searchHandle, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+				t.Error("old SEARCH handle replayed")
+				return nil
+			}); err == nil {
+				t.Error("rotated SEARCH handle materialized again")
+			}
+			if _, err := invocations.IssueSearchCredential(ctx, searchIssue); err == nil {
+				t.Error("old declaration silently selected the rotated credential")
+			}
+			if err := invocations.ReleaseSearchCredential(ctx, searchHandle); err != nil {
+				t.Error("release joined SEARCH handle", err)
+			}
+			peer.mu.Lock()
+			defer peer.mu.Unlock()
+			if _, exists := peer.objects[oldKey]; exists || len(peer.objects) != 2 {
+				t.Errorf("rotation retained old=%v ciphertext objects=%d want two distinct current resources", exists, len(peer.objects))
+			}
+			puts := 0
+			for _, raw := range peer.objects {
+				if !bytes.HasPrefix(raw, []byte("SLPCS001")) || bytes.Contains(raw, first) || bytes.Contains(raw, second) || bytes.Contains(raw, modelKey) {
+					t.Error("stored credential is not a private ciphertext envelope")
+				}
+			}
+			for _, r := range peer.requests {
+				if r.method == http.MethodPut {
+					puts++
+				}
+				if r.replay || r.method == http.MethodPut && !r.conditional {
+					t.Errorf("unsafe credential transport method=%s replay=%v conditional=%v", r.method, r.replay, r.conditional)
+				}
+			}
+			if puts != 3 {
+				t.Errorf("physical credential PUTs=%d want three (MODEL, SEARCH, SEARCH rotation)", puts)
+			}
+			bindings.mu.Lock()
+			defer bindings.mu.Unlock()
+			if bindings.acks != 1 {
+				t.Errorf("SEARCH old-generation cleanup ACKs=%d want1", bindings.acks)
+			}
+		})
+	}
+}
+
+func waitCustodySearchEvent(t *testing.T, ctx context.Context, event <-chan struct{}, operation string) {
+	t.Helper()
+	select {
+	case <-event:
+	case <-ctx.Done():
+		select {
+		case <-event:
+		default:
+			t.Fatalf("%s did not acknowledge within the original test/cleanup bound: %v", operation, ctx.Err())
+		}
+	}
+}
+
 type custodyObservedRevoker struct {
 	delegate ports.ProviderCredentialInvocationRevokerV1
 	entered  chan uint64

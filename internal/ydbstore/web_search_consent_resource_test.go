@@ -51,6 +51,25 @@ func newResourceConsentViewFixture(t *testing.T, setup ...privateConsentGrantSet
 		configure = setup[0]
 	}
 	f := newPrivateConsentViewFixture(t, configure)
+	// The existing original admission already seals a canonical ThroughSequence
+	// window. Seed its event DATA without rewriting any sealed job/source/parent.
+	var run domain.Run
+	var job domain.WorkerJob
+	if json.Unmarshal([]byte(f.allocation.parent.graph.rows["runs"][0].(string)), &run) != nil || json.Unmarshal([]byte(f.allocation.parent.graph.rows["worker_jobs"][0].(string)), &job) != nil || job.ValidateForRun(run) != nil || job.ContextWindow == nil || job.ContextWindow.Validate() != nil {
+		t.Fatal("V2 consent requires the original canonical-window job prerequisite")
+	}
+	author, runID := f.state.Request.InitiatingUserID, run.ID
+	trigger := domain.SessionEvent{ID: run.TriggerEventID, TenantID: run.TenantID, SessionID: run.SessionID, Sequence: job.ContextWindow.ThroughSequence, Kind: domain.SessionEventUserMessage, AuthorUserID: &author, RunID: &runID, IdempotencyKey: run.IdempotencyKey, CreatedAt: run.CreatedAt,
+		Payload: domain.BlobRef{TenantID: run.TenantID, Key: domain.SessionEventObjectPrefix(run.TenantID, run.SessionID, run.TriggerEventID) + "message.json", Size: 1, SHA256: strings.Repeat("d", 64)}}
+	if trigger.Validate() != nil {
+		t.Fatal("V2 canonical event DATA prerequisite invalid")
+	}
+	rawTrigger, err := json.Marshal(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rawTrigger)
+	f.triggerSequence, f.triggerRecord = trigger.Sequence, &text
 	p := f.allocation.parent.base.reader.profile.Clone()
 	pd, err := p.Digest()
 	if err != nil {
@@ -63,6 +82,206 @@ func newResourceConsentViewFixture(t *testing.T, setup ...privateConsentGrantSet
 	c.lifetime, c.cancel = resourceConsentLifetime{Context: lifetime, deadline: p.Window.ExpiresAt}, cancel
 	f.allocation.parent.store.ownedWebSearchResourceGrantCustody = c
 	return f, c
+}
+
+func changeResourceConsentTrigger(t *testing.T, f *privateConsentViewFixture, change func(*domain.SessionEvent)) {
+	t.Helper()
+	var event domain.SessionEvent
+	if f.triggerRecord == nil || json.Unmarshal([]byte(*f.triggerRecord), &event) != nil {
+		t.Fatal("canonical trigger DATA prerequisite missing")
+	}
+	change(&event)
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	f.triggerRecord = &text
+}
+
+func TestPrivateWebSearchConsentResourceCanonicalActorRejectsOwnerImpersonation(t *testing.T) {
+	for _, method := range []string{"private-view", "read-state", "decision"} {
+		t.Run(method, func(t *testing.T) {
+			f, custody := newResourceConsentViewFixture(t)
+			changeResourceConsentTrigger(t, f, func(event *domain.SessionEvent) {
+				author := domain.UserID("different-canonical-initiator")
+				event.AuthorUserID = &author
+			})
+			initial := f.state.Clone()
+			var err error
+			switch method {
+			case "private-view":
+				var view ports.WebSearchConsentPrivateViewV1
+				view, err = f.read(t, t.Context())
+				if !reflect.DeepEqual(view, ports.WebSearchConsentPrivateViewV1{}) {
+					t.Errorf("canonical foreign author disclosed private query=%q", view.Query)
+				}
+			case "read-state":
+				var state domain.WebSearchConsentStateV1
+				state, err = f.allocation.parent.store.ReadWebSearchConsent(t.Context(), privateConsentCanonicalInput(f))
+				if !reflect.DeepEqual(state, domain.WebSearchConsentStateV1{}) {
+					t.Error("canonical foreign author disclosed consent state")
+				}
+			case "decision":
+				var state domain.WebSearchConsentStateV1
+				state, err = f.allocation.parent.store.DecideWebSearchConsent(t.Context(), privateConsentDecisionInput(f))
+				if !reflect.DeepEqual(state, domain.WebSearchConsentStateV1{}) {
+					t.Error("resource owner approved a different canonical initiator's request")
+				}
+			}
+			if !errors.Is(err, domain.ErrMembershipDenied) || custody.reads != 0 || len(f.reads) != 0 || f.decisionWrites != 0 || !reflect.DeepEqual(f.state, initial) {
+				t.Fatalf("canonical foreign actor denial must precede effects: err=%v grantReads=%d argumentReads=%v decisionWrites=%d", err, custody.reads, f.reads, f.decisionWrites)
+			}
+		})
+	}
+}
+
+func requireResourceConsentActorDenial(t *testing.T, f *privateConsentViewFixture, custody *resourceConsentCustodyFixture, method string, wantGrantReads, wantArgumentReads int) {
+	t.Helper()
+	initial := f.state.Clone()
+	var err error
+	switch method {
+	case "private-view":
+		var view ports.WebSearchConsentPrivateViewV1
+		view, err = f.read(t, t.Context())
+		if !reflect.DeepEqual(view, ports.WebSearchConsentPrivateViewV1{}) {
+			t.Error("denied canonical actor disclosed query/state")
+		}
+	case "decision":
+		var state domain.WebSearchConsentStateV1
+		state, err = f.allocation.parent.store.DecideWebSearchConsent(t.Context(), privateConsentDecisionInput(f))
+		if !reflect.DeepEqual(state, domain.WebSearchConsentStateV1{}) {
+			t.Error("denied canonical actor returned an approval")
+		}
+	default:
+		t.Fatalf("unknown closed actor-denial method %q", method)
+	}
+	if !errors.Is(err, domain.ErrMembershipDenied) || custody.reads != wantGrantReads || len(f.reads) != wantArgumentReads || f.decisionWrites != 0 || !reflect.DeepEqual(f.state, initial) {
+		t.Fatalf("canonical actor denial changed effects: err=%v grantReads=%d/%d argumentReads=%d/%d decisionWrites=%d", err, custody.reads, wantGrantReads, len(f.reads), wantArgumentReads, f.decisionWrites)
+	}
+}
+
+func TestPrivateWebSearchConsentResourceCanonicalTriggerNegativeControls(t *testing.T) {
+	for _, kind := range []string{"missing-event", "missing-author", "invalid-author", "wrong-trigger", "wrong-sequence", "foreign-tenant", "foreign-session", "foreign-run", "missing-run", "wrong-kind", "future-event", "different-created-at", "malformed", "oversize", "duplicate-field", "aliased-field"} {
+		for _, method := range []string{"private-view", "decision"} {
+			t.Run(kind+"/"+method, func(t *testing.T) {
+				f, custody := newResourceConsentViewFixture(t)
+				switch kind {
+				case "missing-event":
+					f.triggerRecord = nil
+				case "malformed":
+					raw := "{"
+					f.triggerRecord = &raw
+				case "oversize":
+					raw := strings.Repeat(" ", ownedAuthorityHeadBytes+2)
+					f.triggerRecord = &raw
+				case "duplicate-field":
+					raw := strings.Replace(*f.triggerRecord, `"sequence":1`, `"sequence":1,"sequence":1`, 1)
+					f.triggerRecord = &raw
+				case "aliased-field":
+					raw := strings.Replace(*f.triggerRecord, `"sequence":1`, `"Sequence":1`, 1)
+					f.triggerRecord = &raw
+				default:
+					changeResourceConsentTrigger(t, f, func(event *domain.SessionEvent) {
+						switch kind {
+						case "missing-author":
+							event.AuthorUserID = nil
+						case "invalid-author":
+							id := domain.UserID("")
+							event.AuthorUserID = &id
+						case "wrong-trigger":
+							event.ID = "another-trigger"
+						case "wrong-sequence":
+							event.Sequence++
+						case "foreign-tenant":
+							event.TenantID = "another-tenant"
+						case "foreign-session":
+							event.SessionID = "another-session"
+						case "foreign-run":
+							id := domain.RunID("another-run")
+							event.RunID = &id
+						case "missing-run":
+							event.RunID = nil
+						case "wrong-kind":
+							event.Kind = domain.SessionEventSystemNotice
+						case "future-event":
+							event.CreatedAt = event.CreatedAt.Add(time.Hour)
+						case "different-created-at":
+							event.CreatedAt = event.CreatedAt.Add(-time.Microsecond)
+						}
+						// Keep the unrelated body namespace valid for identity controls.
+						event.Payload.TenantID = event.TenantID
+						event.Payload.Key = domain.SessionEventObjectPrefix(event.TenantID, event.SessionID, event.ID) + "message.json"
+					})
+				}
+				requireResourceConsentActorDenial(t, f, custody, method, 0, 0)
+				if f.triggerReads != 1 {
+					t.Fatalf("canonical negative did not reach exact bounded event lookup: reads=%d", f.triggerReads)
+				}
+			})
+		}
+	}
+}
+
+func TestPrivateWebSearchConsentResourceCanonicalTriggerRejoinsAfterBodyIO(t *testing.T) {
+	for _, method := range []string{"private-view", "decision"} {
+		t.Run(method, func(t *testing.T) {
+			f, custody := newResourceConsentViewFixture(t)
+			custody.fault = func(context.Context) {
+				changeResourceConsentTrigger(t, f, func(event *domain.SessionEvent) {
+					id := domain.UserID("changed-after-intent")
+					event.AuthorUserID = &id
+				})
+			}
+			arguments := 0
+			if method == "private-view" {
+				arguments = 1
+			}
+			requireResourceConsentActorDenial(t, f, custody, method, 1, arguments)
+			if f.triggerReads != 2 {
+				t.Fatalf("final SQL did not independently rejoin canonical provenance: reads=%d", f.triggerReads)
+			}
+		})
+	}
+}
+
+func TestPrivateWebSearchConsentResourceCanonicalActorBudgetAndRetry(t *testing.T) {
+	f, custody := newResourceConsentViewFixture(t)
+	store := f.allocation.parent.store
+	input := privateConsentDecisionInput(f)
+	for _, method := range []string{"private-view", "approve", "same-receipt-retry"} {
+		f.callbackStatements = nil
+		ctx, cancel := ownedAuthorityCallContext(t.Context())
+		deadline, _ := ctx.Deadline()
+		if method == "private-view" {
+			view, err := f.read(t, ctx)
+			if err != nil || view.Query != f.query {
+				t.Fatalf("valid canonical author did not receive exact view: %v", err)
+			}
+		} else {
+			state, err := store.DecideWebSearchConsent(ctx, input)
+			if err != nil || state.Decision == nil || state.Decision.ActorUserID != f.web.UserID || f.decisionWrites != 1 {
+				t.Fatalf("valid author approval/retry changed immutable receipt: err=%v writes=%d", err, f.decisionWrites)
+			}
+		}
+		b := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
+		if b.callbacks != 2 || len(f.callbackStatements) != 2 || b.statements > ownedAuthorityMaxTotalStatements || b.bytes > ownedAuthorityMaxBytes {
+			t.Fatalf("canonical actor widened logical budget: callbacks=%d statements=%d bytes=%d perCallback=%v", b.callbacks, b.statements, b.bytes, f.callbackStatements)
+		}
+		for _, count := range f.callbackStatements {
+			if count > ownedAuthorityMaxStatements {
+				t.Fatalf("actor gate exceeded original callback statement ceiling: %v", f.callbackStatements)
+			}
+		}
+		if actual, _ := ctx.Deadline(); !actual.Equal(deadline) {
+			t.Fatal("actor rejoin renewed original deadline")
+		}
+		t.Logf("%s: callbacks=%d statements=%d perCallback=%v metadataBytes=%d", method, b.callbacks, b.statements, f.callbackStatements, b.bytes)
+		cancel()
+	}
+	if custody.reads != 3 || f.triggerReads != 6 {
+		t.Fatalf("each positive must rejoin original two-phase provenance: grantReads=%d eventReads=%d", custody.reads, f.triggerReads)
+	}
 }
 
 func TestPrivateWebSearchConsentResourceOriginalLifetimeShapeAndDeadline(t *testing.T) {

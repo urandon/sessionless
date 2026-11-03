@@ -67,7 +67,7 @@ func (store *Store) ownedConsentCurrentAuthorityData(ctx context.Context, q *own
 	}
 	cost := parent.Authority.AdmissionCostCeiling.WebSearchCost
 	consentRevision, revocationGeneration, grantExpiry, grantErr := grant.validate(parent, source, r, q.at)
-	if source.Validate() != nil || r.Scope != ownedConsentScope(parent) || source.Scope.OwnerUserID != r.InitiatingUserID || cost == nil || grantErr != nil {
+	if source.Validate() != nil || r.Scope != ownedConsentScope(parent) || cost == nil || grantErr != nil {
 		return deny()
 	}
 	request := ownedAllocationParentRequest(parent.Reservation)
@@ -75,7 +75,17 @@ func (store *Store) ownedConsentCurrentAuthorityData(ctx context.Context, q *own
 		return deny()
 	}
 	loaded, err := loadOwnedEffectWorkerJob(ctx, q, request)
-	if err != nil || loaded.Job.CredentialOwnerUserID != r.InitiatingUserID {
+	if err != nil {
+		return deny()
+	}
+	actor := source.Scope.OwnerUserID // explicit deterministic-fixture grammar
+	if grant.resource != nil {
+		actor, err = readOwnedConsentCanonicalActor(ctx, q, source.Scope, loaded.Run, loaded.Job)
+		if err != nil {
+			return deny()
+		}
+	}
+	if actor != r.InitiatingUserID || actor != source.Scope.OwnerUserID || loaded.Job.CredentialOwnerUserID != source.Scope.OwnerUserID {
 		return deny()
 	}
 	lease, err := readOwnedAttemptEffectLease(ctx, q, request)
@@ -92,7 +102,7 @@ func (store *Store) ownedConsentCurrentAuthorityData(ctx context.Context, q *own
 	}
 	policy := parent.Authority.HarnessBinding.AgentLoopPolicy
 	a := domain.WebSearchConsentAuthorityV1{Scope: ownedConsentScope(parent), Run: loaded.Run, Attempt: loaded.Attempt, Lease: lease,
-		InitiatingUserID: source.Scope.OwnerUserID, GrantDigest: r.GrantDigest, ConsentRevision: consentRevision, RevocationGeneration: revocationGeneration,
+		InitiatingUserID: actor, GrantDigest: r.GrantDigest, ConsentRevision: consentRevision, RevocationGeneration: revocationGeneration,
 		DataClass: parent.Authority.HarnessBinding.InputDataClass, ClaimState: domain.WebSearchConsentClaimActiveV1,
 		InvocationDeadline: parent.Authority.InvocationDeadline, ActiveDeadline: parent.Authority.Lease.AcquiredAt.Add(policy.Limits.MaxActiveDuration),
 		GrantExpiresAt: grantExpiry, PolicyExpiresAt: policy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt, AllocationExpiresAt: allocation.current.Window.ExpiresAt}

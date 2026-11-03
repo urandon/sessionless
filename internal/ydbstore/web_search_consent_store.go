@@ -163,11 +163,7 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 		}
 		states, err := readOwnedConsentStates(ctx, q, parent)
 		state, found := findOwnedConsent(states, resolved.Locator.RequestID)
-		if err != nil || !found || resolved.Locator.ValidateForRequest(state.Request) != nil || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
-			return q.budget.deny()
-		}
-		a := domain.WebSearchConsentAuthorityV1{InitiatingUserID: source.Scope.OwnerUserID}
-		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a) != nil {
+		if err != nil || !found || resolved.Locator.ValidateForRequest(state.Request) != nil {
 			return q.budget.deny()
 		}
 		profile, err := readOwnedProfileCurrent(ctx, q, source.Profile)
@@ -175,6 +171,20 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 			return q.budget.deny()
 		}
 		if profile.WebSearchResourceGrant == nil && parent.Authority.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 {
+			return q.budget.deny()
+		}
+		actor := source.Scope.OwnerUserID // explicit deterministic-fixture grammar
+		if profile.WebSearchResourceGrant != nil {
+			actor, err = loadOwnedConsentCanonicalActor(ctx, q, source.Scope)
+			if err != nil {
+				return q.budget.deny()
+			}
+		}
+		if actor != state.Request.InitiatingUserID || actor != source.Scope.OwnerUserID {
+			return q.budget.deny()
+		}
+		a := domain.WebSearchConsentAuthorityV1{InitiatingUserID: actor}
+		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a) != nil {
 			return q.budget.deny()
 		}
 		result = ownedConsentIntent{request: state.Request, profile: profile, observedAt: q.at}
@@ -229,7 +239,13 @@ func (store *Store) DiscoverPrivateWebSearchConsent(ctx context.Context, input p
 			return nil // explicit absence AFTER current Session/Run/actor checks
 		}
 		var job domain.WorkerJob
-		if err != nil || decodeOwnedEffectCanonicalJSON(raw, &job) != nil || job.ValidateForRun(run) != nil || job.CredentialOwnerUserID != web.UserID || job.CreatedAt.After(q.at) {
+		if err != nil || decodeOwnedEffectCanonicalJSON(raw, &job) != nil || job.ValidateForRun(run) != nil || job.CreatedAt.After(q.at) {
+			return q.budget.deny()
+		}
+		// Negative private-resource access precondition, not actor derivation.
+		// A different participant cannot receive an authorized absence result
+		// for this owner's job even before its physical parent exists.
+		if job.CredentialOwnerUserID != web.UserID {
 			return q.budget.deny()
 		}
 		// The scalar attempt_id is not a binding. Select only from the closed
@@ -241,7 +257,29 @@ func (store *Store) DiscoverPrivateWebSearchConsent(ctx context.Context, input p
 		if parent == nil {
 			return nil // actual parent absence; malformed/legacy parents deny above
 		}
-		if parent.Scope.TenantID != web.ActiveTenantID || parent.Scope.SessionID != input.SessionID || parent.Scope.RunID != input.RunID || parent.Scope.AttemptID != job.AttemptID || parent.Scope.OwnerUserID != web.UserID || store.validateCurrentOwnedAttemptParent(ctx, q, ownedAllocationParentRequest(parent.Reservation), *parent) != nil {
+		if parent.Scope.TenantID != web.ActiveTenantID || parent.Scope.SessionID != input.SessionID || parent.Scope.RunID != input.RunID || parent.Scope.AttemptID != job.AttemptID || store.validateCurrentOwnedAttemptParent(ctx, q, ownedAllocationParentRequest(parent.Reservation), *parent) != nil {
+			return q.budget.deny()
+		}
+		// Select the grammar from the authenticated installed profile, not a
+		// browser flag or a failed V2 parse. No grant/query body is read here.
+		admission, err := readOwnedAdmission(ctx, q, parent.Scope)
+		if err != nil || admission == nil {
+			return q.budget.deny()
+		}
+		profile, err := readOwnedProfileCurrent(ctx, q, admission.Source.Profile)
+		if err != nil {
+			return q.budget.deny()
+		}
+		actor := parent.Scope.OwnerUserID // explicit deterministic-fixture grammar
+		if profile.WebSearchResourceGrant != nil {
+			actor, err = readOwnedConsentCanonicalActor(ctx, q, parent.Scope, run, job)
+			if err != nil {
+				return q.budget.deny()
+			}
+		} else if parent.Authority.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 {
+			return q.budget.deny()
+		}
+		if actor != web.UserID || actor != parent.Scope.OwnerUserID || job.CredentialOwnerUserID != parent.Scope.OwnerUserID {
 			return q.budget.deny()
 		}
 		states, err := readOwnedConsentStates(ctx, q, *parent)

@@ -17,6 +17,103 @@ func privateConsentDiscoveryInput(f *privateConsentViewFixture) ports.DiscoverPr
 	return ports.DiscoverPrivateWebSearchConsentRequestV1{SessionID: f.input.SessionID, RunID: f.input.RunID, WebSessionDigest: f.input.WebSessionDigest}
 }
 
+func TestPrivateWebSearchConsentDiscoveryCanonicalResourceActor(t *testing.T) {
+	for _, kind := range []string{"owner", "foreign-author", "missing-event", "missing-author"} {
+		t.Run(kind, func(t *testing.T) {
+			f, custody := newResourceConsentViewFixture(t)
+			switch kind {
+			case "foreign-author":
+				changeResourceConsentTrigger(t, f, func(event *domain.SessionEvent) {
+					id := domain.UserID("different-canonical-actor")
+					event.AuthorUserID = &id
+				})
+			case "missing-event":
+				f.triggerRecord = nil
+			case "missing-author":
+				changeResourceConsentTrigger(t, f, func(event *domain.SessionEvent) { event.AuthorUserID = nil })
+			}
+			ctx, cancel := ownedAuthorityCallContext(t.Context())
+			defer cancel()
+			writes := f.allocation.parent.graph.writes
+			got, err := f.allocation.parent.store.DiscoverPrivateWebSearchConsent(ctx, privateConsentDiscoveryInput(f))
+			if kind == "owner" {
+				want := &ports.WebSearchConsentPendingV1{Locator: consentLocator(f.state.Request), ExpiresAt: f.state.Request.ExpiresAt}
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("valid canonical actor discovery: err=%v got=%+v", err, got)
+				}
+				b := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
+				if b.callbacks != 1 || b.statements > ownedAuthorityMaxStatements || b.bytes > ownedAuthorityMaxBytes {
+					t.Fatalf("canonical discovery widened original call: callbacks=%d statements=%d bytes=%d", b.callbacks, b.statements, b.bytes)
+				}
+				t.Logf("canonical resource discovery: callbacks=%d statements=%d metadataBytes=%d", b.callbacks, b.statements, b.bytes)
+			} else if !errors.Is(err, domain.ErrMembershipDenied) || got != nil {
+				t.Fatalf("%s returned actionable locator: err=%v got=%+v", kind, err, got)
+			}
+			if f.triggerReads != 1 || custody.reads != 0 || len(f.reads) != 0 || f.decisionWrites != 0 || f.allocation.parent.graph.writes != writes {
+				t.Fatalf("canonical discovery created effects/body reads: trigger=%d grant=%d args=%v writes=%d/%d", f.triggerReads, custody.reads, f.reads, f.allocation.parent.graph.writes, writes)
+			}
+		})
+	}
+}
+
+func TestPrivateWebSearchConsentDiscoveryForeignParticipantParentAbsence(t *testing.T) {
+	for _, caller := range []string{"same-resource-owner", "other-authorized-participant"} {
+		t.Run(caller, func(t *testing.T) {
+			f, custody := newResourceConsentViewFixture(t)
+			base := f.allocation.parent.base
+			originalJob := append([]driver.Value(nil), f.allocation.parent.graph.rows["worker_jobs"]...)
+			originalOwnerMembership := append([]driver.Value(nil), base.membership...)
+			originalOwnerParticipant := append([]driver.Value(nil), base.participant...)
+			originalSource := f.allocation.parent.source.Clone()
+			if caller == "other-authorized-participant" {
+				// A is a real second current member/participant of B's Session.
+				// B's records and original job/source remain untouched.
+				user := domain.UserID("another-authorized-participant")
+				var member domain.TenantMembership
+				var participant domain.SessionParticipant
+				if json.Unmarshal([]byte(base.membership[0].(string)), &member) != nil || json.Unmarshal([]byte(base.participant[0].(string)), &participant) != nil {
+					t.Fatal("original principal prerequisite")
+				}
+				member.UserID, member.Role = user, domain.TenantMembershipMember
+				participant.UserID, participant.Role = user, domain.SessionParticipantMember
+				if member.Validate() != nil || participant.Validate() != nil {
+					t.Fatal("second valid participant prerequisite")
+				}
+				memberRaw, err := json.Marshal(member)
+				if err != nil {
+					t.Fatal(err)
+				}
+				participantRaw, err := json.Marshal(participant)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.otherPrincipalUser = user
+				f.otherMembership = []driver.Value{string(memberRaw), string(member.Role), string(member.Status), int64(member.SecurityVersion)}
+				f.otherParticipant = []driver.Value{string(participantRaw), string(participant.Role), string(participant.Status), int64(0)}
+				f.web.UserID = user
+			}
+			f.parentAbsent = true
+			writes := f.allocation.parent.graph.writes
+			got, err := f.allocation.parent.store.DiscoverPrivateWebSearchConsent(t.Context(), privateConsentDiscoveryInput(f))
+			if caller == "same-resource-owner" {
+				if err != nil || got != nil {
+					t.Fatalf("same-owner confirmed parent absence changed: err=%v got=%+v", err, got)
+				}
+			} else {
+				if f.otherPrincipalReads != 1 {
+					t.Fatalf("control did not authenticate actual second participant: principalReads=%d", f.otherPrincipalReads)
+				}
+				if !errors.Is(err, domain.ErrMembershipDenied) || got != nil {
+					t.Fatalf("other participant's missing foreign parent became authorized absence: err=%v got=%+v", err, got)
+				}
+			}
+			if custody.reads != 0 || len(f.reads) != 0 || f.decisionWrites != 0 || f.allocation.parent.graph.writes != writes || !reflect.DeepEqual(originalJob, f.allocation.parent.graph.rows["worker_jobs"]) || !reflect.DeepEqual(originalSource, f.allocation.parent.source) || !reflect.DeepEqual(originalOwnerMembership, base.membership) || !reflect.DeepEqual(originalOwnerParticipant, base.participant) {
+				t.Fatal("discovery replaced original owner/job/source or performed effects")
+			}
+		})
+	}
+}
+
 func privateConsentDiscoveryStop(f *privateConsentViewFixture) domain.WebSearchConsentStateV1 {
 	state := f.state.Clone()
 	state.Status, state.Revision = domain.WebSearchConsentCancelledV1, 2

@@ -83,7 +83,7 @@ func (v localRuntimeRetirementData) validate(tenant domain.TenantID, attempt dom
 func localRuntimeRetirementFixture(t *testing.T) localRuntimeRetirementData {
 	t.Helper()
 	at := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
-	root, _, _ := newLocalRuntimeOperatorFiles(t, t.Context(), "retirement-tenant", "retirement-owner", "http://127.0.0.1:35421/v1", at)
+	root, _, _ := newLocalRuntimeOperatorFiles(t, t.Context(), "retirement-tenant", "retirement-owner", "http://127.0.0.1:35421/v1", at, domain.AgentLoopOwnedPublicV1)
 	raw, err := os.ReadFile(filepath.Join(root, "manifest.json"))
 	var m localoperator.ManifestV1
 	if err != nil || json.Unmarshal(raw, &m) != nil {
@@ -104,7 +104,7 @@ func localRuntimeRetirementFixture(t *testing.T) localRuntimeRetirementData {
 	}
 	pd, _ := p.Digest()
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: p.Locator.TenantID, OwnerUserID: p.Locator.OwnerUserID, SessionID: "retirement-session", RunID: "retirement-run", AttemptID: "retirement-attempt"}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		s := domain.AttemptSpendingAuthorizationCurrentV1{Version: 1, Locator: domain.AttemptSpendingAuthorizationLocatorV1{TenantID: scope.TenantID, AttemptID: scope.AttemptID, ComponentKind: kind, BillingOwnerUserID: p.BillingOwnerUserID}, RunID: scope.RunID, SessionID: scope.SessionID, OwnerUserID: scope.OwnerUserID,
 			SourceKind: domain.AttemptSpendingOwnerLocalSourceV1, SourceInstallationID: p.InstallationID, SourceInstallationRevision: 1, SourceProfile: domain.OwnedAgentProfileReferenceV1{Locator: p.Locator, RevocationGeneration: 1, Digest: pd},

@@ -238,6 +238,7 @@ func ownedAllocationOriginalMatches(v domain.RegisteredAllocationV2, parent doma
 	expected.PreparedInvocationExpiresAt = parent.PreparationExpiresAt
 	expected.SourceDigest, _ = source.Digest()
 	expected.Profile, expected.SourceIssuedAt, expected.SourceExpiresAt = source.Profile, source.IssuedAt, source.ExpiresAt
+	expected.Spending = make(domain.RegisteredSpendingListV1, len(source.Spending))
 	for i, spending := range source.Spending {
 		digest, _ := spending.Digest()
 		expected.Spending[i] = domain.RegisteredSpendingReferenceV1{Locator: spending.Locator, RevocationGeneration: spending.RevocationGeneration, Digest: digest, Window: spending.Window.Clone()}

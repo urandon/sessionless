@@ -330,7 +330,7 @@ func newPrivateConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetu
 	if err != nil {
 		t.Fatal(err)
 	}
-	sources := ownedFinalSources{profile: p}
+	sources := ownedFinalSources{profile: p, spending: make([]domain.AttemptSpendingAuthorizationCurrentV1, len(seed.reader.spending))}
 	pd, err := p.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +417,7 @@ func TestPrivateWebSearchConsentViewActualArgumentCustody(t *testing.T) {
 			args := bytes.Clone(f.bodies[f.state.Request.Arguments.Key])
 			blobs := &localEntryBlobs{}
 			scope := ownedConsentOperationScope(f.state.Request.Scope)
-			bodies, err := operationbody.NewV1(scope, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+			bodies, err := operationbody.NewV1(scope, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Profile, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 			if err != nil {
 				t.Fatal("construct original argument owner", err)
 			}
@@ -431,7 +431,7 @@ func TestPrivateWebSearchConsentViewActualArgumentCustody(t *testing.T) {
 			case "foreign-scope-hash":
 				foreign := scope
 				foreign.PhysicalInvocationClaimID = "another-claim"
-				other, e := operationbody.NewV1(foreign, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+				other, e := operationbody.NewV1(foreign, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Profile, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 				if e != nil {
 					t.Fatal(e)
 				}

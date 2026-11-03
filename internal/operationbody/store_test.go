@@ -199,11 +199,52 @@ func (r *bodyReader) Close() error {
 
 func newBodyStore(t *testing.T, b *bodyBlobs) *operationbody.StoreV1 {
 	t.Helper()
-	s, err := operationbody.NewV1(bodyScope(), bodyLimits(), b)
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, bodyLimits(), b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func TestBodyStoreExplicitTextProfileBounds(t *testing.T) {
+	limits := bodyLimits()
+	limits.MaxConcurrentOperations, limits.MaxModelCalls, limits.MaxOperations = 1, 1, 1
+	limits.MaxAggregateInputTokens, limits.MaxAggregateOutputTokens = limits.MaxInputTokensPerCall, limits.MaxOutputTokensPerCall
+	limits.MaxCompactionCalls, limits.MaxToolDispatches, limits.MaxWebSearches = 0, 0, 0
+	limits.MaxSummaryBytes, limits.MaxToolArgumentBytes, limits.MaxToolResultBytes = 0, 0, 0
+	limits.MaxMCPOutboundMessages, limits.MaxMCPCatalogPages, limits.MaxMCPInboundFrames, limits.MaxMCPInboundBytes = 0, 0, 0, 0
+	if limits.Validate() == nil {
+		t.Fatal("unscoped full validator inferred text mode")
+	}
+	for _, denied := range []struct {
+		profile domain.AgentLoopProfileV1
+		limits  domain.AgentLoopLimitsV1
+	}{
+		{"", limits}, {"unknown", limits}, {domain.AgentLoopOwnedPublicV1, limits}, {domain.AgentLoopOwnedLocalTextV1, bodyLimits()},
+	} {
+		if _, err := operationbody.NewV1(bodyScope(), denied.profile, denied.limits, &bodyBlobs{}); err == nil {
+			t.Fatalf("contradictory body profile accepted: %q", denied.profile)
+		}
+	}
+	blobs := &bodyBlobs{objects: make(map[string][]byte)}
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedLocalTextV1, limits, blobs)
+	if err != nil {
+		t.Fatalf("explicit bounded text custody: %v", err)
+	}
+	// The store copied scalar ceilings; changing caller DATA cannot refill it.
+	limits.MaxOperations = 12
+	for i := range 2 {
+		if _, err := s.Write(t.Context(), []byte{byte('a' + i)}); err != nil {
+			t.Fatalf("text body %d: %v", i, err)
+		}
+	}
+	if _, err := s.Write(t.Context(), []byte("third")); err == nil {
+		t.Fatal("caller mutation refilled text custody write ceiling")
+	}
+	puts, _, _, _, _ := blobs.counts()
+	if puts != 2 {
+		t.Fatalf("text body physical writes=%d want2", puts)
+	}
 }
 
 func TestOperationBodyCanonicalIdentityOwnedRoundTripAndScopedNamespace(t *testing.T) {
@@ -249,7 +290,7 @@ func TestOperationBodyCanonicalIdentityOwnedRoundTripAndScopedNamespace(t *testi
 	}
 	other := bodyScope()
 	other.FenceToken++
-	second, err := operationbody.NewV1(other, bodyLimits(), b)
+	second, err := operationbody.NewV1(other, domain.AgentLoopOwnedPublicV1, bodyLimits(), b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,9 +326,9 @@ func TestOperationBodyInvalidConstructorsAndReadsBeforeBlobIO(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var err error
 			if tc.nilBlobs {
-				_, err = operationbody.NewV1(tc.scope, tc.limits, nil)
+				_, err = operationbody.NewV1(tc.scope, domain.AgentLoopOwnedPublicV1, tc.limits, nil)
 			} else {
-				_, err = operationbody.NewV1(tc.scope, tc.limits, b)
+				_, err = operationbody.NewV1(tc.scope, domain.AgentLoopOwnedPublicV1, tc.limits, b)
 			}
 			if err == nil {
 				t.Fatal("invalid constructor accepted")
@@ -415,7 +456,7 @@ func TestOperationBodyCapacityChargedPerActualWriteAndSharedByCopies(t *testing.
 	b := newBodyBlobs()
 	limits := bodyLimits()
 	limits.MaxOperations = 1
-	s, err := operationbody.NewV1(bodyScope(), limits, b)
+	s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, limits, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +558,7 @@ func TestOperationBodyCallDeadlineUsesMinimumAndCancellationLatchesWrite(t *test
 				b.blockPut = make(chan struct{})
 				limits := bodyLimits()
 				limits.MaxNetworkOperationDuration = tc.network
-				s, err := operationbody.NewV1(bodyScope(), limits, b)
+				s, err := operationbody.NewV1(bodyScope(), domain.AgentLoopOwnedPublicV1, limits, b)
 				if err != nil {
 					t.Fatal(err)
 				}

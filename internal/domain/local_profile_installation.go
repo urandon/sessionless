@@ -43,7 +43,9 @@ func (v ConfiguredInferenceProfileV1) ValidateForOwnedProfile(p OwnedAgentProfil
 		}
 	}
 	l := p.Limits
-	if v.Capabilities.ToolCalls != ProviderEvidenceSupportedV1 || l.MaxInputTokensPerCall > v.Limits.MaxInputTokens || l.MaxOutputTokensPerCall > v.Limits.MaxOutputTokens || l.MaxNetworkOperationDuration > v.Limits.OperationTimeout || l.MaxCleanupDuration > v.Limits.CleanupTimeout || l.MaxToolArgumentBytes > v.Limits.ToolArgumentsBytes || l.MaxContextViewBytes > v.Limits.RequestBytes {
+	if (p.Locator.Profile == AgentLoopOwnedPublicV1 && v.Capabilities.ToolCalls != ProviderEvidenceSupportedV1) ||
+		(p.Locator.Profile == AgentLoopOwnedLocalTextV1 && (v.Auth != ConfiguredInferenceAuthNoneV1 || v.Capabilities.ToolCalls == ProviderEvidenceSupportedV1)) ||
+		l.MaxInputTokensPerCall > v.Limits.MaxInputTokens || l.MaxOutputTokensPerCall > v.Limits.MaxOutputTokens || l.MaxNetworkOperationDuration > v.Limits.OperationTimeout || l.MaxCleanupDuration > v.Limits.CleanupTimeout || l.MaxToolArgumentBytes > v.Limits.ToolArgumentsBytes || l.MaxContextViewBytes > v.Limits.RequestBytes {
 		return configuredInferenceError("installation.limits", "owned loop requires supported tool calls and ceilings within configured limits")
 	}
 	c := p.CostCeiling

@@ -32,26 +32,27 @@ func (v AttemptExecutionSourceScopeV1) Validate() error {
 
 // AttemptExecutionSourceV1 fixes the original ingress source package, not
 // admission or current permission. It preserves the original issued window,
-// four exact funding snapshots and completed execution digests. Its String
+// profile-selected exact funding snapshots and completed execution digests. Its String
 // codec caps the entire package at 32 KiB. Canonical ingress must match its
 // Session against the actually authorized frontend binding in the SAME Tx.
 type AttemptExecutionSourceV1 struct {
-	Version                    uint32                                   `json:"version"`
-	Scope                      AttemptExecutionSourceScopeV1            `json:"scope"`
-	Profile                    OwnedAgentProfileReferenceV1             `json:"profile"`
-	Spending                   [4]AttemptSpendingAuthorizationCurrentV1 `json:"spending"`
-	AgentLoopPolicyDigest      AgentLoopPolicyDigestV1                  `json:"agent_loop_policy_digest"`
-	HarnessBindingDigest       HarnessBindingDigestV2                   `json:"harness_binding_digest"`
-	ExecutionPlacementDigest   string                                   `json:"execution_placement_digest"`
-	SubstrateBindingDigest     SubstrateBindingDigestV1                 `json:"substrate_binding_digest"`
-	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2             `json:"admission_cost_ceiling_digest"`
-	Currency                   string                                   `json:"currency"`
-	MaxTotalAmountMicrounits   uint64                                   `json:"max_total_amount_microunits"`
-	IssuedAt                   time.Time                                `json:"issued_at"`
-	ExpiresAt                  time.Time                                `json:"expires_at"`
+	Version                    uint32                        `json:"version"`
+	Scope                      AttemptExecutionSourceScopeV1 `json:"scope"`
+	Profile                    OwnedAgentProfileReferenceV1  `json:"profile"`
+	Spending                   OwnedSpendingListV1           `json:"spending"`
+	AgentLoopPolicyDigest      AgentLoopPolicyDigestV1       `json:"agent_loop_policy_digest"`
+	HarnessBindingDigest       HarnessBindingDigestV2        `json:"harness_binding_digest"`
+	ExecutionPlacementDigest   string                        `json:"execution_placement_digest"`
+	SubstrateBindingDigest     SubstrateBindingDigestV1      `json:"substrate_binding_digest"`
+	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2  `json:"admission_cost_ceiling_digest"`
+	Currency                   string                        `json:"currency"`
+	MaxTotalAmountMicrounits   uint64                        `json:"max_total_amount_microunits"`
+	IssuedAt                   time.Time                     `json:"issued_at"`
+	ExpiresAt                  time.Time                     `json:"expires_at"`
 }
 
 func (v AttemptExecutionSourceV1) Clone() AttemptExecutionSourceV1 {
+	v.Spending = append(OwnedSpendingListV1(nil), v.Spending...)
 	for i := range v.Spending {
 		v.Spending[i] = v.Spending[i].Clone()
 	}
@@ -70,7 +71,10 @@ func (v AttemptExecutionSourceV1) Validate() error {
 			return err
 		}
 	}
-	kinds := [4]AttemptSpendingComponentKindV1{AttemptSpendingProviderV1, AttemptSpendingSubstrateV1, AttemptSpendingMCPToolV1, AttemptSpendingWebSearchV1}
+	kinds := OwnedSpendingComponentsV1(v.Profile.Locator.Profile)
+	if len(kinds) == 0 || len(v.Spending) != len(kinds) {
+		return admissionError("spending", "requires exactly the actual ordered allocations selected by the sealed profile")
+	}
 	var total uint64
 	for i, s := range v.Spending {
 		if s.ValidateAt(v.IssuedAt) != nil || s.Locator.ComponentKind != kinds[i] || s.Locator.TenantID != v.Scope.TenantID ||
@@ -121,7 +125,10 @@ func (v AttemptExecutionSourceV1) ValidateForExecution(placement ExecutionPlacem
 		l.ModelVendorID != binding.ModelVendorID || l.ModelID != binding.ModelID || l.InputDataClass != binding.InputDataClass || l.Profile != policy.Profile {
 		return admissionError("profile", "must preserve the original backend/resource/model/data/profile tuple")
 	}
-	amounts := [4]*uint64{cost.MaxProviderAmountMicrounits, cost.MaxSubstrateAmountMicrounits, cost.MCPToolCost.MaxAmountMicrounits, cost.WebSearchCost.MaxAmountMicrounits}
+	amounts := []*uint64{cost.MaxProviderAmountMicrounits, cost.MaxSubstrateAmountMicrounits}
+	if policy.Profile == AgentLoopOwnedPublicV1 {
+		amounts = append(amounts, cost.MCPToolCost.MaxAmountMicrounits, cost.WebSearchCost.MaxAmountMicrounits)
+	}
 	for i, amount := range amounts {
 		if amount == nil || *amount != *v.Spending[i].MaxAmountMicrounits {
 			return admissionError("allocation", "each admitted component ceiling must equal its original authorized allocation")
@@ -140,8 +147,8 @@ func (v AttemptExecutionSourceV1) Digest() (string, error) {
 // Exact original references are not enough on their own: all five current
 // heads must still be active and unchanged in the SAME DB-time snapshot. This
 // comparison never selects a replacement payer/package or renews admission.
-func (v AttemptExecutionSourceV1) ValidateAgainstCurrentSources(profile OwnedAgentProfileCurrentV1, spending [4]AttemptSpendingAuthorizationCurrentV1, now time.Time) error {
-	if v.Validate() != nil || !ownedCurrentTime(now) || now.Before(v.IssuedAt) || !now.Before(v.ExpiresAt) || profile.ValidateAt(now) != nil {
+func (v AttemptExecutionSourceV1) ValidateAgainstCurrentSources(profile OwnedAgentProfileCurrentV1, spending []AttemptSpendingAuthorizationCurrentV1, now time.Time) error {
+	if v.Validate() != nil || len(spending) != len(v.Spending) || !ownedCurrentTime(now) || now.Before(v.IssuedAt) || !now.Before(v.ExpiresAt) || profile.ValidateAt(now) != nil {
 		return admissionError("current", "requires original admission and current source windows")
 	}
 	pd, err := profile.Digest()
@@ -208,15 +215,15 @@ type OwnedAgentExecutionPackageV1 struct {
 }
 
 // BuildOwnedAgentExecutionPackageV1 derives the complete acyclic package from
-// ONE current profile and the original four allocations at original issuance,
+// ONE current profile and its original actual allocations at original issuance,
 // BEFORE a capacity reservation exists, never an independent
 // caller-supplied policy/binding. Each source class must match its exact closed
 // profile tuple; a fixture string never approves a real local installation.
-func BuildOwnedAgentExecutionPackageV1(scope AttemptExecutionSourceScopeV1, profile OwnedAgentProfileCurrentV1, spending [4]AttemptSpendingAuthorizationCurrentV1, at time.Time) (OwnedAgentExecutionPackageV1, error) {
+func BuildOwnedAgentExecutionPackageV1(scope AttemptExecutionSourceScopeV1, profile OwnedAgentProfileCurrentV1, spending []AttemptSpendingAuthorizationCurrentV1, at time.Time) (OwnedAgentExecutionPackageV1, error) {
 	denied := func() (OwnedAgentExecutionPackageV1, error) {
 		return OwnedAgentExecutionPackageV1{}, admissionError("source", "requires exact original current installation sources")
 	}
-	if scope.Validate() != nil || !ownedCurrentTime(at) || profile.ValidateAt(at) != nil ||
+	if scope.Validate() != nil || !ownedCurrentTime(at) || profile.ValidateAt(at) != nil || len(spending) != len(OwnedSpendingComponentsV1(profile.Locator.Profile)) ||
 		profile.Locator.TenantID != scope.TenantID || profile.Locator.OwnerUserID != scope.OwnerUserID {
 		return denied()
 	}
@@ -350,7 +357,7 @@ func (v AttemptExecutionAdmissionV1) ValidateForExecution(placement ExecutionPla
 	return v.Source.ValidateForExecution(placement, binding, substrate, cost)
 }
 
-func (v AttemptExecutionAdmissionV1) ValidateAgainstCurrentSources(profile OwnedAgentProfileCurrentV1, spending [4]AttemptSpendingAuthorizationCurrentV1, now time.Time) error {
+func (v AttemptExecutionAdmissionV1) ValidateAgainstCurrentSources(profile OwnedAgentProfileCurrentV1, spending []AttemptSpendingAuthorizationCurrentV1, now time.Time) error {
 	if v.Validate() != nil || !ownedCurrentTime(now) || now.Before(v.AdmittedAt) {
 		return ValidationError{Field: "attempt_execution_admission.current", Reason: "requires original admission time"}
 	}

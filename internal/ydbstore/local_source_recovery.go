@@ -13,7 +13,7 @@ import (
 
 type localSourcePublicationSnapshot struct {
 	profile  domain.OwnedAgentProfileCurrentV1
-	spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending []domain.AttemptSpendingAuthorizationCurrentV1
 	present  [4]bool
 	end      time.Time
 }
@@ -132,7 +132,7 @@ func (store *Store) recoverLocalOwnedExecutionPackage(ctx context.Context, sourc
 	}()
 	var intents [4]string
 	end := original.end
-	for i, kind := range ownedSpendingKinds {
+	for i, kind := range domain.OwnedSpendingComponentsV1(original.profile.Locator.Profile) {
 		if original.present[i] {
 			continue
 		}
@@ -163,7 +163,7 @@ func (store *Store) recoverLocalOwnedExecutionPackage(ctx context.Context, sourc
 		if err != nil || !q.at.Before(original.end) || !reflect.DeepEqual(current.profile, original.profile) {
 			return q.budget.deny()
 		}
-		for i := range ownedSpendingKinds {
+		for i := range domain.OwnedSpendingComponentsV1(original.profile.Locator.Profile) {
 			if original.present[i] {
 				if !current.present[i] || !reflect.DeepEqual(current.spending[i], original.spending[i]) {
 					return q.budget.deny()
@@ -210,7 +210,16 @@ func (store *Store) recoverLocalOwnedExecutionPackage(ctx context.Context, sourc
 }
 
 func localSourceSnapshotComplete(v localSourcePublicationSnapshot) bool {
-	return v.present == [4]bool{true, true, true, true}
+	kinds := domain.OwnedSpendingComponentsV1(v.profile.Locator.Profile)
+	if len(kinds) == 0 || len(v.spending) != len(kinds) {
+		return false
+	}
+	for i, present := range v.present {
+		if present != (i < len(kinds)) {
+			return false
+		}
+	}
+	return true
 }
 
 func buildLocalSourceRecoveryPackage(source *localoperator.Source, scope domain.AttemptExecutionSourceScopeV1, v localSourcePublicationSnapshot, now time.Time) (domain.OwnedAgentExecutionPackageV1, error) {
@@ -245,7 +254,7 @@ func (store *Store) readLocalSourcePublicationSnapshot(ctx context.Context, q *o
 	if err != nil || !found || digestErr != nil || digest != receipt.Digest || !reflect.DeepEqual(p, receipt.Profile) || p.ValidateInitial() != nil || p.ValidateAt(q.at) != nil || readLocalRecoveredProfileAudit(ctx, q, p) != nil {
 		return deny()
 	}
-	v := localSourcePublicationSnapshot{profile: p, end: p.Window.ExpiresAt}
+	v := localSourcePublicationSnapshot{profile: p, spending: make([]domain.AttemptSpendingAuthorizationCurrentV1, len(domain.OwnedSpendingComponentsV1(p.Locator.Profile))), end: p.Window.ExpiresAt}
 	var components []domain.AttemptSpendingAuthorizationCurrentV1
 	for i, kind := range ownedSpendingKinds {
 		l := domain.AttemptSpendingAuthorizationLocatorV1{TenantID: scope.TenantID, AttemptID: scope.AttemptID, ComponentKind: kind, BillingOwnerUserID: p.BillingOwnerUserID}
@@ -255,6 +264,12 @@ func (store *Store) readLocalSourcePublicationSnapshot(ctx context.Context, q *o
 		}
 		if !found {
 			continue
+		}
+		// Still read and charge both exact service keys in the same snapshot.
+		// The authenticated text profile commits their absence, not permission
+		// to adopt an unexpected service authorization.
+		if i >= len(v.spending) {
+			return deny()
 		}
 		if component.ValidateInitial() != nil || component.ValidateAgainstProfile(p, q.at) != nil || component.RunID != scope.RunID || component.SessionID != scope.SessionID || component.OwnerUserID != scope.OwnerUserID || readLocalRecoveredSpendingAudit(ctx, q, component) != nil {
 			return deny()

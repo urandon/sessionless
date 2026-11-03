@@ -72,7 +72,7 @@ func BuildOwnedOperationAccountingRowV3(r domain.AttemptOperationReservationV1, 
 
 func accountingSourceV3(parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1) bool {
 	a := parent.Authority
-	return parent.Validate() == nil && source.ValidateForExecution(a.ExecutionPlacementV2, a.HarnessBinding, a.SubstrateBinding, a.AdmissionCostCeiling) == nil && parent.Scope == source.Scope &&
+	return parent.Validate() == nil && source.Profile.Locator.Profile == domain.AgentLoopOwnedPublicV1 && len(source.Spending) == 4 && source.ValidateForExecution(a.ExecutionPlacementV2, a.HarnessBinding, a.SubstrateBinding, a.AdmissionCostCeiling) == nil && parent.Scope == source.Scope &&
 		a.HarnessBinding.Resource.Kind == domain.ProviderResourceLocalEndpointV1 && a.SubstrateBinding.Kind == domain.SubstrateLocalDevelopmentV1 && a.HarnessBinding.InputDataClass == domain.ProviderDataPublicV1 &&
 		source.Spending[0].SourceKind == domain.AttemptSpendingOwnerLocalSourceV1 && source.Spending[2].SourceKind == domain.AttemptSpendingOwnerLocalSourceV1
 }

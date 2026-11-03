@@ -79,7 +79,7 @@ func localSourceFourPublications(t *testing.T) (*localoperator.Source, *Store, *
 
 func localSourcePublishPackage(t *testing.T, source *localoperator.Source, store *Store, f *localInstallationSQLFixture, receipt ports.OwnedProfilePublicationReceiptV1, scope domain.AttemptExecutionSourceScopeV1) domain.OwnedAgentExecutionPackageV1 {
 	t.Helper()
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	issued := receipt.Profile.Window.PublishedAt
 	for i, kind := range [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		g, err := source.SpendingPublication(t.Context(), scope, kind)

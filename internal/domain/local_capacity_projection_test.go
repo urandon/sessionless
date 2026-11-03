@@ -25,7 +25,7 @@ func localCapacityProjectionFixture(t *testing.T, local, bearer bool) (domain.Ru
 		scope.SessionID, scope.RunID, scope.AttemptID = "local-session", "local-run", "local-attempt"
 	}
 	kinds := [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range kinds {
 		if local {
 			spending[i] = localSpendingFixture(t, profile, kind)

@@ -122,7 +122,7 @@ func runCanonicalWorkerModel(t *testing.T, fault string) {
 	if frame.Kind != "canonical" || frame.EventID != string(seed.Event.ID) || frame.Sequence != seed.Event.Sequence || frame.Role != string(seed.Event.Kind) || frame.Digest != seed.Payload.SHA256 || frame.Payload != string(seed.Body) {
 		t.Fatal("normal worker wire changed the actual committed event or raw payload")
 	}
-	adapter, err := operationbody.NewV1(r.Operation.Scope, seed.Loaded.Job.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+	adapter, err := operationbody.NewV1(r.Operation.Scope, seed.Loaded.Job.HarnessBinding.AgentLoopPolicy.Profile, seed.Loaded.Job.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}

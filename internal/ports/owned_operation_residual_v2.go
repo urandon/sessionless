@@ -102,6 +102,12 @@ func (v OwnedOperationAccountingDispositionV2) ValidateFor(parent domain.OwnedAt
 	}
 	var total, nonSubstrate uint64
 	for index, amount := range v.ComponentAmounts {
+		if index >= len(source.Spending) {
+			if amount != 0 {
+				return domain.ErrMembershipDenied
+			}
+			continue
+		}
 		cap := source.Spending[index].MaxAmountMicrounits
 		if cap == nil || amount > *cap || amount > math.MaxUint64-total {
 			return domain.ErrMembershipDenied

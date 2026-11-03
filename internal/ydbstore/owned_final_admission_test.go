@@ -132,7 +132,7 @@ type ownedFinalPrebuild struct {
 // Already sealed inputs must not pass through the synthetic rebinding path.
 type ownedFinalSources struct {
 	profile  domain.OwnedAgentProfileCurrentV1
-	spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending []domain.AttemptSpendingAuthorizationCurrentV1
 }
 
 func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, *ownedFinalScript, ports.DispatchAdmissionRequest, domain.AttemptExecutionSourceV1) {
@@ -175,6 +175,7 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 			t.Fatal("sealed sources cannot use a profile mutation callback")
 		}
 		r.profile = prebuild[0].sources.profile.Clone()
+		r.spending = make([]domain.AttemptSpendingAuthorizationCurrentV1, len(prebuild[0].sources.spending))
 		for i, v := range prebuild[0].sources.spending {
 			r.spending[i] = v.Clone()
 		}

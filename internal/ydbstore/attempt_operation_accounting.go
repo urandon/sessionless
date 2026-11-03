@@ -42,6 +42,12 @@ func (v ownedAttemptAccounting) validate(parent domain.OwnedAttemptEffectParentV
 	}
 	var total, operations uint64
 	for i, amount := range v.Amounts {
+		if i >= len(source.Spending) {
+			if amount != 0 {
+				return domain.ErrMembershipDenied
+			}
+			continue
+		}
 		ceiling := source.Spending[i].MaxAmountMicrounits
 		if ceiling == nil || amount > *ceiling || amount > math.MaxUint64-total {
 			return domain.ErrMembershipDenied
@@ -140,6 +146,9 @@ func debitOwnedOperation(value ownedAttemptAccounting, operation domain.AttemptO
 	case domain.AttemptOperationWebSearchV1:
 		index = 3
 	default:
+		return ownedAttemptAccounting{}, domain.ErrMembershipDenied
+	}
+	if index >= len(source.Spending) {
 		return ownedAttemptAccounting{}, domain.ErrMembershipDenied
 	}
 	// MODEL/COMPACTION's exact upward quote has already been authenticated from

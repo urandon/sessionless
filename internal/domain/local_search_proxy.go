@@ -34,7 +34,7 @@ func BuildRegisteredLocalSearchHTTPSProxyAttestationV1(allocation RegisteredAllo
 		return RegisteredProxyAttestationV2{}, ErrMembershipDenied
 	}
 	sd, err := source.Digest()
-	if err != nil || source.Validate() != nil || allocation.ValidateAt(window.PublishedAt) != nil || allocation.LocalRuntime == nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.SourceDigest != sd || allocation.Scope != source.Scope || window.Validate() != nil || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ObservedAt.Before(source.IssuedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) || window.ExpiresAt.After(source.ExpiresAt) || observation.validate() != nil || sequence < 2 {
+	if err != nil || source.Validate() != nil || source.Profile.Locator.Profile != AgentLoopOwnedPublicV1 || len(source.Spending) != 4 || allocation.ValidateAt(window.PublishedAt) != nil || allocation.LocalRuntime == nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.SourceDigest != sd || allocation.Scope != source.Scope || window.Validate() != nil || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ObservedAt.Before(source.IssuedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) || window.ExpiresAt.After(source.ExpiresAt) || observation.validate() != nil || sequence < 2 {
 		return deny()
 	}
 	r := allocation.LocalRuntime

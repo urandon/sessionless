@@ -422,8 +422,19 @@ serialized into profiles, grants or audits.
 `owner_local_installation` spending references this exact installed profile and
 its original finite terms. The keeper can authenticate only the explicitly
 owner-supplied provider/substrate zero invoice; that is not measured zero
-economic cost or a free external-service grant. MCP/search retain independent
-source/price authority and all four current joins remain mandatory. Actual
+economic cost or a free external-service grant. In `owned_agent_public_v1`,
+MCP/search retain independent source/price authority and all four current joins
+remain mandatory. The explicitly selected `owned_local_text_v1` profile instead
+retains exactly two actual provider/substrate authorizations and checks absence
+of service heads; it has no MCP/search grant, price or spending permission.
+Its Source and registered allocation use the same bounded canonical ordered
+record lists: two entries for text, four for the full profile. Existing full
+four-entry bytes and hashes are unchanged. Neither null placeholders nor
+zero-valued service grants create extra durable records. The new profile is
+limited to the existing configured no-auth local substrate and one text MODEL;
+it does not provide full-agent or cloud activation evidence. See the
+[local text contract](../design/configured-local-inference.md#local-text-qualification-profile).
+Actual
 declaration bodies do not establish model qualification, independent review or
 execution permission. The complete effect-source producer, tagged connector
 and normal composition remain disabled until their owning contracts pass.

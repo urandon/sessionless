@@ -62,7 +62,7 @@ func failureSearchV4Data(t *testing.T, stop string, outcome domain.AttemptOperat
 	p.WebSearchGrantDigest = searchCost.ScopedGrantDigest
 	p.Substrate.AdmissionCostCeilingDigest, _ = p.CostCeiling.Digest()
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: r.scope.tenant, OwnerUserID: r.scope.owner, SessionID: r.scope.session, RunID: r.scope.run, AttemptID: r.scope.attempt}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
 		spending[i] = localRuntimeStructuralSpending(t, p, scope, kind)
 	}

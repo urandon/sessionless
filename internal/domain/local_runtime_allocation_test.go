@@ -21,7 +21,7 @@ func localRuntimeAllocationFixture(t testing.TB, bearer bool) registeredFixture 
 	g := localInstallationGrantFixture(t)
 	p := localSpendingProfileFixture(t, bearer)
 	kinds := [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 	for i, kind := range kinds {
 		spending[i] = localSpendingFixture(t, p, kind)
 	}

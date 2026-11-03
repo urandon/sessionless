@@ -65,6 +65,30 @@ func localSpendingProfileFixture(t testing.TB, bearer bool) domain.OwnedAgentPro
 	return g.Profile
 }
 
+func TestLocalSpendingTextRejectsRehashedDisabledComponentWithoutPanic(t *testing.T) {
+	for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
+		t.Run(string(kind), func(t *testing.T) {
+			p := localTextInstallationGrantFixture(t).Profile
+			provider := localSpendingFixture(t, p, domain.AttemptSpendingProviderV1)
+			_ = localSpendingFixture(t, p, domain.AttemptSpendingSubstrateV1)
+			v := provider.Clone()
+			v.Locator.ComponentKind, v.ResourceGeneration = kind, 1
+			bindOwnedSpendingSource(t, &v)
+			if err := v.ValidateAt(p.Window.PublishedAt); err != nil {
+				t.Fatal("structurally valid same-text rehashed component baseline", err)
+			}
+			defer func() {
+				if value := recover(); value != nil {
+					t.Errorf("disabled same-text component must deny without panic: %v", value)
+				}
+			}()
+			if err := v.ValidateAgainstProfile(p, p.Window.PublishedAt); err == nil {
+				t.Fatal("disabled same-text service component accepted")
+			}
+		})
+	}
+}
+
 func TestLocalSpendingAllFourComponentsAndExecutionSource(t *testing.T) {
 	t.Parallel()
 	for _, bearer := range []bool{false, true} {
@@ -75,7 +99,7 @@ func TestLocalSpendingAllFourComponentsAndExecutionSource(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := localSpendingProfileFixture(t, bearer)
 			kinds := [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1}
-			var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+			spending := make([]domain.AttemptSpendingAuthorizationCurrentV1, 4)
 			for index, kind := range kinds {
 				spending[index] = localSpendingFixture(t, p, kind)
 			}

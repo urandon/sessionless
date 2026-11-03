@@ -55,8 +55,11 @@ type bodyState struct {
 
 var _ ports.AttemptOperationBodyStoreV1 = (*StoreV1)(nil)
 
-func NewV1(scope domain.AttemptOperationScopeV1, limits domain.AgentLoopLimitsV1, blobs ports.BlobStore) (*StoreV1, error) {
-	if scope.Validate() != nil || limits.Validate() != nil || blobs == nil {
+// NewV1 fixes bounded custody DATA, not execution or deletion permission. The
+// original serving entry separately authenticates its policy/profile and scope;
+// a constructor caller cannot turn these bounds into an operation capability.
+func NewV1(scope domain.AttemptOperationScopeV1, profile domain.AgentLoopProfileV1, limits domain.AgentLoopLimitsV1, blobs ports.BlobStore) (*StoreV1, error) {
+	if scope.Validate() != nil || limits.ValidateForProfile(profile) != nil || blobs == nil {
 		return nil, ErrBody
 	}
 	raw, err := json.Marshal(scope)

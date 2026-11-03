@@ -389,7 +389,7 @@ func TestRegisteredPreparationEveryFieldSealed(t *testing.T) {
 					}
 					return
 				}
-				if v.Kind() == reflect.Array {
+				if v.Kind() == reflect.Array || v.Kind() == reflect.Slice {
 					for i := 0; i < v.Len(); i++ {
 						walk(v.Index(i), append(append([]int(nil), path...), i))
 					}
@@ -398,7 +398,7 @@ func TestRegisteredPreparationEveryFieldSealed(t *testing.T) {
 				copy := spec.copy()
 				leaf := reflect.ValueOf(copy).Elem()
 				for _, i := range path {
-					if leaf.Kind() == reflect.Array {
+					if leaf.Kind() == reflect.Array || leaf.Kind() == reflect.Slice {
 						leaf = leaf.Index(i)
 					} else {
 						leaf = leaf.Field(i)

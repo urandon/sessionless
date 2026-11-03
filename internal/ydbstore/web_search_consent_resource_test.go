@@ -548,7 +548,7 @@ func TestPrivateWebSearchConsentResourceActualArgumentCustody(t *testing.T) {
 			defer clear(args)
 			blobs := &localEntryBlobs{}
 			scope := ownedConsentOperationScope(f.state.Request.Scope)
-			owner, err := operationbody.NewV1(scope, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+			owner, err := operationbody.NewV1(scope, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Profile, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 			if err != nil {
 				t.Fatal(err)
 			}

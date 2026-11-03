@@ -17,6 +17,11 @@ import (
 func TestLocalFailureCapsuleV3StrictUnknownMCPAbsence(t *testing.T) {
 	// Pure codec DATA: no valid parent, issuer, original owner or authority.
 	c := localFailureCapsule{Schema: "sessionless.terminal-failure-custody.v3", Version: 3, Stop: domain.MCPOutcomeUnknownV3, Cleanup: "joined_retained", Accounting: ports.OwnedOperationFailureAccountingV1{Version: 3}, Operations: make([]localFailureOperationV1, 2)}
+	// Preserve the historical fixed-array zero-record wire fixture, not funding.
+	c.Source.Spending = make(domain.OwnedSpendingListV1, 4)
+	if c.Source.Validate() == nil {
+		t.Fatal("deliberately invalid codec Source became authority")
+	}
 	c.Operations[0].Reservation.Operation.Kind = domain.AttemptOperationModelV1
 	c.Operations[0].Observation.Outcome, c.Operations[0].Observation.Reason = domain.AttemptOperationCompletedV1, domain.AttemptOperationReasonNoneV1
 	c.Operations[0].Normalized = json.RawMessage(`{}`)

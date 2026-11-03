@@ -234,29 +234,34 @@ command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#h
 GitHub CI has eleven required jobs. Its 30-minute Go verification job runs only
 `make ci-core-base`: the same canonical ordered prerequisite list as `ci-core`,
 with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
-position before build and integration. The base runs the
-first three original ordinary commands sequentially. A parallel 30-minute
-`go-local` job runs `make test-ordinary-ci-tail` over the same complete package
-patterns in three sequential executions: `^TestLocalTerminal`,
-`^TestLocal(Failure|Source)`, then `^TestLocal` excluding
-`^TestLocal(Session|Compaction|Terminal|Failure|Source)`. These disjoint selections
-together cover exactly the original fourth ordinary command, including future
-families through the remainder. CI therefore has six ordinary executions;
-local/release retains four. No test is omitted or duplicated. Race detection,
-`-count=1`, 15-minute per-binary bounds and the 30-minute job ceiling are unchanged.
-This addresses an observed cumulative binary timeout, not an inference that
-the test named in its final stack was hung. A source-closed leaf running for
-three seconds when its complete binary reaches fifteen minutes is not evidence
-of a leaf-level hang. The added binary initialization costs time; preserving
-each binary's bound does not prove the complete job fits its unchanged
-30-minute limit. Actual complete executions and exact-head CI qualify the split.
+position before build and integration. The base runs the first three original
+ordinary commands sequentially. A parallel 30-minute `go-local` job runs
+`make test-ordinary-ci-tail` over the same complete package patterns in two
+sequential executions: `^TestLocalTerminal`, then `^TestLocal` excluding
+`^TestLocal(Session|Compaction|Terminal|Failure|Source)`. The complete unchanged
+`^TestLocal(Failure|Source)` command runs through the CI-only
+`make test-ordinary-ci-failure-source` target after MCP and Worker in `go-runtime`.
+These three disjoint selections across both targets cover exactly the original
+fourth ordinary command, including future families through the remainder.
+CI still has six ordinary executions; local/release retains four. No test is
+omitted or duplicated. Race detection, `-count=1`, full package roots,
+15-minute per-binary bounds and both 30-minute job ceilings are unchanged.
+The earlier binary split addressed a cumulative binary timeout; the subsequent
+redistribution addresses cancellation at the cumulative job ceiling while its
+third command was incomplete. A cancellation naming that command is not a
+demonstrated leaf hang, test failure or external flake. Moving an existing
+command does not qualify the destination's total runtime: actual complete
+executions and a new exact-head CI run must prove both jobs fit, including
+setup, compilation and initialization. Static selectors and added-together
+timings from old jobs are planning evidence only.
 Local/release `make test-ordinary` and `ci-core` retain the complete four-command
 ordinary contract. A parallel 30-minute `go-connected` job runs
 `make test-connected-ci`: complete Terminal and non-Terminal/non-Worker
 selections over the same full package patterns, without the additive MCP gate.
 The parallel 30-minute `go-runtime` job runs the unchanged complete
 `make test-mcp-offline` target, then the complete connected Worker family through
-`make test-connected-worker-ci`. Separate unconditional steps preserve
+`make test-connected-worker-ci`, then the complete ordinary Failure/Source family
+through `make test-ordinary-ci-failure-source`. Separate unconditional steps preserve
 stop-on-failure order. This job needs only checkout, the cold-cache guard and
 pinned Go; no Node/Web build, database environment, service or credential is added.
 The ordinary local tail and the two other connected selections remain in their
@@ -274,10 +279,10 @@ race/shuffle/uncached flags and
 additive-only overlay guards. Moving these unchanged commands does not
 change test coverage or widen any job bound. Adding the eleventh job adds a
 separate runner/setup and another 30-minute job allowance; it does not preserve
-the previous aggregate workflow resource ceiling. The runtime group's theoretical
-test ceilings are twenty minutes for MCP plus fifteen minutes for Worker,
-already exceeding the 30-minute job limit before compilation, package
-initialization and action setup. Those ceilings therefore do not prove fit.
+the previous aggregate workflow resource ceiling. The runtime group's theoretical test ceilings are twenty minutes for MCP plus
+fifteen minutes each for Worker and Failure/Source: fifty minutes, already
+exceeding the 30-minute job limit before compilation, package initialization
+and action setup. Those ceilings therefore do not prove fit.
 Actual complete execution and a new exact-head eleven-job CI run must establish
 that fit, including cold Go cache qualification when explicitly requested.
 The source-policy test requires exactly one CI
@@ -291,8 +296,11 @@ join all four Go verification jobs, preserving every original predecessor.
 Moving the unchanged Worker command does not increase a binary or job timeout.
 A cancelled Worker step after a long preceding ordinary tail is not proof that
 its own binary timed out or that its complete package corpus passed. Source-policy
-tests require exactly one Worker step after MCP in `go-runtime`, rejecting early,
-duplicate, omitted, conditional or ignored executions. Timing estimates from
+tests require exactly one Worker step after MCP and one complete Failure/Source
+step after Worker in `go-runtime`, rejecting early, duplicate, omitted,
+conditional, backgrounded or ignored executions. Membership is derived from
+the actual retained-tail and moved-family recipes, with unchanged local/release
+commands, adversarial future names and the recursive full-root corpus. Timing estimates from
 separate jobs do not qualify the redistributed job: its own exact-head CI must
 prove completion inside the unchanged 30-minute ceiling.
 The unchanged offline

@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.6, original-grant consumption and historical-stop amendment candidate.
+Version: 0.2.7, original actor, tool-catalog lineage and executable-readiness
+amendment candidate. Predecessor 0.2.6 defines original-grant consumption and
+historical stop; this amendment preserves those contracts.
 Predecessor 0.2.5 defines reusable resource-grant custody; this amendment
 preserves that contract. Predecessor 0.2.4
 defines original-owner argument custody; this amendment preserves that contract.
@@ -229,6 +231,196 @@ dispatch. A model-generated query does not inherit permission to disclose privat
 transcript, attachments, identifiers or secrets. Any changed query requires a new
 decision. If this UX or public-data proof is unavailable, the tool is disabled
 for that task. Regex or model assertions cannot authorize private transmission.
+
+## Original producer, tool surface and readiness
+
+This amendment closes an implementation-contract gap, not a new product scope
+or research program. The existing [configured MODEL preparation](../../internal/ydbstore/local_prepared_model.go)
+and [compaction preparation](../../internal/ydbstore/local_compaction_generation.go)
+build an MCP-only catalog and compare old requests with that catalog. Existing
+[consent authority](../../internal/ydbstore/web_search_consent_authority.go)
+uses the fixture's owner-as-initiator convention. Neither convention is sufficient
+to introduce genuine model-generated search. Pure `CompileV2` and a valid grant
+are not an installed operation owner. The original assignment remains
+[#194](https://gitcode.com/urandon/sessionless/issues/194), with the original-worker
+consent bridge in [#195](https://gitcode.com/urandon/sessionless/issues/195).
+
+### Canonical initiating actor, then private-owner policy
+
+Derive the initiating actor from the exact canonical user-message event named
+by the authenticated `Run.TriggerEventID`; its `SessionEvent.AuthorUserID` is
+the actor. [Canonical ingress](../../internal/ydbstore/canonical_ingress.go)
+writes the event and Run together. The original prepared snapshot already owns
+the admitted canonical event range; reuse that bounded source rather than a
+caller-authored user ID, credential owner, model argument or summary assertion.
+Validate the Run/worker-job correspondence, tenant, Session, trigger ID, event
+kind and Run correlation before using its author. Missing, duplicate, conflicting
+or unavailable original provenance denies genuine consent. Compaction cannot
+replace this provenance with its summary; preserve the protected triggering
+task and its original canonical identity.
+
+The bounded private MVP still requires this independently derived actor to equal
+the admitted Source/profile owner. That equality is a policy check, not how the
+actor is discovered. Different initiators, delegated resource use and federation
+are not added. Existing fixture-only paths retain their explicit grammar; no
+fixture convention supplies a missing genuine actor or grants a search send.
+
+The original private holder carries the authenticated trigger/actor commitment
+through creation and preparation. Current transactions rejoin that same Run and
+canonical provenance plus membership, Session participation, profile, spending,
+resource/consent/revocation revisions and the physical claim/fence. Private
+discovery, query read, decision, reconciliation, reserve and before-send must
+agree with the retained request's initiating user. Authenticated decisions still
+require the current Web session and CSRF/security-version checks. An immutable
+past author alone is not current membership or decision authority. Reuse existing
+bounded reads and projections; no actor registry, new persistent author copy or
+additional table is required. Stop-only reconciliation remains negative-only
+and never turns missing provenance into disclosure, approval or fresh execution.
+
+### Freeze each MODEL catalog once
+
+Select and freeze the ordinary MODEL tool catalog once in the original invocation
+before its first `FreezeRequestV1`. Use a private `localToolSurfaceV1` composition,
+not a public plugin registry: the supported catalog representation stays unchanged; the
+search-capable composition adds exactly the reviewed `web_search` schema beside
+the admitted MCP descriptor. Catalog order, descriptions and schema bytes are
+deterministic and participate in the existing frozen request's digest. Reject
+name collisions, unknown tools and changed schemas. Never rename MCP as search
+or advertise a tool whose original execution path is absent.
+
+The existing [FrozenRequestV1](../../internal/configuredinference/contract.go)
+and reserved request-body digest are the per-MODEL commitment. There is no new
+durable catalog table or second operation identity. Retained MODEL/COMPACTION
+requests validate their own strict canonical bytes, original issuer/reservation/
+observation and original profile/grant correspondence. A bounded DATA decoder
+may recover their catalog from those authenticated bytes; it does not create
+dispatch authority. Validate the supported original catalog's exact descriptor
+and compiler identities, not equality with the newest prepared tool array.
+An authentic old MCP-only or omitted/empty catalog stays exactly that catalog;
+it does not acquire search when a later request can use search. Conversely,
+arbitrary old schema bytes are not accepted merely because they decode.
+
+COMPACTION itself remains tools-disabled: its request must have no tool catalog
+and cannot dispatch a tool. The compaction generation's fit check and minimum
+ordinary probe must include the exact original ordinary MODEL catalog, including
+the real search schema when installed; a smaller tool-free fit probe cannot
+stand in for the actual next MODEL request. Catalog DATA carried for that future
+request is not a tool grant to the compaction model.
+
+Apply the same historical rule at ordinary preparation, compaction source/history loading,
+derived-view restoration and response/call correlation. A normalized response
+is interpreted using the request that actually caused it. Compaction rebuilds
+the derived context while preserving old causal
+pairs and their original catalogs. For the current Attempt, its next ordinary
+request uses the originally frozen surface, not a newly discovered catalog;
+current authority still gates each operation. If original grant/issuer evidence is missing,
+use only the already supported authenticated retained DATA/denial path; do not
+reconstruct erased bytes, substitute a current grant or mint a serving holder.
+Preserve all existing empty/MCP-only request bytes, digests and golden tests.
+Current grant expiry/revocation still denies a new call even when the historical
+request remains valid DATA.
+
+### Readiness means concrete installed execution
+
+Before the first MODEL, the private invocation composition may expose search
+only when the following concrete code paths and their original owners are
+installed together. This is installation of the closed producer/consumers, not
+construction of a future call's pending request or approved holder:
+
+1. Original authenticated V2 resource-grant/expenditure custody and current
+   policy/spending/resource correspondence.
+2. The genuine durable MODEL-call consumer, canonical actor and original
+   argument-body owner, pending consent creation, and the authenticated #195
+   decision/worker bridge.
+3. The original claim's bounded wait and installed original-entry method that
+   produces a receipt-bound search holder only after the durable call and its
+   stored approval, plus reserve/before-send gates and the distinct search
+   credential/HTTP owner.
+4. Bounded typed result persistence and successor/accounting validation, so an
+   approved emitted search can either continue honestly or end through a
+   supported durable failure path without orphaning its consent/custody state.
+
+No query, pending record, approved receipt, per-call search holder or monetary
+debit is required or created at catalog freeze. Those per-call objects arise
+only after the genuine durable MODEL call and decision in their stated order.
+An original-entry producer method is installed code, not an injectable callback
+or a placeholder holder. Its complete joined controlled proof is required before
+this composition is eligible to advertise search.
+
+Readiness is a consequence of constructing these concrete owners in the existing
+runtime composition, not a Boolean, grant presence, caller callback, public DTO,
+fixture approval, noop transport or request-only placeholder. Authoritative
+profile/configuration admission and finite budgets still apply. Do not add a
+generic capability service or another lifecycle controller. Installation is not
+query approval: an initially consent-free admitted public task may advertise the
+tool once that complete bridge exists, then obtain consent for the exact query
+only after the MODEL response is durable. Missing/disabled readiness omits search;
+a model nevertheless naming it is rejected before pending creation, debit or send.
+
+Source-only actor/catalog foundations may land without advertising search.
+During an Attempt the original composition cannot gain search by reconstructing
+a new holder after denial or availability drift. Current revocation/closure
+always denies later prepare/reserve/send; it neither edits an old request nor
+renews a deadline. The real search registration stays off until the concrete
+bridge is proved. Controlled genuine MODEL tests may use installed scripted
+credential-free HTTP/decision owners, never a production fixture bypass; their
+evidence is not real service or activation authority.
+
+### Coherent implementation handoff and verification
+
+Use these bounded execution items under the existing tasks; maintain their
+linked checklist in comments, without rewriting original assignments:
+
+- #194 with #191: derive/authenticate the canonical initiating actor and validate
+  per-original-request catalogs through ordinary/compaction/history consumers;
+  preserve old golden bytes and deny genuine search until execution is ready.
+- #194 with #195: the original entry consumes its genuine durable MODEL call,
+  writes exact arguments through `WriteConsentArguments`, creates the existing
+  pending record and returns only an opaque original-holder handle. It accepts
+  no caller-supplied actor, call, arguments, operation, grant or approval facts.
+- #195 with #194/#190: join the authenticated decision bridge, same-claim bounded
+  waiting and receipt-bound prepared search to distinct credential/HTTP/result
+  owners; only then add the search catalog and genuine model-to-tool routing.
+- #194/#191/#197: persist and consume the actual typed result, preserve conservative
+  accounting and supported failure/history/cleanup semantics, then prove model
+  continuation and the required durable cited-answer projection. Citation UI
+  and quality measurements remain required for the full outcome, not hidden
+  prerequisites for an honest earlier actor/catalog implementation.
+
+Reuse the existing logical-call budget: three SQL callbacks total, at most 32
+statements per callback/96 total and 4 MiB metadata including out-of-SQL bodies.
+Compose private capture/create phases; do not nest the current two-transaction
+`CreateWebSearchConsent` inside a capture that has consumed its allowance, reset
+the budget or perform body I/O in an SQL callback. Consent preparation does not
+reserve a search send or monetary debit. Existing argument/body storage charges,
+sticky uncertain writes and shared 24-key inventory still apply. Wait consumes
+the original at-most-120-second active window and every shorter authority limit;
+search HTTP is at most 15 seconds within those original windows. Authenticate
+the accepted 10,000-microunit call reservation/20,000 per Attempt; reported credits
+are not measured USD and lower reported usage does not refund the reservation.
+
+Actor/catalog foundation tests first prove their own causal RED/GREEN against
+the existing canonical source and genuine MCP-only history; they do not need a
+synthetic search dispatch to demonstrate those contracts. Once the concrete
+search composition exists, required producer RED reaches a genuinely prepared/durable configured MODEL
+search call and fails at the missing original producer, not unrelated setup.
+GREEN follows the actual original call, arguments, actor, pending record,
+trusted stored decision and same-claim receipt; a coherent HTTP/result slice
+also proves one owned send, durable result and successor before claiming that
+path. Negative controls cover wrong/absent trigger author, owner impersonation,
+membership loss, changed query/catalog, stale fence, revoked grant, denial/late
+or conflicting approval, lost ACK, source closure and shared count/byte exhaustion.
+Assert zero unauthorized sends and no renewed deadline or blind retry. Genuine
+old MCP-only history must still prepare and compact after search is installed;
+current revocation must stop execution without rewriting that history.
+
+Consent/actor DATA and Store tests use the existing populated ordinary/connected
+CI selections. A genuine fake-HTTP search integration needs its own explicitly
+populated selector and additive instrumentation of the original transport, with
+reviewed CI invocation and real aggregate timing. Do not disguise search tests
+as MCP or add a tagged test that no required job selects. Preserve held fixtures
+and existing MCP/legacy semantics. No live model/search/credential/substrate
+proof, new table/migration or profile activation follows from this amendment.
 
 ## Query consent within the existing claim
 

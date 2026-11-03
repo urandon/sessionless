@@ -225,10 +225,16 @@ func (st *bodyState) blobRef(ref ReferenceV1) domain.BlobRef {
 // readVerified returns fresh caller-owned bytes, never a retained body buffer.
 // Raw BlobStore metadata or a successful PUT is not WORM/integrity evidence.
 func (st *bodyState) readVerified(ctx context.Context, ref domain.BlobRef) ([]byte, error) {
-	if ctx.Err() != nil {
+	return readVerifiedBody(ctx, st.blobs, st.scope.TenantID, ref)
+}
+
+// Shared integrity checking only. The caller still owns scope/provenance,
+// current authorization, custody and its original bounded I/O context.
+func readVerifiedBody(ctx context.Context, opener bodyOpenerV1, tenant domain.TenantID, ref domain.BlobRef) ([]byte, error) {
+	if ctx == nil || ctx.Err() != nil || opener == nil || ref.Validate() != nil || ref.TenantID != tenant {
 		return nil, ErrBody
 	}
-	reader, err := st.blobs.Open(ctx, st.scope.TenantID, ref)
+	reader, err := opener.Open(ctx, tenant, ref)
 	if err != nil || reader == nil {
 		if reader != nil {
 			_ = reader.Close()

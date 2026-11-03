@@ -121,7 +121,31 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			logger.Error("close web BFF YDB", "component", component, "error", err)
 		}
 	}
-	storeOptions := local.StoreOptions()
+	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	maxBlobBytes := defaultWebBlobLimit
+	if maxUploadBytes > maxBlobBytes {
+		maxBlobBytes = maxUploadBytes
+	}
+	blobs, err := s3store.New(ctx, s3store.Config{
+		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
+		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"), ForcePathStyle: envBool("S3_FORCE_PATH_STYLE"),
+		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
+		MaxObjectBytes:         maxBlobBytes,
+	})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("open web BFF object storage: %w", err)
+	}
+	storeOptions, err := local.WebStoreOptions(blobs)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	storeOptions.AttachedResourceGenerations = generations
 	store, err := ydbstore.New(ydb.DB, storeOptions)
 	if err != nil {
@@ -148,26 +172,6 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require run explanation cutover: %w", err)
-	}
-	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
-	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
-	}
-	maxBlobBytes := defaultWebBlobLimit
-	if maxUploadBytes > maxBlobBytes {
-		maxBlobBytes = maxUploadBytes
-	}
-	blobs, err := s3store.New(ctx, s3store.Config{
-		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
-		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"), ForcePathStyle: envBool("S3_FORCE_PATH_STYLE"),
-		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
-		MaxObjectBytes:         maxBlobBytes,
-	})
-	if err != nil {
-		closeYDB()
-		return nil, func() {}, fmt.Errorf("open web BFF object storage: %w", err)
 	}
 	sessions, err := sessionapi.New(sessionapi.Config{
 		OpsSignals: signals,
@@ -257,6 +261,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	var searchConsents webbff.WebSearchConsentService
+	if local != nil {
+		searchConsents = store
+	}
 	backend, err := webbff.New(webbff.Config{
 		OpsSignals: signals,
 		BaseURL:    baseURL, RedirectURI: login.redirectURI,
@@ -266,7 +274,8 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		OAuthProvider: login.oauth, OAuthClientID: login.clientID,
 		Store: store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
 		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
-		Logger: logger, Build: buildinfo.Current(component),
+		SearchConsents: searchConsents,
+		Logger:         logger, Build: buildinfo.Current(component),
 	})
 	if err != nil {
 		closeYDB()

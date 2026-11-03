@@ -10,6 +10,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -95,7 +96,23 @@ func (i *Installation) StoreOptions() ydbstore.Options {
 	if i == nil {
 		return ydbstore.Options{}
 	}
-	return ydbstore.Options{OwnedProfilePublicationVerifier: i.source, AttemptSpendingPublicationVerifier: i.source, OwnedAttemptEffectSourceVerifier: i.source}
+	return ydbstore.Options{OwnedProfilePublicationVerifier: i.source, AttemptSpendingPublicationVerifier: i.source, OwnedAttemptEffectSourceVerifier: i.source, OwnedWebSearchResourceGrantCustody: i.source}
+}
+
+// WebStoreOptions adds only private immutable consent DATA reading. The
+// reopened Source still owns grant provenance/current checks; the original
+// worker, not the BFF, owns argument writing, inventory and cleanup.
+func (i *Installation) WebStoreOptions(blobs ports.BlobStore) (ydbstore.Options, error) {
+	options := i.StoreOptions()
+	if i == nil {
+		return options, nil
+	}
+	reader, err := operationbody.NewConsentArgumentReaderV1(blobs)
+	if err != nil {
+		return ydbstore.Options{}, ErrUnavailable
+	}
+	options.AttemptOperationBodies = reader
+	return options, nil
 }
 
 func (i *Installation) Binder(store *ydbstore.Store) (ports.HarnessBinder, error) {

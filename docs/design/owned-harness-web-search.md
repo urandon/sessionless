@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.11, bounded same-claim consent polling. The wait limits below
+Version: 0.2.12, explicit local worker credential-backend assembly. The startup
+contract below supplies the existing encrypted backend without discovering keys
+or changing its wire. The 0.2.11 wait limits below
 clarify per-call SQL limits and aggregate waiting costs without extending the
 original claim. The 0.2.10 cross-process private consent-reading role
 clarifies original-owner argument custody; the 0.2.9 retained formats and
@@ -507,6 +509,65 @@ keys. This common backend requires no user-host filesystem. Reuse the existing
 YDB binding/CAS/cleanup/candidate-fence records as the sole resource/generation
 authority; no table, active-binding ledger, generic `BlobStore.List` or copied
 subscription-store state is added.
+
+#### Local worker startup and injected encryption key
+
+For the opt-in local worker command, select the dedicated encryption key through
+two explicit nonsecret operator settings: `WORKER_SEARCH_CREDENTIAL_KEY_FILE`
+and `WORKER_SEARCH_CREDENTIAL_KEY_EPOCH`. The path is absolute and canonical;
+the epoch must satisfy the existing encrypted-backend contract. The environment
+carries neither key bytes nor a search-provider secret. Do not search home
+directories, infer a key from another setting, generate a key at startup, reuse
+the Source HMAC key, or substitute an epoch. Inherited descriptors would require
+a new supervisor protocol; they are not this local command's injection path.
+Cloud key acquisition/KMS and real provisioning remain separate operations.
+
+Distinguish authenticated declaration omission from Source failure before key
+I/O. Add one nonsecret `Source.SearchCredentialConfiguration` accessor returning
+an owned declaration copy, or nil only for an authenticated omitted declaration.
+It validates the original installation/receipt and lifetime; closure, replacement
+or invalid evidence returns an error, never omission. This construction DATA is
+not current permission. Serving still uses the existing exact-profile
+`ReadSearchCredentialDeclaration` and all binding, grant, consent and send checks.
+Omission requires both operator settings absent and performs no key-file I/O.
+A present declaration requires both valid settings; otherwise startup fails
+before the worker accepts invocations. Nonlocal execution rejects stray local
+key settings and constructs no local credential service.
+
+The command-private Unix loader walks directory descriptors without following
+symlinks and opens only the selected regular file, owned by the effective user,
+mode0600, one hard link, exactly32 bytes and not an all-zero key. Bound the read to33 bytes;
+before and after reading, verify that the opened descriptor, no-follow named
+entry and canonical parent/path binding still identify the same selected file,
+with unchanged size and permissions. A still-valid old descriptor does not
+permit a replaced name. Close every descriptor on every outcome and reject
+unsupported platforms. Return only a
+redacted error. Neither keys nor private paths enter logs, public DTOs, the
+installation manifest or process arguments. Clear every caller-owned mutable
+key buffer on every exit, including partial intake, failed validation and failed
+backend construction. After successful construction, immediately clear the input;
+only the encrypted backend retains its own bounded copy.
+
+After the existing YDB and private S3 clients are constructed, build one existing
+encrypted credential adapter with that key/epoch and the actual binding Store.
+Construct one concrete InvocationService with the existing clock and ID source;
+its unsupported MODEL delivery-planner arm is closed and cannot issue a MODEL
+delivery template. Pass this exact optional owner through LocalRuntime and the
+immutable Store/bridge/keeper tuple. Do not install a fake ready object, a second
+binding store, a mutable setter, environment secret discovery or a second SDK.
+This constructor wiring alone does not advertise SEARCH.
+
+The command retains the adapter for process lifetime. First drain HTTP callbacks
+and join all invocation cleanup; then close the encrypted adapter with a bounded
+context before closing Source and YDB. If consumers do not join, retain the
+borrowed owners/key state and report failure rather than asserting erasure or
+closing dependencies beneath them. Startup-failure paths obey the same ordering.
+Controlled tests cover omission without I/O, missing/stray settings, exact key
+and epoch validation, symlink/hardlink/owner/mode/size denials, named-entry
+replacement while the original descriptor remains valid, clearing on intake
+and constructor failure, exact-owner propagation, default-off behavior and drain/close failure.
+Use only test-owned synthetic keys and peers; these tests grant no real key-file
+read, credential provisioning or live backend access.
 
 Use one private constant namespace, outside ordinary artifact/presign paths:
 

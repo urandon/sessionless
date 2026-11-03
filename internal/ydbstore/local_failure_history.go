@@ -33,6 +33,8 @@ type localFailureHistoryV1 struct {
 	Accounting        ownedAttemptAccounting
 	Original, Retired domain.RegisteredAllocationV2
 	Seal              string
+	ConsentsV4        *ownedConsentStates   `json:",omitempty"`
+	ProxiesV4         []localFailureProxyV4 `json:",omitempty"`
 }
 
 // Bounded transient classification from the already authenticated canonical
@@ -67,7 +69,14 @@ func readHistoricalFailure(ctx context.Context, q *ownedAuthorityQuery, run doma
 	}
 	scope := run.TerminalFailure.Scope
 	var parentRaw, pd, admissionRaw, ad, status, marker, accountingRaw, accountingDigest, originalRaw, originalDigest, retiredRaw, retiredDigest string
-	if q.scanMetadata(ctx, localFailureHistorySQL, []any{scope.TenantID, scope.AttemptID, domain.ProviderEffectTurnV1}, &parentRaw, &pd, &admissionRaw, &ad, &status, &marker, &accountingRaw, &accountingDigest, &originalRaw, &originalDigest, &retiredRaw, &retiredDigest) != nil {
+	statement := localFailureHistorySQL
+	var consentsRaw, consentsDigest string
+	dest := []any{&parentRaw, &pd, &admissionRaw, &ad, &status, &marker, &accountingRaw, &accountingDigest, &originalRaw, &originalDigest, &retiredRaw, &retiredDigest}
+	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" {
+		statement = strings.Replace(localFailureHistorySQL, "\n FROM", ",\n SUBSTRING(p.web_search_consent_record,0,32769),SUBSTRING(CAST(p.web_search_consent_digest AS String),0,65)\n FROM", 1)
+		dest = append(dest, &consentsRaw, &consentsDigest)
+	}
+	if q.scanMetadata(ctx, statement, []any{scope.TenantID, scope.AttemptID, domain.ProviderEffectTurnV1}, dest...) != nil {
 		return deny()
 	}
 	v := localFailureHistoryV1{Run: run.Clone(), Anchor: anchor, Seal: marker}
@@ -98,6 +107,13 @@ func readHistoricalFailure(ctx context.Context, q *ownedAuthorityQuery, run doma
 	}
 	if _, err := decodeLocalFailureMarker(marker); err != nil {
 		return deny()
+	}
+	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" {
+		states, err := decodeOwnedConsentStates(consentsRaw, consentsDigest, v.Parent, run.TerminalFailure.CapturedAt)
+		if err != nil {
+			return deny()
+		}
+		v.ConsentsV4 = &states
 	}
 	return v, nil
 }
@@ -139,6 +155,12 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 				if bytes.Equal(notice.Payload, record.Payload) {
 					matching++
 				}
+				if searchNotice, err := canonicaloutput.DecodeSearchFailureNoticeV4(record.Payload); err == nil {
+					closedNotice++
+					if run.TerminalFailure != nil && run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && searchNotice.Code == stop && notice.ID == e.ID {
+						matching++
+					}
+				}
 				if bytes.Equal(notice.Payload, record.Payload) || bytes.Equal(unknownNotice.Payload, record.Payload) || bytes.Equal(mcpUnknownNotice.Payload, record.Payload) {
 					closedNotice++
 				}
@@ -161,6 +183,12 @@ func (s *LocalCompactionSourceV1) readFailureHistories(ctx context.Context, q *o
 		v, err := readHistoricalFailure(ctx, q, run, anchor)
 		if err != nil || v.Seal != markers[id] {
 			return nil, q.budget.deny()
+		}
+		if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && v.Accounting.Aggregate.Operations > 1 {
+			v.ProxiesV4, err = readFailureV4ProxyRange(ctx, q, v)
+			if err != nil {
+				return nil, q.budget.deny()
+			}
 		}
 		out = append(out, v)
 	}
@@ -256,7 +284,7 @@ func (s *LocalCompactionSourceV1) validateRetainedCanonicalLocked(ctx context.Co
 	// Closed UNKNOWN notices without F3 metadata were already rejected during
 	// the original history rejoin. Do not add an unrelated full-view clone or
 	// debit to the old F1/F2/no-failure paths.
-	if len(s.state.history.unresolvedMCP) == 0 {
+	if len(s.state.history.unresolvedMCP) == 0 && !s.state.history.unresolvedSearchV4 {
 		return nil
 	}
 	if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
@@ -292,6 +320,7 @@ func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Contex
 		}
 	}()
 	var unresolved []localUnresolvedMCP
+	unresolvedSearch := false
 	for _, v := range h.failures {
 		profile, err := s.entry.owner.configuration.Digest()
 		if err != nil || profile != v.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest {
@@ -301,10 +330,17 @@ func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		c, err := decodeLocalFailureCapsule(body)
+		decoded, err := decodeLocalFailureReadCapsule(body)
 		clear(body)
-		valid := err == nil && validateFailureHistoryData(v, c, records) == nil
-		if valid && c.Version == 3 {
+		valid := err == nil && validateFailureReadHistoryData(v, decoded, records) == nil
+		if valid && decoded.search != nil {
+			valid = validateFailureV4RetainedBodies(ctx, *decoded.search, v.ProxiesV4, s.entry.readCompactionBlob) == nil
+		}
+		if valid && decoded.search != nil && (decoded.search.Stop == domain.SearchOutcomeUnknownV4 || decoded.search.Stop == domain.SearchRejectedBeforeSendV4) {
+			unresolvedSearch = true
+		}
+		if valid && decoded.legacy != nil && decoded.legacy.Version == 3 {
+			c := *decoded.legacy
 			last := len(c.Operations) - 1
 			pair, err := localFailureUnknownMCPPair(c.ProfileDigest, c.Operations[last-1], c.Operations[last])
 			cost := c.Parent.Authority.AdmissionCostCeiling.MCPToolCost
@@ -316,12 +352,13 @@ func (s *LocalCompactionSourceV1) materializeFailureHistories(ctx context.Contex
 				clear(event.Payload)
 			}
 		}
-		clearLocalFailureNormalized(c)
+		decoded.release()
 		if !valid {
 			return domain.ErrMembershipDenied
 		}
 	}
 	h.unresolvedMCP = unresolved
+	h.unresolvedSearchV4 = unresolvedSearch
 	h.failuresMaterialized = true
 	return nil
 }

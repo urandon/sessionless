@@ -26,6 +26,23 @@ func localFailureSeal(run domain.Run, events []localCapsuleEventV1) (string, err
 	if run.TerminalFailure == nil || run.TerminalFailure.ValidateForRun(run) != nil {
 		return "", domain.ErrMembershipDenied
 	}
+	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" {
+		d, err := localFailureV4Digest(events)
+		if err != nil || d != run.TerminalFailure.EventsDigest {
+			return "", domain.ErrMembershipDenied
+		}
+		hash, err := localFailureV4Digest(struct {
+			Domain   string
+			Status   domain.RunStatus
+			Metadata domain.RunTerminalFailureV1
+			Derived  *domain.RunDerivedContextV1
+			Events   []localCapsuleEventV1
+		}{"sessionless.local-failure-finalization.v4", run.Status, *run.TerminalFailure, run.DerivedContext, events})
+		if err != nil {
+			return "", err
+		}
+		return localFailureFinalizationPrefix + hash, nil
+	}
 	version := uint32(1)
 	if run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v2" {
 		version = 2

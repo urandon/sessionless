@@ -242,6 +242,17 @@ holder; retained DATA never restores those permissions. Original setup, all
 operation debits and UNKNOWN usage remain nonrefundable. F1/F2 and successful
 accounting/capsules retain their existing wire languages.
 
+The explicit failure capsule/accounting V4 reader uses the same Run commitment,
+Plan, `local_f1:` family and physical body inventory for five closed SEARCH
+failure tails, including a stopped consent with no SEARCH reservation. It joins
+the actual retained parent accounting row/digest and its own timestamp, ordered
+consent projection and BODY-only charge frontiers, original allocation,
+operation/call/proxy rows and canonical seal. Unknown USD is not provider
+credits or a refund. A closed V4 canonical notice retains the actual tail
+operation/reservation/observation identities. Old V1–V3 encodings are unchanged.
+These are mounted historical/deletion readers only: no V4 serving failure
+producer, dispatch holder, publication, cleanup receipt or erasure is created.
+
 Authenticated UNKNOWN tool call/result/notice facts remain lossless protected
 canonical history, never completed-operation context or safe compaction
 coverage. Existing retained-compaction wires carry no new caller-populated
@@ -443,6 +454,15 @@ cannot authorize MODEL continuation. No table, index, migration or operational
 progress ledger is added.
 Local observation data cannot be relabelled as an image-backed allocation or
 replace the actual retained local connector.
+
+The separate `local_search_https.v1` DATA arm uses that same V2 record and its
+existing policy/attestation body columns, bound only to SEARCH spending and the
+original local runtime. Its retained policy embeds the existing resource grant;
+the historical reader checks its fixed endpoint/schema/compiler, cost and
+operation/window correlations. Synthetic attestation fields are not actual
+DNS/TLS evidence. This reader-only arm is deliberately absent from the serving
+publication codec; it cannot publish a proxy or authorize a search. No table,
+controller, transport implementation or operational ledger is added.
 
 Canonical `PreparedAllocationV2` and `RegisteredAllocationV2` preserve the same
 allocation original/current/intent columns in `attempt_effect_reservations`.

@@ -26,6 +26,26 @@ func failureRunData(t *testing.T) domain.Run {
 	}
 	return run
 }
+
+func TestRunTerminalFailureV4ClosedSearchStops(t *testing.T) {
+	for _, stop := range []string{domain.SearchConsentStoppedV4, domain.SearchRejectedBeforeSendV4, domain.SearchServiceErrorV4, domain.SearchOutcomeUnknownV4, domain.ModelAfterSearchFailureV4} {
+		run := failureRunData(t)
+		run.TerminalFailure.CapsuleSchema, run.TerminalFailure.Stop = "sessionless.terminal-failure-custody.v4", stop
+		if err := run.Validate(); err != nil {
+			t.Fatalf("V4 retained DATA stop=%s: %v", stop, err)
+		}
+		for _, old := range []string{"sessionless.terminal-failure-custody.v1", "sessionless.terminal-failure-custody.v2", "sessionless.terminal-failure-custody.v3"} {
+			if domain.TerminalFailureSchemaStopValid(old, stop) {
+				t.Fatalf("new stop %s widened old %s", stop, old)
+			}
+		}
+	}
+	for _, stop := range []string{"model_after_search_unknown", "search_error", domain.MCPOutcomeUnknownV3, ""} {
+		if domain.TerminalFailureSchemaStopValid("sessionless.terminal-failure-custody.v4", stop) {
+			t.Fatalf("unaccepted V4 alias/stop %q", stop)
+		}
+	}
+}
 func TestRunTerminalFailureClosedRoundTripAndClone(t *testing.T) {
 	run := failureRunData(t)
 	body, err := json.Marshal(run)

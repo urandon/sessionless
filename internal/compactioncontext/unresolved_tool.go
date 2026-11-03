@@ -24,9 +24,13 @@ func unresolvedToolSpans(records []sessioncontext.EventPayload) ([]UnitV1, error
 			Content json.RawMessage `json:"content"`
 		}
 		var tag struct {
+			Schema  string `json:"schema"`
 			Outcome string `json:"outcome"`
 		}
 		if json.Unmarshal(record.Payload, &outer) != nil || json.Unmarshal(outer.Content, &tag) != nil || tag.Outcome != "accepted_outcome_unknown" {
+			continue
+		}
+		if tag.Schema == "sessionless.search-operation-status.v4" {
 			continue
 		}
 		if _, err := canonicaloutput.DecodeMCPUnknownToolOutcomeV1(outer.Content); err != nil || i == 0 || i+1 >= len(records) || record.Event.RunID == nil {
@@ -48,7 +52,11 @@ func unresolvedToolSpans(records []sessioncontext.EventPayload) ([]UnitV1, error
 		seen[run] = true
 		spans = append(spans, UnitV1{Start: i - 1, End: i + 2, Protected: true})
 	}
-	return spans, nil
+	search, err := unresolvedSearchSpansV4(records)
+	if err != nil {
+		return nil, err
+	}
+	return append(spans, search...), nil
 }
 
 // ValidateUnresolvedToolProtection joins actual canonical payloads to the

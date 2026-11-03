@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.6, engineering design. Owner:
+Version: 0.1.7, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -8,6 +8,12 @@ The [queued runtime addendum](#queued-runtime-composition) defines implementatio
 work under #218. Design acceptance does not establish that the implementation
 exists, grant operator, credential or live-run authority, or mark an
 implementation checkbox complete.
+
+The [local text qualification profile](#local-text-qualification-profile)
+adds an explicit restricted mode for a model without qualified tools. It uses
+the same queued runtime and canonical terminal path. The full agent remains
+the required managed MVP outcome; this mode is an early local qualification,
+not a replacement for tools, compaction or either execution track.
 
 Connect the Sessionless-owned agent to an inference server the operator has
 already started. Use one bounded Go HTTP adapter with an explicit endpoint,
@@ -580,6 +586,10 @@ secret file format, per-Run approval map or exported signing/approval API.
 Extend its private component readers, publication verification and the existing
 `VerifyOwnedAttemptEffectSource(AttemptExecutionSourceV1)` interface together:
 
+The four-component requirements in this queued composition apply to
+`owned_agent_public_v1`. The restricted profile below instead authenticates
+exactly its two actual allocations; it cannot inherit either service grant.
+
 1. Authenticate the original Source identity, exact retained manifest/config,
    receipt profile locator/generation/digest and installation/owner/payer.
    Correlate the original configured endpoint/backend/substrate, worker artifact,
@@ -850,3 +860,185 @@ qualification remain evidence to obtain, not values to invent. If an accepted
 candidate cannot meet the existing no-paid-upstream envelope or service policy,
 report that specific choice for resolution; do not disable required tools, spend
 money, change provider or broaden data disclosure silently.
+
+## Local text qualification profile
+
+Use `owned_local_text_v1` as a closed `AgentLoopProfileV1` variant inside the
+existing outer `HarnessExecutionOwnedAgentV2` binding. The operator selects it
+in the installed profile, not through a browser field or a per-message switch.
+Its purpose is to qualify normal Web ingress, queued execution and a durable
+answer with an already running local model that has no qualified tools.
+
+This mode admits public text and exactly one MODEL operation. It grants no
+MCP, search, compaction, schema-response, file or image operation. The exact
+backend/resource tuple remains `direct_openai_compatible` /
+`configured_endpoint` / `local_endpoint` / `owner_local`, with `auth=none`,
+logical `managed` placement and the `local_development` substrate. Other
+backends, Bearer delivery and cloud substrates cannot select it. Tool-call
+capability stays truthfully unsupported or unknown; the request advertises no
+tools. A tool-capable full agent still
+uses `owned_agent_public_v1` and its independently funded service grants.
+
+### Canonical authority and actual allocations
+
+The existing profile locator is the discriminant. Preserve it through the
+private manifest, configuration-to-profile checks, accepted receipt, policy,
+Source, binding, outbox, Job, Final and registered allocation. The original
+manifest commitment authenticates this selection; no second mode Boolean,
+approval token or source key is introduced. Unknown tags and contradictory
+fields deny before effects.
+
+For the text profile, MCP/search grant digests are empty, their cost objects
+and search grant body are absent, and the manifest contains no MCP/search
+grant, external price/terms evidence, search expenditure or search credential
+declaration. Reject this residue rather than ignore it. Provider/substrate
+invoice terms, actual current heads, original installation/revocation and
+component-specific Source authentication remain mandatory. Local zero invoice
+does not assert that an external service or hardware is free.
+
+Use one bounded ordered allocation-list contract in the existing Source and
+registered-allocation records:
+
+| Profile | Exact actual allocation order | Service meaning |
+| --- | --- | --- |
+| `owned_agent_public_v1` | provider, substrate, mcp_tool, web_search | All four original independently authorized components remain required. |
+| `owned_local_text_v1` | provider, substrate | Neither service is authorized; there is no service record or service price to spend. |
+
+The lists contain actual records/references only: no null entries, zero-valued
+funding structs, placeholder grants or durable denial rows. The two-element
+list plus its authenticated profile explicitly commits service absence. The
+monetary total sums exactly the actual allocations. Four-position operation
+accounting may retain zero service debit counters; counters are not funding
+references or permission to create a service operation.
+
+Replace fixed Go arrays at these canonical boundaries with a bounded ordered
+list, including `BuildOwnedAgentExecutionPackageV1`, current-source validation
+and allocation construction. Use one builder and validator family with explicit
+profile selection, not old/new aliases or another execution-package lifecycle.
+Decode at most four elements before allocating typed records, using a bounded
+decoder with fixed scratch space. Every occurrence of the list must obey that
+bound before canonical duplicate-key/roundtrip checks. Reject null, empty,
+missing, duplicate, reordered, extra and wrong-profile elements. Clone all
+list elements; changing from an array must not introduce shared slice storage.
+
+Keep old full-profile JSON field order, four array elements, bytes and hashes
+unchanged. The new tag selects the two-element grammar; failed decoding never
+falls back to another profile. Older executors reject that unknown profile.
+Drain executors that cannot handle the new profile before enabling its writer;
+no historical record rewrite, table or migration is needed. Replacement retains
+the same profile tag under the existing predecessor CAS and resource identity.
+Text-to-full and full-to-text replacement remain rejected; selecting the other
+mode requires a separately authorized fresh installation/resource, not an
+upgrade of an admitted Source. Old Runs retain their original package and
+cannot acquire another mode or a fresh deadline.
+
+### Publication and current joins
+
+Source intake validates the complete selected profile before producing any
+receipt or grant. Its existing publication and exact recovery path publishes
+only the two actual text-profile allocations. Provider/substrate windows remain
+bounded by their original configuration, invoice, profile and execution
+lifetime; do not call MCP/search readers to obtain fictitious window bounds.
+Partial publication and ambiguous commits retain existing exact-readback,
+earliest-window and no-top-up behavior.
+
+The text arm of the existing current-source reader joins the exact original
+profile and two spending heads in the same serializable transaction. It also
+checks absence of the two service heads for that Attempt and original payer
+through bounded exact-key reads; an unexpected service head denies rather than
+being adopted. Keep the full four-head join unchanged. Charge every physical
+scalar and body, including malformed or unexpectedly present rows. Reuse the
+existing ten-second, three-callback, 32-statements-per-callback, 96-total and
+4-MiB limits; do not allocate a separate helper budget or increase these caps.
+
+Canonical commit, scheduler admission, worker preflight, allocation registration,
+reservation and before-send use the same selected cardinality and original
+current checks. Registered allocation expiry intersects the actual two funding
+windows, original Source/profile/configuration, invocation and lease deadlines;
+it must not dereference absent service costs or invent substitute expiries.
+Keep the original local capacity association, one resource slot, quotas,
+counters, lease/fence, physical claimant and one-use effect/operation capability.
+No second binder, queue, scheduler, local permission callback or per-Run repair
+is introduced. A coherent downstream service request still denies for the text
+profile, even if it supplies copied valid full-profile evidence.
+
+### One bounded model operation
+
+Profile-aware limit validation requires `MaxConcurrentOperations=1`,
+`MaxModelCalls=1` and `MaxOperations=1`. Compaction/tool/search counts, MCP
+protocol counters and tool/summary byte budgets are zero. They mean disabled,
+never unlimited. Positive model token/body/context/time/cleanup limits remain
+within the existing configured ceilings, with aggregate tokens equal to the
+single-call reservation. The full profile retains all its positive sub-budgets.
+Keep unscoped full-profile validation strict; any caller using restricted limits
+must validate the actual sealed profile rather than infer one from zeros.
+
+Reuse ordinary instructions and their compiled context-policy digest. That
+digest identifies rendering code, not permission to run a summarizer. Existing
+canonical user/assistant text history and source identities remain part of the
+ordinary measured request. The initial mode rejects files/images, structured
+tool history, retained compaction parents and a context that does not fit before
+HTTP effects. Do not truncate history, discard protected records or execute
+compaction to make the tiny model fit. Full-profile history and compaction
+semantics stay unchanged.
+
+First MODEL preparation selects the authenticated empty catalog without reading
+MCP/search grants. The original context measurement, calibrated token-fit
+evidence, pure configured codec, literal loopback connector, retained socket,
+Store reservation and immediate before-send checks remain. Only the complete
+final-text response is usable; no schema-response mode is requested. An
+unsolicited typed tool call, non-final finish or malformed/oversized envelope
+follows the existing safe failure path and creates no tool/consent/proxy
+operation. A possibly sent MODEL remains
+unknown and reconcile-only; no retry, paid fallback or second MODEL is allowed.
+
+The original provider session and Manager own execution. After durable response
+and observation, reuse the existing final-without-tool branch and canonical
+terminal composer, cleanup/retirement, scheduling release, wake and ACK. Do not
+introduce a special finalizer or return the direct HTTP body to the Web request.
+Refresh/re-login and duplicate delivery reread the same durable answer without
+another model call. Source closure, revocation, replacement, cancellation,
+fence loss and persistence ambiguity keep their existing no-replay behavior.
+
+### Implementation and verification
+
+Implementation remains under #218, coordinated by #212; its original full
+text/tool/result acceptance stays open. Deliver the restricted authority and
+its normal runtime integration as one coherent vertical, with this checklist:
+
+- [ ] Domain and codec changes preserve old full-profile goldens, bound lists
+      before typed allocation and reject every contradictory tag/cardinality,
+      grant, cost, capability and service-operation combination.
+- [ ] Genuine private Source prepare/open/reopen/receipt/publication/recovery
+      proves actual two-head custody, no external-service seed, replacement,
+      partial/lost-ACK recovery and exact current/absence scalar joins.
+- [ ] Existing ordinary context and actual MODEL preparation prove empty wire
+      catalog, supported text history, fit/no-fit/media/history denials and
+      zero tool/compaction sends. Preserve the three held canonical fixtures;
+      new fixtures must not fabricate disabled services to reuse them.
+- [ ] A controlled fixture starts at authenticated normal Web ingress before
+      admission, observes queued state and actual Manager claim, then one MODEL
+      final through durable canonical completion/readback. Cover two-owner and
+      cross-tenant denial, duplicates, refresh/re-login, revoke/replacement,
+      fence/cancel/Source-close, persistence failure and possible-send unknown.
+      Assert actual request and operation counts, exact-once capacity release,
+      cleanup and zero replay. Test calibration/evidence stays synthetic.
+- [ ] Update the entity registry for changed record semantics and the local
+      recipe for explicit mode selection. Run causal RED/GREEN, affected full
+      packages, uncached race/shuffle/repeat and repository gates; obtain
+      independent exact-artifact review, all required exact-head CI and the
+      primary merge audit before enabling any writer.
+
+Do not split out an accepted codec and call it a normal-Web demonstration.
+This change spans profile, Source, allocation, current SQL, preparation and
+history consumers; its size must be measured from implementation, not described
+as a startup toggle. The restricted profile avoids the unfinished external
+search vertical for this early qualification, but is not evidence that its
+implementation will be faster or that the full feature can be omitted.
+
+No live model or installation follows from this design. A later real run needs
+the owner's exact endpoint/model/server configuration and a new finite manifest
+covering request count, tokens, data, deadline and stop conditions. Prior direct
+HTTP qualification is not reusable call permission or normal-Web acceptance.
+Full managed tools/MCP/general search/compaction/media, attached execution and
+no-user-host cloud proof retain their original tasks and release requirements.

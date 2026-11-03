@@ -237,14 +237,19 @@ with only `test-ordinary` replaced by `test-ordinary-ci-base` in its original
 position before build and integration. The base runs the
 first three original ordinary commands sequentially. A parallel 30-minute
 `go-local` job runs `make test-ordinary-ci-tail` over the same complete package
-patterns in two sequential executions: `^TestLocalTerminal`, then `^TestLocal`
-excluding `^TestLocal(Session|Compaction|Terminal)`. These disjoint selections
+patterns in three sequential executions: `^TestLocalTerminal`,
+`^TestLocal(Failure|Source)`, then `^TestLocal` excluding
+`^TestLocal(Session|Compaction|Terminal|Failure|Source)`. These disjoint selections
 together cover exactly the original fourth ordinary command, including future
-families through the remainder. CI therefore has five ordinary executions;
+families through the remainder. CI therefore has six ordinary executions;
 local/release retains four. No test is omitted or duplicated. Race detection,
 `-count=1`, 15-minute per-binary bounds and the 30-minute job ceiling are unchanged.
 This addresses an observed cumulative binary timeout, not an inference that
-the test named in its final stack was hung. Actual timings still qualify the split.
+the test named in its final stack was hung. A source-closed leaf running for
+three seconds when its complete binary reaches fifteen minutes is not evidence
+of a leaf-level hang. The added binary initialization costs time; preserving
+each binary's bound does not prove the complete job fits its unchanged
+30-minute limit. Actual complete executions and exact-head CI qualify the split.
 Local/release `make test-ordinary` and `ci-core` retain the complete four-command
 ordinary contract. A parallel 30-minute `go-connected` job runs
 `make test-connected-ci`: complete Terminal and non-Terminal/non-Worker

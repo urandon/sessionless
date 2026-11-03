@@ -271,6 +271,14 @@ func (c ownedProxyColumns) decode(q *ownedAuthorityQuery, parent domain.OwnedAtt
 	// carrier is only a decoder input: it cannot authenticate a producer or grant
 	// current/send authority. Historical reads do not require an open socket.
 	pb, ab := []byte(policyRaw), []byte(attestationRaw)
+	if original.TransportKind == domain.RegisteredProxyTransportLocalSearchHTTPSV1 {
+		expected, err := readLocalSearchProxyDataV1(original, parent, allocation, source, pb, ab)
+		digest, de := expected.Digest()
+		if err != nil || de != nil || digest != od {
+			return nil, q.budget.deny()
+		}
+		return &ownedProxySnapshot{original: original, current: current, policyBody: pb, attestationBody: ab}, nil
+	}
 	bodies, err := (ports.OwnedProxyPublicationV2{TransportKind: original.TransportKind, ServiceKind: original.ServiceKind, ObservedAt: original.Window.ObservedAt, PolicyBody: pb, AttestationBody: ab}).Bodies()
 	if err != nil {
 		return nil, q.budget.deny()

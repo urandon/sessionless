@@ -56,6 +56,9 @@ func readRetainedDeletionWriter(ctx context.Context, q *ownedAuthorityQuery, run
 }
 
 func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery, p retainedDeletionProducerData) ([]ownedOperationRow, error) {
+	if p.failure != nil && p.failure.Run.TerminalFailure != nil && p.failure.Run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" {
+		return readRetainedDeletionFailureOperationsV4(ctx, q, p)
+	}
 	v := p.terminal
 	parent, source, accounting := v.Parent, v.Admission.Source, v.Accounting
 	scope := ownedOperationScope(parent)
@@ -169,6 +172,12 @@ func readRetainedDeletionProxies(ctx context.Context, q *ownedAuthorityQuery, p 
 		a, ae := allocation.Digest()
 		if e != nil || ae != nil || r.RegisteredAllocationDigest != a || r.RegisteredProxyDigest != d || proxy.original.OperationDigest != r.OperationDigest || proxy.original.OperationSequence != sequence || proxy.original.ServiceKind != ownedOperationProxyService(r.Operation.Kind) {
 			return q.budget.deny()
+		}
+		if p.failure != nil && p.failure.Run.TerminalFailure != nil && p.failure.Run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && r.Operation.Kind == domain.AttemptOperationWebSearchV1 && validateRetainedSearchProxyOperationV4(proxy, r) != nil {
+			return q.budget.deny()
+		}
+		if p.failure != nil && p.failure.Run.TerminalFailure != nil && p.failure.Run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && sequence > 1 {
+			p.failure.ProxiesV4 = append(p.failure.ProxiesV4, failureV4ProxyData(proxy))
 		}
 		return nil
 	}

@@ -47,6 +47,7 @@ type localTerminalHistoryV1 struct {
 	failures             []localFailureHistoryV1
 	failuresMaterialized bool
 	unresolvedMCP        []localUnresolvedMCP
+	unresolvedSearchV4   bool
 	snapshots            []localTerminalHistorySnapshot
 	legacy               []localTerminalLegacySnapshot
 	runs                 []compactioncontext.HistoricalRunV1
@@ -101,8 +102,15 @@ func (h *localTerminalHistoryV1) clear() {
 	}
 	h.snapshots, h.legacy, h.runs, h.parents = nil, nil, nil, nil
 	h.runsV2 = nil
+	for _, failure := range h.failures {
+		for _, proxy := range failure.ProxiesV4 {
+			clear(proxy.PolicyBody)
+			clear(proxy.AttestationBody)
+		}
+	}
 	h.failures = nil
 	h.unresolvedMCP = nil
+	h.unresolvedSearchV4 = false
 }
 
 // The source owns view and history under its original mutex. The first call is

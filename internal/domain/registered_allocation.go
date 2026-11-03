@@ -303,6 +303,7 @@ const (
 	RegisteredProxyTransportPinnedHTTPSV2         RegisteredProxyTransportKindV2 = "pinned_https.v1"
 	RegisteredProxyTransportLocalLoopbackHTTPV2   RegisteredProxyTransportKindV2 = "local_loopback_http.v1"
 	RegisteredProxyTransportLocalPublicMCPHTTPSV1 RegisteredProxyTransportKindV2 = "local_public_mcp_https.v1"
+	RegisteredProxyTransportLocalSearchHTTPSV1    RegisteredProxyTransportKindV2 = "local_search_https.v1"
 )
 
 const ConfiguredLocalPublicMCPHTTPSPolicyV1 = "local_public_mcp_https.v1"
@@ -374,6 +375,7 @@ type RegisteredProxyAttestationV2 struct {
 	PinnedHTTPS                *RegisteredPinnedHTTPSProxyV2         `json:"pinned_https,omitempty"`
 	LocalLoopback              *RegisteredLocalLoopbackProxyV2       `json:"local_loopback,omitempty"`
 	LocalPublicMCPHTTPS        *RegisteredLocalPublicMCPHTTPSProxyV1 `json:"local_public_mcp_https,omitempty"`
+	LocalSearchHTTPS           *RegisteredLocalSearchHTTPSProxyV1    `json:"local_search_https,omitempty"`
 	PolicyBody                 OwnedAgentAuthorityBodyRefV1          `json:"policy_body"`
 	AttestationBody            OwnedAgentAuthorityBodyRefV1          `json:"attestation_body"`
 	State                      RegisteredPreparationStateV1          `json:"state"`
@@ -396,6 +398,10 @@ func (v RegisteredProxyAttestationV2) Clone() RegisteredProxyAttestationV2 {
 		value := *v.LocalPublicMCPHTTPS
 		v.LocalPublicMCPHTTPS = &value
 	}
+	if v.LocalSearchHTTPS != nil {
+		value := *v.LocalSearchHTTPS
+		v.LocalSearchHTTPS = &value
+	}
 	return v
 }
 func (v RegisteredProxyAttestationV2) Validate() error {
@@ -416,7 +422,7 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 	}
 	switch v.TransportKind {
 	case RegisteredProxyTransportPinnedHTTPSV2:
-		if v.PinnedHTTPS == nil || v.LocalLoopback != nil || v.LocalPublicMCPHTTPS != nil {
+		if v.PinnedHTTPS == nil || v.LocalLoopback != nil || v.LocalPublicMCPHTTPS != nil || v.LocalSearchHTTPS != nil {
 			return registeredPreparationError("proxy.transport", "pinned HTTPS requires only its explicit HTTPS observations")
 		}
 		for _, digest := range []string{v.PinnedHTTPS.ResolutionSetDigest, v.PinnedHTTPS.ProxyArtifactDigest, v.PinnedHTTPS.ProxyIdentityDigest} {
@@ -426,7 +432,7 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 		}
 	case RegisteredProxyTransportLocalLoopbackHTTPV2:
 		p := v.LocalLoopback
-		if p == nil || v.PinnedHTTPS != nil || v.LocalPublicMCPHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 {
+		if p == nil || v.PinnedHTTPS != nil || v.LocalPublicMCPHTTPS != nil || v.LocalSearchHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 {
 			return registeredPreparationError("proxy.transport", "local loopback requires explicit local provider facts only")
 		}
 		for _, digest := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.LiteralPeerDigest} {
@@ -436,13 +442,17 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 		}
 	case RegisteredProxyTransportLocalPublicMCPHTTPSV1:
 		p := v.LocalPublicMCPHTTPS
-		if p == nil || v.PinnedHTTPS != nil || v.LocalLoopback != nil || v.ServiceKind != RegisteredProxyMCPToolV1 || p.EndpointPolicy != ConfiguredLocalPublicMCPHTTPSPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 || p.GrantDigest != v.GrantDigest {
+		if p == nil || v.PinnedHTTPS != nil || v.LocalLoopback != nil || v.LocalSearchHTTPS != nil || v.ServiceKind != RegisteredProxyMCPToolV1 || p.EndpointPolicy != ConfiguredLocalPublicMCPHTTPSPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 || p.GrantDigest != v.GrantDigest {
 			return registeredPreparationError("proxy.transport", "local public MCP HTTPS requires exact MCP-only local observation facts")
 		}
 		for _, d := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.ResolutionSetDigest, p.MCPProfileDigest, p.GrantDigest, p.DescriptorDigest} {
 			if err := ValidateSHA256Digest("registered_proxy.local_public_mcp_https", d); err != nil {
 				return err
 			}
+		}
+	case RegisteredProxyTransportLocalSearchHTTPSV1:
+		if v.LocalSearchHTTPS == nil || v.PinnedHTTPS != nil || v.LocalLoopback != nil || v.LocalPublicMCPHTTPS != nil || v.ServiceKind != RegisteredProxyWebSearchV1 || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 || v.LocalSearchHTTPS.validate() != nil {
+			return registeredPreparationError("proxy.transport", "local search requires only its exact SEARCH observation DATA")
 		}
 	default:
 		return registeredPreparationError("proxy.transport", "requires an explicit supported transport tag")
@@ -566,6 +576,8 @@ func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation Registere
 		expected, err = BuildRegisteredLocalLoopbackProxyAttestationV2(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalLoopback, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	case RegisteredProxyTransportLocalPublicMCPHTTPSV1:
 		expected, err = BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalPublicMCPHTTPS, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
+	case RegisteredProxyTransportLocalSearchHTTPSV1:
+		expected, err = BuildRegisteredLocalSearchHTTPSProxyAttestationV1(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalSearchHTTPS, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	default:
 		return registeredPreparationError("proxy.transport", "requires an explicit supported transport tag")
 	}

@@ -46,17 +46,13 @@ func verifyRetainedDeletionFailureBodies(ctx context.Context, reader SessionDele
 		return deny()
 	}
 	defer clear(body)
-	c, err := decodeLocalFailureCapsule(body)
-	if err != nil || len(c.Operations) != len(writer.operations) {
+	c, err := decodeLocalFailureReadCapsule(body)
+	if err != nil || len(c.operations()) != len(writer.operations) {
 		return deny()
 	}
-	defer func() {
-		for _, op := range c.Operations {
-			clear(op.Normalized)
-		}
-	}()
+	defer c.release()
 	for i, row := range writer.operations {
-		if row.observation == nil || !reflect.DeepEqual(row.reservation, c.Operations[i].Reservation) || !reflect.DeepEqual(*row.observation, c.Operations[i].Observation) {
+		if row.observation == nil || !reflect.DeepEqual(row.reservation, c.operations()[i].Reservation) || !reflect.DeepEqual(*row.observation, c.operations()[i].Observation) {
 			return deny()
 		}
 	}
@@ -76,18 +72,26 @@ func verifyRetainedDeletionFailureBodies(ctx context.Context, reader SessionDele
 		}
 		records = append(records, sessioncontext.EventPayload{Event: event, Payload: payload})
 	}
-	if validateFailureHistoryData(*v, c, records) != nil {
+	if validateFailureReadHistoryData(*v, c, records) != nil {
 		return deny()
 	}
 	// Every retained ordinary body is independently inventoried from the exact
 	// persisted complete operation rows, not a target discovered from capsule
 	// bytes. Read/hash all actual retained objects before destructive admission.
-	for _, ref := range c.Bodies {
-		raw, err := readRetainedDeletionBlob(ctx, reader, ref, 1<<20)
-		clear(raw)
-		if err != nil {
+	if c.search != nil {
+		if validateFailureV4RetainedBodies(ctx, *c.search, v.ProxiesV4, func(ctx context.Context, ref domain.BlobRef, cap uint64) ([]byte, error) {
+			return readRetainedDeletionBlob(ctx, reader, ref, cap)
+		}) != nil {
 			return deny()
 		}
+	} else {
+		for _, ref := range c.bodies() {
+			raw, err := readRetainedDeletionBlob(ctx, reader, ref, 1<<20)
+			clear(raw)
+			if err != nil {
+				return deny()
+			}
+		}
 	}
-	return verifyRetainedDeletionDerived(ctx, reader, writer.producer.terminal, ownership, previous, c.ProfileDigest)
+	return verifyRetainedDeletionDerived(ctx, reader, writer.producer.terminal, ownership, previous, c.profile())
 }

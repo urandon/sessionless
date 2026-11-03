@@ -278,6 +278,18 @@ func inspectEnvelope(event domain.SessionEvent, body []byte, uploads []domain.Ar
 		}
 		m.ToolEnvelopeBytes = uint64(len(body))
 	case domain.SessionEventSystemNotice:
+		var tag struct {
+			Schema string `json:"schema"`
+		}
+		if json.Unmarshal(body, &tag) != nil {
+			return MeasuresV1{}, ErrNotPrepared
+		}
+		if tag.Schema == "sessionless.run-terminal-notice.v4" {
+			if _, err := domain.DecodeSearchFailureNoticeV4(body); err != nil {
+				return MeasuresV1{}, ErrNotPrepared
+			}
+			break
+		}
 		var value struct {
 			Schema    string `json:"schema"`
 			Code      string `json:"code"`

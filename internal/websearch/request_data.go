@@ -51,14 +51,14 @@ func compileRequestData(facts grantFacts, grantDigest string, b BindingV1, args 
 	if !ok || strings.TrimSpace(query) == "" || len(query) > domain.WebSearchQueryBytesV1 || !utf8.ValidString(query) {
 		return deny()
 	}
-	maximum := 5
+	maximum := defaultResultsV1
 	if value, exists := m["max_results"]; exists {
 		n, ok := value.(json.Number)
 		if !ok {
 			return deny()
 		}
 		i, e := n.Int64()
-		if e != nil || i < 1 || i > 5 {
+		if e != nil || i < minimumResultsV1 || i > maximumResultsV1 {
 			return deny()
 		}
 		maximum = int(i)

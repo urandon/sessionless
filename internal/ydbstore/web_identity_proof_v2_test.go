@@ -94,7 +94,7 @@ func (tx *identityProofTxV2) Rollback() error {
 	return nil
 }
 func (c *identityProofConnV2) QueryContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
-	if statement != identityProofChildSQLV2 {
+	if statement != identityChallengeSQLV2 {
 		return c.identityOperationConnV2.QueryContext(ctx, statement, args)
 	}
 	f := c.f
@@ -148,7 +148,11 @@ func (c *identityProofConnV2) ExecContext(ctx context.Context, statement string,
 	if child.ConsumedAt != nil {
 		consumed = *child.ConsumedAt
 	}
-	want := []any{identityRowsV2ExpectedBucket(string(child.StateDigest)), string(child.StateDigest), string(child.BrowserBindingDigest), pkce, nonce, "", child.CreatedAt, child.ExpiresAt, consumed, raw, child.DeleteAfter}
+	redirect := ""
+	if child.Login != nil {
+		redirect = child.Login.ReturnPath
+	}
+	want := []any{identityRowsV2ExpectedBucket(string(child.StateDigest)), string(child.StateDigest), string(child.BrowserBindingDigest), pkce, nonce, redirect, child.CreatedAt, child.ExpiresAt, consumed, raw, child.DeleteAfter}
 	if !reflect.DeepEqual(values, want) {
 		return nil, errors.New("proof write scalar/JSON/privacy/deadline mismatch")
 	}

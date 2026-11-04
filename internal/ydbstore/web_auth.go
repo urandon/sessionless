@@ -52,9 +52,7 @@ func (store *Store) RecordWebSecurityEvent(ctx context.Context, event domain.Web
 
 func (store *Store) CreateLoginChallenge(ctx context.Context, challenge domain.OIDCLoginChallenge) error {
 	if store.webIdentityV2 != nil {
-		// Purpose-tagged V2 login persistence must replace this writer before
-		// serving V2 can be installed. Never create a mixed V1 challenge.
-		return domain.ErrMembershipDenied
+		return store.createLoginChallengeServingV2(ctx, challenge)
 	}
 	if err := challenge.Validate(); err != nil {
 		return err
@@ -89,7 +87,7 @@ func (store *Store) ConsumeLoginChallenge(
 	at time.Time,
 ) (result domain.OIDCLoginChallenge, err error) {
 	if store.webIdentityV2 != nil {
-		return result, domain.ErrMembershipDenied
+		return store.consumeLoginChallengeServingV2(ctx, stateDigest, browserBindingSecret)
 	}
 	if err := stateDigest.Validate("oidc_challenge.state_digest"); err != nil {
 		return result, err

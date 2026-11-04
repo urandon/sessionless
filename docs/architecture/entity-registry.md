@@ -68,7 +68,13 @@ their JSON contract or authorizing a V2 fallback. V2 pending operations and
 proof/login challenges retain their original at-most-ten-minute deadline. Only
 a terminal transaction that strips subjects, proofs and secret bindings from
 the JSON AND physical scalar columns may retain a minimal receipt until
-creation plus 24 hours. Consumed proof challenges must clear physical PKCE/nonce too.
+creation plus 24 hours. Consumed login and proof challenges clear physical
+PKCE/nonce as well as their JSON secrets. The private
+[`web_login_challenge_v2.go`](../../internal/ydbstore/web_login_challenge_v2.go)
+adapter reuses the same strict physical challenge reader/writer and existing
+login ports; it is not a V1 fallback, linking proof or public activation. Initial
+carrier timestamps are converted once to UTC microseconds (expiry rounds down,
+never renews); stored physical/JSON times must still match exactly on every read.
 Existing audit tables retain content-free events under their original policy.
 
 The registry's `delete_after` retention is the intended effective SOURCE schema,

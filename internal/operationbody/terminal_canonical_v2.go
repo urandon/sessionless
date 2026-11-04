@@ -41,8 +41,14 @@ func (t *TerminalOutputV1) WriteCanonicalEventsV2(ctx context.Context, run domai
 
 // Only the two closed public methods select this encoding arm. The original
 // batch/assistant slot and protected notice slot are shared, never replenished.
+// A stopped first consent consumes that same batch slot without an assistant
+// or a fabricated SEARCH call/result pair.
 func (t *TerminalOutputV1) writeCanonicalEvents(ctx context.Context, run domain.Run, drafts []domain.SessionEventDraft, bodies [][]byte, failure bool) error {
-	if t.OperationBodyLimit() == 0 || len(drafts) < 3 || len(drafts) > maxCanonicalToolEventsV2+1 || len(drafts)%2 != 1 || len(drafts) != len(bodies) {
+	// A first stopped consent has no SEARCH pair to publish. Only its strict
+	// V4 notice below can consume a singleton failure batch; every other arm
+	// retains the original complete-pair minimum and the same physical slots.
+	singleton := failure && len(drafts) == 1
+	if t.OperationBodyLimit() == 0 || len(drafts) < 3 && !singleton || len(drafts) > maxCanonicalToolEventsV2+1 || len(drafts)%2 != 1 || len(drafts) != len(bodies) {
 		return ErrBody
 	}
 	s := StoreV1{state: t.state}
@@ -88,10 +94,35 @@ func (t *TerminalOutputV1) writeCanonicalEvents(ctx context.Context, run domain.
 			toolBytes += uint64(len(body))
 		} else if failure {
 			matches := false
-			for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2, domain.MCPOutcomeUnknownV3} {
-				notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, stop)
-				matches = matches || e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID && uint64(len(body)) <= t.owner.failure.limit
-				clear(notice.Payload)
+			if uint64(len(body)) > t.owner.failure.limit {
+				return ErrBody
+			}
+			var tag struct {
+				Schema string `json:"schema"`
+			}
+			if json.Unmarshal(body, &tag) != nil {
+				return ErrBody
+			}
+			if tag.Schema == "sessionless.run-terminal-notice.v4" {
+				notice, e := domain.DecodeSearchFailureNoticeV4(body)
+				if e != nil || draft.DisplayText != "" || singleton && notice.Code != domain.SearchConsentStoppedV4 {
+					return ErrBody
+				}
+				// This derives only the existing stable Run notice identity. The
+				// shared V4 codec owns its exact DATA grammar; original producer
+				// and capsule/Store checks still authenticate the tail facts.
+				identity, e := canonicaloutput.EncodeFailureV1(run.ID, false, notice.Code)
+				matches = e == nil && draft.ID == identity.ID
+				clear(identity.Payload)
+			} else {
+				if singleton {
+					return ErrBody
+				}
+				for _, stop := range []string{domain.KnownMCPServiceErrorV1, domain.ModelOutcomeUnknownV2, domain.MCPOutcomeUnknownV3} {
+					notice, e := canonicaloutput.EncodeFailureV1(run.ID, false, stop)
+					matches = matches || e == nil && bytes.Equal(notice.Payload, body) && draft.ID == notice.ID
+					clear(notice.Payload)
+				}
 			}
 			if !matches {
 				return ErrBody

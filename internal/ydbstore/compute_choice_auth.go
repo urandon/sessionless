@@ -76,11 +76,12 @@ const computeChoiceParticipantSQL = `SELECT SUBSTRING(CAST(record AS String),0,8
  SUBSTRING(CAST(role AS String),0,161), SUBSTRING(CAST(status AS String),0,161)
  FROM session_participants WHERE tenant_id=$1 AND session_id=$2 AND user_id=$3`
 
-func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, digest domain.SecretDigest, sessionID domain.SessionID) (computeChoiceAuth, error) {
+func (store *Store) readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, digest domain.SecretDigest, sessionID domain.SessionID) (computeChoiceAuth, error) {
 	var result computeChoiceAuth
-	if digest.Validate("web_session.session_digest") != nil || sessionID.Validate() != nil {
+	if store == nil || digest.Validate("web_session.session_digest") != nil || sessionID.Validate() != nil {
 		return result, errComputeChoiceSource
 	}
+	identityConfig := store.webIdentityV2 // one trusted mode/config for this attempt
 	bucket, err := webBucket(string(digest))
 	if err != nil {
 		return result, errComputeChoiceSource
@@ -108,11 +109,25 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 		return result, query.readError(err)
 	}
 	var cookie domain.WebSession
+	var snapshot domain.WebSessionV2
+	var identity domain.ExternalIdentityV2
 	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 4*8); err != nil {
 		return result, err
 	}
-	if err := decodeComputeChoiceRecord(query.budget, encoded, &cookie, computeChoiceCookieFields, userID, tenantID, csrf); err != nil {
-		return result, err
+	if identityConfig != nil {
+		if err := chargeComputeChoiceRecord(query.budget, encoded, userID, tenantID, csrf); err != nil {
+			return result, err
+		}
+		var err error
+		snapshot, err = domain.DecodeWebSessionV2([]byte(encoded))
+		if err != nil {
+			return result, errComputeChoiceSource
+		}
+		cookie = snapshot.Session
+	} else {
+		if err := decodeComputeChoiceRecord(query.budget, encoded, &cookie, computeChoiceCookieFields, userID, tenantID, csrf); err != nil {
+			return result, err
+		}
 	}
 	if cookie.Validate() != nil || cookie.SessionDigest != digest || string(cookie.UserID) != userID || string(cookie.ActiveTenantID) != tenantID || string(cookie.CSRFTokenDigest) != csrf || cookie.MembershipSecurityVersion != version ||
 		!computeChoiceTimestampEqual(cookie.IdleExpiresAt, idle) || !computeChoiceTimestampEqual(cookie.AbsoluteExpiresAt, absolute) || !computeChoiceOptionalTimeEqual(cookie.RevokedAt, revoked, true) || cookie.IssuedAt.After(at) || cookie.LastSeenAt.After(at) {
@@ -123,6 +138,23 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 	}
 	if !at.Before(cookie.IdleExpiresAt) || !at.Before(cookie.AbsoluteExpiresAt) {
 		return result, domain.ErrWebSessionExpired
+	}
+	if identityConfig != nil {
+		bindings, err := identityConfig.bindings()
+		if err != nil {
+			return result, errComputeChoiceSource
+		}
+		if _, enabled := bindings[cookie.AuthenticatedSubject.Provider]; !enabled {
+			return result, domain.ErrWebSessionRevoked
+		}
+		var found bool
+		identity, found, err = readComputeChoiceIdentityV2(ctx, query, cookie.AuthenticatedSubject)
+		if err != nil {
+			return result, err
+		}
+		if !found {
+			return result, domain.ErrWebSessionRevoked
+		}
 	}
 	userBucket, err := webBucket(userID)
 	if err != nil {
@@ -146,8 +178,14 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 	if membership.Validate() != nil || membership.UserID != cookie.UserID || membership.TenantID != cookie.ActiveTenantID || string(membership.Role) != role || string(membership.Status) != status || membership.SecurityVersion != version || membership.UpdatedAt.After(at) {
 		return result, errComputeChoiceSource
 	}
-	if err := cookie.Authorize(membership, domain.TenantPermissionWrite, at); err != nil {
-		return result, err
+	if identityConfig != nil {
+		if err := snapshot.AuthorizeCurrent(identity, membership, domain.TenantPermissionWrite, at); err != nil {
+			return result, err
+		}
+	} else {
+		if err := cookie.Authorize(membership, domain.TenantPermissionWrite, at); err != nil {
+			return result, err
+		}
 	}
 	var sequence uint64
 	var archived sql.NullTime
@@ -217,14 +255,7 @@ var computeChoiceSessionFields = map[string]bool{"id": true, "tenant_id": true, 
 var computeChoiceParticipantFields = map[string]bool{"tenant_id": true, "session_id": true, "user_id": true, "role": true, "status": true, "created_at": true, "updated_at": true}
 
 func decodeComputeChoiceRecord(budget *computechoice.AttemptBudget, encoded string, target any, fields map[string]bool, scalars ...string) error {
-	if err := budget.RecordMaterialized(computechoice.SourceOrdinary, int64(len(encoded))); err != nil {
-		return err
-	}
-	var scalarBytes int64
-	for _, scalar := range scalars {
-		scalarBytes += int64(len(scalar))
-	}
-	if err := budget.RecordMaterialized(computechoice.SourceOrdinary, scalarBytes); err != nil {
+	if err := chargeComputeChoiceRecord(budget, encoded, scalars...); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(encoded))
@@ -236,6 +267,20 @@ func decodeComputeChoiceRecord(budget *computechoice.AttemptBudget, encoded stri
 	}
 	if json.Unmarshal([]byte(encoded), target) != nil {
 		return errComputeChoiceSource
+	}
+	return nil
+}
+
+func chargeComputeChoiceRecord(budget *computechoice.AttemptBudget, encoded string, scalars ...string) error {
+	if err := budget.RecordMaterialized(computechoice.SourceOrdinary, int64(len(encoded))); err != nil {
+		return err
+	}
+	var scalarBytes int64
+	for _, scalar := range scalars {
+		scalarBytes += int64(len(scalar))
+	}
+	if err := budget.RecordMaterialized(computechoice.SourceOrdinary, scalarBytes); err != nil {
+		return err
 	}
 	return nil
 }

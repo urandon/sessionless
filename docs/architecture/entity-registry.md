@@ -86,14 +86,22 @@ executor is delivered by this storage description, and no old identity may be
 silently reactivated. Keep V2 serving disabled until the complete transition and
 all transactional authorization consumers are independently verified.
 
+The private compute-choice LIST transaction can select the V2 cookie contract
+and point-read the authenticating forward identity before membership, Session,
+limiter and candidate reads. The existing compute-choice resource budget owns
+that read and charges its returned prefix before decoding. Default V1 mode
+remains unchanged. This source reader adds no durable state, public serving
+installation or SEND authority; persisted CSRF-column correspondence is not
+verification of a presented CSRF token.
+
 The private V2 explanation-read integration reuses the canonical cookie and
 identity codecs inside each original direct/rated resource transaction. It
 checks the authenticating identity's exact active revision before resource reads
 or rate probes/debits. Membership and participant checks remain required. One
 additional bounded identity point read shares the existing aggregate twenty-
 statement budget and three-second deadline; no activity, identity or membership
-row is refreshed. This upgrades those two consumers only, not compute choice,
-search consent, owned canonical allowlists or the complete V2 cutover.
+row is refreshed. These two explanation readers do not establish the complete
+V2 cutover; the other consumers still require their own integrations.
 
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has

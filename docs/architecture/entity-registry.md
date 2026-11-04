@@ -80,6 +80,15 @@ executor is delivered by this storage description, and no old identity may be
 silently reactivated. Keep V2 serving disabled until the complete transition and
 all transactional authorization consumers are independently verified.
 
+The private V2 explanation-read integration reuses the canonical cookie and
+identity codecs inside each original direct/rated resource transaction. It
+checks the authenticating identity's exact active revision before resource reads
+or rate probes/debits. Membership and participant checks remain required. One
+additional bounded identity point read shares the existing aggregate twenty-
+statement budget and three-second deadline; no activity, identity or membership
+row is refreshed. This upgrades those two consumers only, not compute choice,
+search consent, owned canonical allowlists or the complete V2 cutover.
+
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has
 no new row, table, TTL, cache, approval registry or custody owner. The original

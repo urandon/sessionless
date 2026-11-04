@@ -217,7 +217,7 @@ func TestOpsLoginRandomAndIDFailuresHaveFiniteStages(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, config.BaseURL+webcontract.RouteLoginStart, nil))
+			handler.ServeHTTP(response, loginStartRequest(config.BaseURL+webcontract.RouteYandexLoginStart))
 			if response.Code != http.StatusServiceUnavailable || len(memory.challenges) != 0 || len(sink.records) != 1 || sink.records[0].Stage != opssignal.AuthStart || sink.records[0].ErrorClass != opssignal.Unexpected {
 				t.Fatalf("status=%d challenges=%d records=%+v", response.Code, len(memory.challenges), sink.records)
 			}

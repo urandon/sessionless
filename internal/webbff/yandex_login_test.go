@@ -38,11 +38,12 @@ func (p *yandexTestProvider) ExchangeAndVerify(_ context.Context, r ports.OAuthT
 	return p.subject, p.err
 }
 func yandexTestConfig(store ports.WebAuthStore, provider ports.OAuthIdentityProvider) webbff.Config {
-	return webbff.Config{
-		BaseURL: "https://web.dev.sessionless.triborg.dev", RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteLoginCallback,
-		OAuthProvider: provider, OAuthClientID: "yandex-client", Store: store, IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	return webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: provider, OAuthClientID: "yandex-client"}},
+		BaseURL: "https://web.dev.sessionless.triborg.dev",
+		Store:   store,
+		IDs:     fixedIDs{},
+		Clock:   fixedClock{now: bffTestTime},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 func newYandexTestHandler(t *testing.T, store *memoryAuthStore, provider *yandexTestProvider) http.Handler {
 	t.Helper()
@@ -55,7 +56,7 @@ func newYandexTestHandler(t *testing.T, store *memoryAuthStore, provider *yandex
 func startYandexLogin(t *testing.T, h http.Handler) (*http.Cookie, string) {
 	t.Helper()
 	r := httptest.NewRecorder()
-	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev"+webcontract.RouteLoginStart+"?return_to=%2Fsessions", nil))
+	h.ServeHTTP(r, loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteYandexLoginStart+"?return_to=%2Fsessions"))
 	if r.Code != http.StatusSeeOther {
 		t.Fatalf("start status=%d body=%s", r.Code, r.Body.String())
 	}
@@ -85,12 +86,23 @@ func TestYandexLoginBoundChallengeReplayTenantSwitchAndRevoke(t *testing.T) {
 	store, subject := yandexKnownStore()
 	p := &yandexTestProvider{subject: subject}
 	h := newYandexTestHandler(t, store, p)
-	for _, path := range []string{webcontract.RouteOIDCStart, webcontract.RouteOIDCCallback} {
+	for _, path := range []string{webcontract.RouteTelegramLoginStart, webcontract.RouteOIDCCallback} {
 		r := httptest.NewRecorder()
 		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev"+path, nil))
-		if r.Code != http.StatusNotFound {
+		want := http.StatusMethodNotAllowed
+		if path == webcontract.RouteOIDCCallback {
+			want = http.StatusSeeOther
+			if r.Header().Get("Location") != "/login?auth_error=access_denied" {
+				t.Fatal("disabled Telegram callback did not deny")
+			}
+		}
+		if r.Code != want || p.exchanges != 0 || len(store.sessions) != 0 || len(store.challenges) != 0 {
 			t.Fatalf("Telegram route %s status=%d", path, r.Code)
 		}
+	}
+	initialAudit := store.recordedSecurityEvents()
+	if len(initialAudit) != 1 || initialAudit[0].Provider != domain.IdentityProviderTelegram || initialAudit[0].Action != domain.WebSecurityLoginFailed || initialAudit[0].ReasonCode != "invalid_callback" {
+		t.Fatalf("disabled Telegram callback audit = %+v, want route-bound invalid-callback denial", initialAudit)
 	}
 	binding, state := startYandexLogin(t, h)
 	challenge := store.challenges[domain.DigestSecret(state)]
@@ -148,7 +160,7 @@ func TestYandexLoginBoundChallengeReplayTenantSwitchAndRevoke(t *testing.T) {
 	if after.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked session status=%d", after.Code)
 	}
-	for _, event := range store.recordedSecurityEvents() {
+	for _, event := range store.recordedSecurityEvents()[len(initialAudit):] {
 		if event.Provider != domain.IdentityProviderYandex {
 			t.Fatalf("audit provider=%q action=%q", event.Provider, event.Action)
 		}
@@ -190,7 +202,7 @@ func TestYandexChallengeBindingRejectsBeforeExchange(t *testing.T) {
 	}
 }
 
-func TestLegacyTelegramChallengeAcceptedOnlyByLegacyTelegramCallback(t *testing.T) {
+func TestProviderEmptyLegacyTelegramChallengeDeniedByBothCallbacks(t *testing.T) {
 	for _, path := range []string{webcontract.RouteOIDCCallback, webcontract.RouteLoginCallback} {
 		t.Run(path, func(t *testing.T) {
 			s := newMemoryAuthStore()
@@ -199,7 +211,7 @@ func TestLegacyTelegramChallengeAcceptedOnlyByLegacyTelegramCallback(t *testing.
 			s.memberships["usr_telegram"] = []domain.TenantMembership{membership("ten_alpha", "usr_telegram", domain.TenantMembershipOwner)}
 			h := newTestHandler(t, s, subject.Subject)
 			start := httptest.NewRecorder()
-			h.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCStart, nil))
+			h.ServeHTTP(start, loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart))
 			u, err := url.Parse(start.Header().Get("Location"))
 			if err != nil {
 				t.Fatal(err)
@@ -217,10 +229,6 @@ func TestLegacyTelegramChallengeAcceptedOnlyByLegacyTelegramCallback(t *testing.
 			h.ServeHTTP(r, request)
 			want := "/login?auth_error=access_denied"
 			wantSessions := 0
-			if path == webcontract.RouteOIDCCallback {
-				want = "/"
-				wantSessions = 1
-			}
 			if r.Header().Get("Location") != want || len(s.sessions) != wantSessions {
 				t.Fatalf("legacy callback path=%s location=%q sessions=%d wantLocation=%q wantSessions=%d", path, r.Header().Get("Location"), len(s.sessions), want, wantSessions)
 			}
@@ -281,15 +289,15 @@ func TestYandexConfigRejectsAmbiguousProviderAndRedirect(t *testing.T) {
 		name   string
 		mutate func(*webbff.Config)
 	}{
-		{"both-providers", func(c *webbff.Config) { c.Provider = fakeProvider{subject: "1"} }},
+		{"both-providers", func(c *webbff.Config) { c.LoginProviders[0].OIDCProvider = fakeProvider{subject: "1"} }},
 		{"OIDC-policy", func(c *webbff.Config) {
-			c.OIDCPolicy = domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "123", AllowedAlgorithms: []string{"RS256"}}
+			c.LoginProviders[0].OIDCPolicy = domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "123", AllowedAlgorithms: []string{"RS256"}}
 		}},
-		{"missing-client", func(c *webbff.Config) { c.OAuthClientID = "" }},
-		{"Telegram-callback", func(c *webbff.Config) { c.RedirectURI = c.BaseURL + webcontract.RouteOIDCCallback }},
-		{"foreign-callback", func(c *webbff.Config) { c.RedirectURI = "https://evil.example" + webcontract.RouteLoginCallback }},
+		{"missing-client", func(c *webbff.Config) { c.LoginProviders[0].OAuthClientID = "" }},
+		{"Telegram-callback", func(c *webbff.Config) { c.LoginProviders[0].Provider = domain.IdentityProviderTelegram }},
+		{"foreign-callback", func(c *webbff.Config) { c.BaseURL = "https://evil.example" + webcontract.RouteLoginCallback }},
 		{"callback-userinfo", func(c *webbff.Config) {
-			c.RedirectURI = "https://secret@web.dev.sessionless.triborg.dev" + webcontract.RouteLoginCallback
+			c.BaseURL = "https://secret@web.dev.sessionless.triborg.dev"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -351,7 +359,7 @@ func TestYandexActualAdapterBFFCodePKCEAndSafeFailure(t *testing.T) {
 	start := func() (*http.Cookie, string) {
 		t.Helper()
 		r := httptest.NewRecorder()
-		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, origin+webcontract.RouteLoginStart, nil))
+		h.ServeHTTP(r, loginStartRequest(origin+webcontract.RouteYandexLoginStart))
 		u, err := url.Parse(r.Header().Get("Location"))
 		if err != nil || r.Code != http.StatusSeeOther || u.Query().Get("scope") != "login:info" || u.Query().Get("nonce") != "" {
 			t.Fatalf("start status=%d location=%q err=%v", r.Code, r.Header().Get("Location"), err)

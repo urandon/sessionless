@@ -7,9 +7,10 @@ for the Yandex-only control plane. The environment is intentionally separate
 from the permanent Terraform-state bootstrap root. GitCode is the source
 repository; its GitHub push mirror builds verified immutable images on hosted
 runners and publishes them to Yandex Container Registry.
-WebUI is the MVP launch frontend. Its selected independent login is Yandex ID
-OAuth; client registration and real deployed callback proof remain explicit
-rollout steps, not consequences of a green Terraform plan or fixture test.
+WebUI is the MVP launch frontend. Login explicitly selects Yandex ID OAuth,
+Telegram OIDC, or both; client registration and real deployed callback proof
+remain explicit rollout steps, not consequences of a green Terraform plan or
+fixture test.
 
 ## Runtime topology
 
@@ -344,41 +345,59 @@ unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_IDENTITY_HMAC_KEY
 
 Copy the returned version ID into the external tfvars file. Telegram transport
 secret loading above is only needed for a separately enabled Telegram path; it
-does not register or authorize WebUI login. Load the Web-only selected login
-secret and signing material into its separate Lockbox secret. The login client ID
-is non-secret configuration; the client secret and both HMAC keys never enter
+does not register or authorize WebUI login. Load the Web-only enabled login
+secrets and signing material into its separate Lockbox secret. Login client IDs
+are non-secret configuration; client secrets and both HMAC keys never enter
 Terraform:
 
 ```sh
 export WEB_BFF_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw web_bff_secret_id)"
-export WEB_LOGIN_PROVIDER=yandex
+unset WEB_LOGIN_PROVIDER
+export WEB_LOGIN_PROVIDERS=yandex
 export YANDEX_LOGIN_CLIENT_SECRET='loaded by credential-store command'
 export SESSION_API_CURSOR_HMAC_KEY='loaded by credential-store command'
 export SESSION_API_ID_HMAC_KEY='loaded by credential-store command'
 ./scripts/cloud-web-secret-load.sh
 unset YANDEX_LOGIN_CLIENT_SECRET SESSION_API_CURSOR_HMAC_KEY SESSION_API_ID_HMAC_KEY
-unset WEB_LOGIN_PROVIDER
+unset WEB_LOGIN_PROVIDERS
 ```
 
 Copy only the returned Web secret version ID into the external tfvars file. Set
-`web_login_provider = "yandex"` and the non-secret `yandex_login_client_id` to
+`web_login_providers = "yandex"` and the non-secret `yandex_login_client_id` to
 the registered Yandex ID application. Register its exact callback
 `https://web.dev.sessionless.triborg.dev/auth/login/callback` and the `login:info`
 permission. This is Authorization Code OAuth with S256 PKCE plus verified
 account JSON (`id` and exact `client_id`), not Yandex OIDC/JWKS/ID-token handling.
 See [Yandex login development](development.md#yandex-id-login).
 
-The loader and deployment selectors must agree. The historical Lockbox key
-`oidc-client-secret` contains the selected secret and maps to
-`YANDEX_LOGIN_CLIENT_SECRET` for Yandex. Existing deployments remain Telegram
-by default: for that compatibility path use `WEB_LOGIN_PROVIDER=telegram` and
-`TELEGRAM_OIDC_CLIENT_SECRET` when loading, Terraform
-`web_login_provider = "telegram"` with `telegram_oidc_client_id`, and the
-existing BotFather registration for
+The loader and deployment selectors must agree: the only values are `yandex`,
+`telegram`, and `yandex,telegram` in that exact order, with no default or spaces.
+Remove `WEB_LOGIN_PROVIDER` completely (even empty presence is rejected) and
+remove the old Terraform `web_login_provider` setting. Lockbox uses separate
+`yandex-login-client-secret` and `telegram-oidc-client-secret` entries, mapped
+only to their corresponding runtime variables; the old `oidc-client-secret`
+is not a fallback. For Telegram-only use `WEB_LOGIN_PROVIDERS=telegram`,
+`TELEGRAM_OIDC_CLIENT_SECRET`, Terraform `web_login_providers = "telegram"`
+and `telegram_oidc_client_id`, with the existing registered callback
 `https://web.dev.sessionless.triborg.dev/auth/telegram/callback`. Wildcards,
 HTTP aliases and direct container URLs are not allowed for either provider.
 Provider login alone grants no tenant membership; use a validated invitation or
 the [audited cloud-dev bootstrap](web-bff.md#audited-cloud-development-bootstrap).
+
+For dual login, select `yandex,telegram` in both loader and Terraform, configure
+both non-secret client IDs, and load both distinct client secrets in the same
+new Web secret payload version. Every enabled client must be complete; a
+missing credential fails closed, not into another provider. Client completion,
+new secret-version creation outside Terraform and deployment each require
+their appropriate later external authority; these instructions perform none.
+Pin the approved Web image/revision and new secret version together. Co-land
+the gateway, BFF and `/login` chooser so discovery is
+`GET /auth/login/methods` and starts are exact-Origin URL-encoded
+`POST /auth/login/yandex/start` and `POST /auth/login/telegram/start` forms.
+The old state-changing GET starts are removed, not aliases. See the
+[migration checklist](development.md#ordinary-login-provider-configuration).
+Ordinary login does not complete linking proofs (#172/#239) or settings (#240),
+automatically link identities, or grant tenant membership.
 
 After required secret versions are recorded, configure the GitHub mirror with
 Terraform's non-secret outputs:
@@ -610,18 +629,21 @@ queues, or other state-bearing resources.
 The [WebUI-first MVP plan](mvp-delivery-plan.md) does not require the Telegram
 messaging edge or Cloudflare runtime deployment. The commands here are the
 implemented smoke, not complete browser/product proof. `make cloud-web-smoke`
-requires explicit `WEB_LOGIN_PROVIDER` and the selected non-secret client ID
-before making requests. It checks the neutral `/auth/login/start` response:
+requires explicit `WEB_LOGIN_PROVIDERS` and every selected non-secret client ID
+before making requests. It first GETs `/auth/login/methods` and checks the exact
+configured methods/order/labels/fixed paths. It then submits an exact-Origin,
+URL-encoded POST to each selected `/auth/login/{yandex|telegram}/start`, checking
 HTTP 303, pinned provider authority/path, exact client/callback, scopes, state
-and S256 PKCE. Only legacy Telegram selection requires an OIDC nonce. It never
+and S256 PKCE. Telegram also requires an OIDC nonce. It never
 follows the provider redirect or prints code/state/cookie-bearing headers.
 The script uses Node.js standard-library parsing, curl and `yc`; no additional
 package installation is needed. Its credential-free fixtures run with
 `make cloud-web-smoke-test` and are included in the repository CI contract.
 These fixtures do not contact cloud services or identity providers.
-#34/#35 must verify the registered Yandex callback, runtime connectivity to
-`oauth.yandex.ru` and `login.yandex.ru`, active membership/session creation and
-re-login/denial behavior before accepting the independent login's cloud proof.
+#34/#35 must verify each enabled registered callback and the corresponding
+runtime endpoint connectivity, active membership/session creation and
+re-login/denial behavior before accepting deployed login proof. Yandex needs
+`oauth.yandex.ru` and `login.yandex.ru`; Telegram needs its pinned OIDC endpoints.
 Yandex Cloud console availability is not evidence for those endpoints.
 
 ```sh
@@ -634,26 +656,29 @@ export WEB_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -raw web_contain
 export WEB_IMAGE_REF="$(./scripts/cloud-terraform.sh output -raw web_image_ref)"
 export WEB_PREPARED_INSTANCES="$(./scripts/cloud-terraform.sh output -raw web_prepared_instances)"
 export WEB_CONCURRENCY="$(./scripts/cloud-terraform.sh output -raw web_concurrency)"
-export WEB_LOGIN_PROVIDER=yandex
+unset WEB_LOGIN_PROVIDER
+export WEB_LOGIN_PROVIDERS=yandex
 # Use the same non-secret registered client ID as yandex_login_client_id in the
 # approved deployment config, not a client secret or an account ID.
 export YANDEX_LOGIN_CLIENT_ID='registered-client-id'
 make cloud-web-smoke
 ```
 
-For an existing Telegram-selected deployment, explicitly set
-`WEB_LOGIN_PROVIDER=telegram` and `TELEGRAM_OIDC_CLIENT_ID` instead. Its expected
+For Telegram-only, explicitly set
+`WEB_LOGIN_PROVIDERS=telegram` and `TELEGRAM_OIDC_CLIENT_ID` instead. For both,
+select `yandex,telegram` and supply both non-secret client IDs; the smoke checks
+both starts in order, not just the first. Telegram's expected
 callback remains `/auth/telegram/callback`; Yandex uses `/auth/login/callback`.
 Do not add provider client secrets to the smoke environment. The non-destructive
 invocation obtains a short-lived operator IAM token through `yc`, keeps it only
 in a private curl config, and cleans the private temporary directory on success
 or failure. Run the live command only under #34's approved rollout authority;
-the fake test command is safe without cloud credentials. The login-start GET
-creates a transient persisted login challenge; it does not grant membership,
+the fake test command is safe without cloud credentials. Methods GET is read-only;
+each start POST creates a transient persisted login challenge. It does not grant membership,
 create a logged-in session or exchange a provider code.
 
 Passing this smoke proves private invocation, managed HTTPS/security headers,
-the selected login-start contract and route/cost configuration checks. It does
+every selected login-start contract and route/cost configuration checks. It does
 not exchange an authorization code, create a logged-in session, establish
 membership, measure token/account endpoint connectivity or prove a cold start
 unless the separately approved idle-wait measurement was actually run.
@@ -692,8 +717,8 @@ unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 The Web smoke proves anonymous direct invocation is denied, authenticated
 private health works, the managed hostname and certificate are usable, the
 public version is `web-bff`, auth/API cache policy and browser security headers
-survive the gateway, the legacy Telegram deployment redirects only to its
-pinned OIDC target, and unrelated
+survive the gateway, all configured starts redirect only to their respective
+pinned provider targets without following them, and unrelated
 mutation routes are not exposed. For an explicit cold-start exercise, set
 `WEB_COLD_START_WAIT_SECONDS` to the approved idle window before running the
 same script and record the printed first-byte latency without publishing auth
@@ -793,14 +818,29 @@ deployment lock, and repeat smoke tests. Database changes remain
 expand/migrate/contract and forward-compatible; never use an automatic down
 migration as an application rollback.
 
-The Web BFF has no blue/green slots. Retain the previous digest-only Web tfvars
-file, create a saved plan that changes only `web_image_ref` back to that
-known-good digest, review it, and apply it under the same deployment lock. Do
-not use an entire old image manifest because that would also roll back control
-and worker components. Repeat the selected-provider smoke and a real login
-after rollback with the same explicit provider/client configuration via
-`make cloud-web-smoke`; re-promotion is another reviewed saved plan and never
-a rebuild. A login-start redirect alone is not rollback proof for a real account.
+The Web BFF has no blue/green slots. Retain the previous Web-only image,
+gateway/configuration and pinned secret-version records. An image-only saved
+plan changing `web_image_ref` is valid only between revisions with the same
+login route, configuration and secret-key contracts. It is **not** valid across
+the singular-to-plural login migration: an older image expects the retired
+selector, shared secret key and GET routes, not the new POST/discovery contract.
+
+Crossing that boundary requires a separately reviewed, authorized Web-only
+rollback plan restoring a coherent prior image, Web gateway/UI routes,
+provider/client configuration and matching immutable secret payload version.
+Freeze/drain every affected ingress and verify the compatibility of existing
+identity/challenge/session data before restoring traffic; if that compatibility
+cannot be established, stop instead of deploying an old reader. Keep any
+accepted V2 reader/tombstone and old-writer retirement requirements in force.
+Never restore an entire old image manifest, roll back control/worker components,
+run a database Down or restore retired writers as a shortcut.
+
+Apply the admitted saved plan under the deployment lock and use smoke tooling
+matched to that revision's contract, followed by real login checks. For
+compatible post-migration revisions, `make cloud-web-smoke` repeats methods
+discovery and start checks for every selected provider using the matching
+explicit configuration. Re-promotion is another reviewed saved plan, never a
+rebuild. A login-start redirect alone is not real-account rollback proof.
 
 ## Follow-up monitoring and operational checks (#19)
 

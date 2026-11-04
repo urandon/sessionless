@@ -33,11 +33,13 @@ func (fixture ratedExplanationFixture) ReadRatedRunExplanationV1(ctx context.Con
 
 func explanationHandler(t *testing.T, reader ports.RunExplanationRatedReadStoreV1) http.Handler {
 	t.Helper()
-	handler, err := webbff.New(webbff.Config{BaseURL: "https://web.dev.sessionless.triborg.dev",
-		RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
-		OIDCPolicy:  domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}},
-		Provider:    fakeProvider{subject: "424242"}, Store: newMemoryAuthStore(), IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), RunExplanations: reader})
+	handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: "424242"}, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
+		BaseURL:         "https://web.dev.sessionless.triborg.dev",
+		Store:           newMemoryAuthStore(),
+		IDs:             fixedIDs{},
+		Clock:           fixedClock{now: bffTestTime},
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RunExplanations: reader})
 	if err != nil {
 		t.Fatal(err)
 	}

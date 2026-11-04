@@ -30,10 +30,22 @@ curl_smoke --fail --dump-header "$smoke_tmp/root.headers" --output "$smoke_tmp/r
 node "$smoke_check" root <"$smoke_tmp/root.headers" || fail
 curl_smoke --dump-header "$smoke_tmp/me.headers" --output /dev/null "$CLOUD_WEB_URL/api/web/v1/me" || fail
 node "$smoke_check" me <"$smoke_tmp/me.headers" || fail
-# Capture the authorization URL privately; never follow or print it.
-curl_smoke --dump-header "$smoke_tmp/login.headers" --output /dev/null \
-  "$CLOUD_WEB_URL/auth/login/start?return_to=%2F" || fail
-node "$smoke_check" login <"$smoke_tmp/login.headers" || fail
+# Discovery is read-only. Each enabled provider then gets exactly one explicit
+# same-origin POST; capture the URL privately, never follow it or exchange a code.
+curl_smoke --fail --output "$smoke_tmp/methods.json" "$CLOUD_WEB_URL/auth/login/methods" || fail
+node "$smoke_check" methods <"$smoke_tmp/methods.json" || fail
+case "$WEB_LOGIN_PROVIDERS" in
+  yandex) smoke_providers=yandex ;;
+  telegram) smoke_providers=telegram ;;
+  yandex,telegram) smoke_providers='yandex telegram' ;;
+  *) fail ;;
+esac
+for smoke_provider in $smoke_providers; do
+  curl_smoke --dump-header "$smoke_tmp/login.headers" --output /dev/null \
+    --request POST --header "Origin: $CLOUD_WEB_URL" --header 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'return_to=%2F' "$CLOUD_WEB_URL/auth/login/$smoke_provider/start" || fail
+  node "$smoke_check" login "$smoke_provider" <"$smoke_tmp/login.headers" || fail
+done
 for forbidden in /telegram/webhook /api/not-allowed; do
   status=$(curl_smoke --output /dev/null --write-out '%{http_code}' --request POST "$CLOUD_WEB_URL$forbidden") || fail
   case "$status" in 404|405) ;; *) fail ;; esac

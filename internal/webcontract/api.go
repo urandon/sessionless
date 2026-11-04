@@ -17,9 +17,11 @@ import (
 
 const (
 	RouteLogin                     = "/login"
-	RouteOIDCStart                 = "/auth/telegram/start"
+	RouteLoginMethods              = "/auth/login/methods"
+	RouteLoginProviderStart        = "/auth/login/{provider}/start"
+	RouteYandexLoginStart          = "/auth/login/yandex/start"
+	RouteTelegramLoginStart        = "/auth/login/telegram/start"
 	RouteOIDCCallback              = "/auth/telegram/callback"
-	RouteLoginStart                = "/auth/login/start"
 	RouteLoginCallback             = "/auth/login/callback"
 	RouteLogout                    = "/auth/logout"
 	RouteMe                        = "/api/web/v1/me"
@@ -117,6 +119,16 @@ type ErrorEnvelope struct {
 
 type OIDCStartRequest struct {
 	ReturnTo string `json:"return_to,omitempty"`
+}
+
+// Public configuration metadata only; never client/issuer/subject/credentials.
+type LoginMethod struct {
+	Provider  domain.IdentityProvider `json:"provider"`
+	Label     string                  `json:"label"`
+	StartPath string                  `json:"start_path"`
+}
+type LoginMethods struct {
+	Methods []LoginMethod `json:"methods"`
 }
 
 func (request OIDCStartRequest) Validate() error {

@@ -51,14 +51,17 @@ func TestTelegramBoundChallengeRequiresExactCallbackBeforeExchange(t *testing.T)
 			store.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: user, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
 			store.memberships[user] = []domain.TenantMembership{membership("ten_alpha", user, domain.TenantMembershipOwner)}
 			provider := &callbackBindingProvider{fakeProvider: fakeProvider{subject: subject.Subject}}
-			handler, err := webbff.New(webbff.Config{BaseURL: origin, RedirectURI: origin + webcontract.RouteOIDCCallback,
-				OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}},
-				Provider:   provider, Store: store, IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: provider, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
+				BaseURL: origin,
+				Store:   store,
+				IDs:     fixedIDs{},
+				Clock:   fixedClock{now: bffTestTime},
+				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
 			start := httptest.NewRecorder()
-			handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, origin+webcontract.RouteOIDCStart+"?return_to=%2Fsessions", nil))
+			handler.ServeHTTP(start, loginStartRequest(origin+webcontract.RouteTelegramLoginStart+"?return_to=%2Fsessions"))
 			location, err := url.Parse(start.Header().Get("Location"))
 			if err != nil || start.Code != http.StatusSeeOther || location.Query().Get("state") == "" {
 				t.Fatalf("start did not issue challenge: status=%d err=%v", start.Code, err)

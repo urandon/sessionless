@@ -33,13 +33,12 @@ variable "web_bff_secret_version_id" {
   description = "Non-secret Lockbox version ID loaded by scripts/cloud-web-secret-load.sh outside Terraform."
   type        = string
 }
-variable "web_login_provider" {
-  description = "Explicit Web login provider; selecting Yandex requires its separately registered OAuth application."
+variable "web_login_providers" {
+  description = "Explicit ordered Web login providers; selecting Yandex requires its separately registered OAuth application."
   type        = string
-  default     = "telegram"
   validation {
-    condition     = contains(["telegram", "yandex"], var.web_login_provider)
-    error_message = "web_login_provider must be telegram or yandex."
+    condition     = contains(["yandex", "telegram", "yandex,telegram"], var.web_login_providers)
+    error_message = "web_login_providers must be yandex, telegram, or yandex,telegram."
   }
 }
 variable "yandex_login_client_id" {
@@ -47,7 +46,7 @@ variable "yandex_login_client_id" {
   type        = string
   default     = ""
   validation {
-    condition     = var.web_login_provider != "yandex" || (length(trimspace(var.yandex_login_client_id)) > 0 && var.yandex_login_client_id == trimspace(var.yandex_login_client_id))
+    condition     = !contains(split(",", var.web_login_providers), "yandex") || (length(trimspace(var.yandex_login_client_id)) > 0 && var.yandex_login_client_id == trimspace(var.yandex_login_client_id))
     error_message = "yandex_login_client_id must be non-empty and without surrounding whitespace when Yandex is selected."
   }
 }
@@ -56,7 +55,7 @@ variable "telegram_oidc_client_id" {
   type        = string
   default     = ""
   validation {
-    condition     = var.web_login_provider != "telegram" || can(regex("^[0-9]+$", var.telegram_oidc_client_id))
+    condition     = !contains(split(",", var.web_login_providers), "telegram") || can(regex("^[0-9]+$", var.telegram_oidc_client_id))
     error_message = "telegram_oidc_client_id must contain only decimal digits when Telegram is selected."
   }
 }

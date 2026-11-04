@@ -1,9 +1,13 @@
 #!/bin/sh
 set -eu
+unset WEB_LOGIN_PROVIDER WEB_LOGIN_PROVIDERS
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/sessionless-dockerless-policy.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
+# The copied runner canonicalizes its repo root. Keep fake process markers in
+# the same physical namespace (macOS TMPDIR may have a trailing slash/symlink).
+test_root=$(CDPATH= cd -- "$test_root" && pwd -P)
 
 fail() {
 	printf 'dockerless stand policy: %s\n' "$*" >&2
@@ -82,7 +86,7 @@ test ! -e "$docker_calls" || fail 'Docker was invoked while bounding Dockerless 
 
 # Exercise the actual CLI's pre-effect denials. No BFF/model/DB is started and
 # no existing binary or host port is used by these cases.
-for mode in missing-origin missing-provider cloud zero-port leading-zero-port oversized-port nondigit-port; do
+for mode in missing-origin missing-provider duplicate-provider reversed-provider unknown-provider cloud zero-port leading-zero-port oversized-port nondigit-port; do
 	web_environment=local
 	web_origin=https://web.localhost
 	web_provider=yandex
@@ -90,20 +94,24 @@ for mode in missing-origin missing-provider cloud zero-port leading-zero-port ov
 	case "$mode" in
 		missing-origin) web_origin= ;;
 		missing-provider) web_provider= ;;
+		duplicate-provider) web_provider=yandex,yandex ;;
+		reversed-provider) web_provider=telegram,yandex ;;
+		unknown-provider) web_provider=unknown ;;
 		cloud) web_environment=cloud-dev ;;
 		zero-port) web_port=0 ;;
 		leading-zero-port) web_port=08083 ;;
 		oversized-port) web_port=65536 ;;
 		nondigit-port) web_port=not-a-port ;;
 	esac
-	if PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/web-$mode" \
+	if env -u WEB_LOGIN_PROVIDER PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/web-$mode" \
 		SESSIONLESS_ENVIRONMENT="$web_environment" WEB_BASE_URL="$web_origin" \
-		WEB_LOGIN_PROVIDER="$web_provider" WEB_PORT="$web_port" \
+		WEB_LOGIN_PROVIDERS="$web_provider" WEB_PORT="$web_port" \
 		"$runner" start web-bff >"$test_root/web-$mode.out" 2>&1; then
 		fail "native Web accepted invalid explicit configuration: $mode"
 	fi
 	case "$mode" in
-		missing-*) expected='requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER' ;;
+		missing-*) expected='requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDERS' ;;
+		duplicate-provider|reversed-provider|unknown-provider) expected='WEB_LOGIN_PROVIDERS must be yandex, telegram, or yandex,telegram' ;;
 		cloud) expected='requires SESSIONLESS_ENVIRONMENT=local' ;;
 		*) expected='WEB_PORT must be a decimal port between 1 and 65535' ;;
 	esac
@@ -111,6 +119,17 @@ for mode in missing-origin missing-provider cloud zero-port leading-zero-port ov
 		fail "native Web denial did not identify $mode"
 	test ! -e "$test_root/web-$mode/pids/web-bff.pid" ||
 		fail "native Web denial acquired a process: $mode"
+done
+for retired in '' yandex telegram; do
+	if PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/web-retired" \
+		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost \
+		WEB_LOGIN_PROVIDER="$retired" WEB_LOGIN_PROVIDERS=yandex \
+		"$runner" start web-bff >"$test_root/web-retired.out" 2>&1; then
+		fail 'native Web accepted retired singular variable'
+	fi
+	grep -F 'remove WEB_LOGIN_PROVIDER; configure WEB_LOGIN_PROVIDERS explicitly' "$test_root/web-retired.out" >/dev/null ||
+		fail 'native Web retired-variable denial missing'
+	test ! -e "$test_root/web-retired/pids/web-bff.pid" || fail 'retired variable acquired a Web process'
 done
 test ! -e "$docker_calls" || fail 'Docker was invoked by native Web validation'
 
@@ -154,12 +173,12 @@ STUB
 chmod +x "$web_fixture/.build/bin/web-bff" "$web_fixture/fake-bin/nohup" \
 	"$web_fixture/fake-bin/ps" "$web_fixture/fake-bin/lsof" "$web_fixture/fake-bin/curl"
 PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/runtime" \
-	SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+	SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDERS=yandex \
 	PORT=18080 WEB_PORT=18083 DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
 	DOCKERLESS_POLICY_RUNTIME="$web_fixture/runtime" \
 	DOCKERLESS_POLICY_TRACE="$web_fixture/launch" DOCKERLESS_POLICY_READY="$web_fixture/ready" \
 	"$web_fixture/scripts/dockerless-local.sh" start web-bff >"$web_fixture/out" 2>&1 ||
-	fail 'native Web CLI did not reach its fake launch/readiness peers'
+	{ sed -n '1,12p' "$web_fixture/out" >&2; tail -n 8 "$web_fixture/runtime/logs/web-bff.log" >&2; fail 'native Web CLI did not reach its fake launch/readiness peers'; }
 printf '%s\n' env PORT=18083 "$web_fixture/.build/bin/web-bff" >"$web_fixture/expected-launch"
 cmp -s "$web_fixture/expected-launch" "$web_fixture/launch" ||
 	fail 'native Web did not launch only the exact child with its dedicated port'
@@ -171,7 +190,7 @@ test ! -e "$docker_calls" || fail 'Docker was invoked by native Web launch'
 
 for mode in foreign-ready child-exit changed-listener; do
 	if PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/$mode" \
-		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDERS=yandex \
 		WEB_PORT=18083 DOCKERLESS_POLICY_MODE="$mode" DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
 		DOCKERLESS_POLICY_RUNTIME="$web_fixture/$mode" DOCKERLESS_POLICY_TRACE="$web_fixture/$mode-launch" \
 		DOCKERLESS_POLICY_READY="$web_fixture/$mode-ready" \

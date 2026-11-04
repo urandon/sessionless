@@ -2,13 +2,14 @@
 
 This document freezes the WEB-01 contracts. WEB-02 implements the Go BFF,
 Telegram OIDC adapter, YDB auth tables, and operator bootstrap described here.
-WEB-07 (#168/#171) adds the explicitly selected Yandex OAuth variant below,
-without changing membership, session or API authority. The canonical resource
+WEB-07 (#168/#171) adds the Yandex OAuth variant below; ordinary #239 login
+adds explicit one- or two-provider discovery and form starts without changing
+membership, session or API authority. The canonical resource
 API and browser application remain WEB-03 and WEB-04.
 
 The WebUI is a projection over canonical Sessionless sessions and events.
-Yandex ID is the WebUI-first MVP login; the original Telegram configuration
-remains supported. Provider accounts, chats, usernames and transport identifiers
+The operator explicitly enables Yandex ID, Telegram OIDC, or both, with no
+default provider. Provider accounts, chats, usernames and transport identifiers
 do not grant product access.
 
 ## Trust boundaries
@@ -33,10 +34,32 @@ Authentication alone never creates a tenant or membership.
 
 ## Selected Yandex OAuth variant (#171)
 
-`WEB_LOGIN_PROVIDER=yandex` selects one fixed Authorization Code + S256 PKCE
-adapter. `/auth/login/start` and `/auth/login/callback` are the neutral routes;
-Telegram-only legacy routes are available only when Telegram is selected.
-Missing selected credentials never cause a fallback to the other provider.
+`WEB_LOGIN_PROVIDERS` must be exactly `yandex`, `telegram`, or `yandex,telegram`.
+Missing/empty, duplicate, reversed or unknown selections deny startup, as does
+the presence of retired `WEB_LOGIN_PROVIDER` even if empty. Each selected client
+must be complete; there is no credential fallback. Terraform uses the matching
+`web_login_providers` value. Yandex is Authorization Code + S256 PKCE at
+`POST /auth/login/yandex/start` with the fixed `/auth/login/callback`; Telegram
+starts at `POST /auth/login/telegram/start` and retains `/auth/telegram/callback`.
+Both callbacks derive from the exact `WEB_BASE_URL` and are issuer/client-bound.
+
+The `/login` chooser consumes methods metadata with labels exactly `Yandex` and
+`Telegram` and the two fixed start paths, never arbitrary provider URLs. Starts
+accept only the bounded URL-encoded `return_to` form and exact Origin, not a
+provider field, query selector or automatic GET fallback. The old
+`GET /auth/login/start` and `GET /auth/telegram/start` are removed. Callback
+provider/client/issuer attribution comes from the bound path and stored
+challenge, not a global default or an empty-provider legacy inference.
+
+Operator migration must remove the singular environment/TF settings, complete
+every enabled client, and create a new Web Lockbox version outside Terraform
+with `yandex-login-client-secret` and/or `telegram-oidc-client-secret`. There is
+no shared `oidc-client-secret` fallback. Pin image/revision and secret version
+and co-land gateway/UI/BFF changes under separate rollout authority; see the
+[migration checklist](development.md#ordinary-login-provider-configuration).
+Metadata-GET/Origin-POST smoke checks each selected method without following
+redirects; it is not registration, deployment, a completed callback or linking
+proof.
 
 The adapter pins `https://oauth.yandex.ru/authorize`,
 `https://oauth.yandex.ru/token` and `https://login.yandex.ru/info?format=json`.
@@ -57,14 +80,15 @@ Official contracts: [Yandex code exchange](https://yandex.ru/dev/id/doc/ru/codes
 and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
 See [configuration and proof](web-bff.md#yandex-provider-configuration) and
 [development](development.md#yandex-id-login). Explicit dual-proof identity
-linking is post-MVP [#172](https://gitcode.com/urandon/sessionless/issues/172).
+linking remains unfinished under [#172](https://gitcode.com/urandon/sessionless/issues/172)/#239;
+account settings remain #240.
 
 The [dual-provider account-linking design](design/dual-provider-account-linking.md)
-under [#237](https://gitcode.com/urandon/sessionless/issues/237) proposes explicit
+under [#237](https://gitcode.com/urandon/sessionless/issues/237) specifies
 simultaneous-provider configuration, dual-proof linking and revision-fenced
-unlinking. It is not implemented authentication authority; the single-provider
-contracts above remain the current behavior until their versioned replacement
-is delivered and enabled.
+unlinking. Ordinary login/chooser source implements only the configuration and
+login part: it does not mount linking/settings routes or a V2 storage installer,
+perform migration, or authorize automatic account linking.
 
 ## Telegram OIDC flow
 
@@ -87,7 +111,8 @@ sequenceDiagram
     participant YDB
     participant Telegram
 
-    User->>BFF: GET /auth/telegram/start
+    User->>BFF: GET /login and GET /auth/login/methods
+    User->>BFF: POST /auth/login/telegram/start (Origin + form)
     BFF->>YDB: store state digest, browser-binding digest, nonce, verifier, expiry
     BFF-->>Browser: browser-binding cookie + Telegram redirect
     Browser->>Telegram: code request with state, nonce, PKCE S256
@@ -201,7 +226,7 @@ rechecks expiry, revocation, membership status, user/tenant equality, role, and
 security version. A browser-supplied `tenant_id` is only a tenant-switch
 selector. It never overrides `active_tenant_id` in the stored session.
 
-Every mutation also requires an exact normalized HTTPS `Origin` and a
+Every authenticated mutation also requires an exact normalized HTTPS `Origin` and a
 session-bound CSRF value in `X-Sessionless-CSRF`. The readable
 `__Host-sessionless-csrf` cookie uses `Secure`, `SameSite=Strict`, `Path=/`, and
 no `Domain`; YDB stores its digest with the HttpOnly session.
@@ -215,10 +240,12 @@ resolved to a membership before session rotation.
 
 | Method and path | Request selector/body | Authorization and result |
 | --- | --- | --- |
-| `GET /auth/login/start` | optional local `return_to` | create selected-provider/browser-bound challenge; redirect |
-| `GET /auth/login/callback` | exactly one of `code` or `error`, plus `state` | consume selected-provider/client-bound challenge; verify account; resolve membership; stable denial without provider details |
-| `GET /auth/telegram/start` | optional local `return_to` | create browser-bound challenge; redirect |
-| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment; on failure redirect to stable `access_denied`, or `temporarily_unavailable` when durable failure audit cannot be written; never expose provider details |
+| `GET /login` | none | chooser, not an automatic provider redirect |
+| `GET /auth/login/methods` | no query/body | read-only `{methods:[{provider,label,start_path}]}`; max two known entries in configured order, no DB/provider calls |
+| `POST /auth/login/yandex/start` | exact Origin; bounded URL-encoded form with one optional local `return_to` | enabled Yandex/browser/client-bound challenge; redirect |
+| `POST /auth/login/telegram/start` | same form/Origin contract | enabled Telegram/browser/client-bound challenge; redirect |
+| `GET /auth/login/callback` | exactly one of `code` or `error`, plus `state` | consume Yandex/client/browser-bound challenge; verify account; resolve membership; stable denial without provider details |
+| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume Telegram/client/browser-bound challenge; verify claims; resolve enrollment; on failure redirect to stable `access_denied`, or `temporarily_unavailable` when durable failure audit cannot be written; never expose provider details |
 | `POST /auth/logout` | none | CSRF; revoke current digest; clear cookies |
 | `GET /api/web/v1/me` | none | resolved identity and memberships |
 | `GET /api/web/v1/tenants` | none | active memberships only |

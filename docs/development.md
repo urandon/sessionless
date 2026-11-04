@@ -1044,18 +1044,19 @@ into that graph. This is a dependency boundary, not permission to skip the
 reviewed full deployment plan or to use targeting for ordinary deployments.
 
 For release scope, see the [WebUI-first MVP delivery plan](mvp-delivery-plan.md).
-The MVP login selected in #168/#171 is Yandex ID OAuth, independent of Telegram
-and bot setup. The existing Telegram OIDC configuration remains the default for
-backward compatibility; selecting Yandex is explicit and never falls back to
-Telegram when credentials are absent or verification fails.
+The WebUI-first login supports explicitly configured Yandex ID OAuth, Telegram
+OIDC, or both. There is no default provider or credential fallback. Telegram
+Web login is independent of the deferred Telegram messaging edge and bot
+transport rollout.
 
 ### Dual-provider identity V2 groundwork (not enabled)
 
 The [accepted dual-provider design](design/dual-provider-account-linking.md)
 is being implemented in #238–#240. New closed V2 identity/session domain and
 private row helpers are groundwork only: they do not install a serving V2
-reader, expose linking routes, migrate existing records or change the current
-single-provider configuration. Do not write V2 rows into a serving V1 deployment.
+reader, expose linking routes or migrate existing records. Ordinary dual-provider
+login configuration does not install V2 storage authority. Do not write V2 rows
+into a serving V1 deployment.
 
 Ordinary V2 identity resolution and Web-session create/authorize/tenant-switch/
 logout source is exercised through the existing store ports under a private
@@ -1192,7 +1193,48 @@ revision-aware V2 readers and tombstones, disables new operations, and retains
 forward schema/receipts. It never restores V1 readers, TTL on `expires_at`, old
 writers that omit retention, a destructive Down, or provider-token replay.
 
-#### Bounded identity maintenance command
+### Ordinary login provider configuration
+
+Set `WEB_LOGIN_PROVIDERS` explicitly to exactly `yandex`, `telegram`, or
+`yandex,telegram`, in that order without spaces. Empty, missing, reversed,
+duplicate or unknown selections fail startup. Remove `WEB_LOGIN_PROVIDER`
+entirely: its presence is rejected even when its value is empty. Every enabled
+provider needs its complete client configuration and its own secret; a missing
+client never selects another provider implicitly.
+
+The `/login` chooser reads `GET /auth/login/methods`, a read-only response with
+`methods` entries containing `provider`, `label` (`Yandex` or `Telegram`) and
+the fixed `start_path`. It renders same-origin form submissions to
+`POST /auth/login/yandex/start` or `POST /auth/login/telegram/start`. Starts
+require the exact `Origin` and `application/x-www-form-urlencoded`, with only
+one optional local `return_to`; they do not accept a provider selector from the
+form. The former state-changing GET starts `/auth/login/start` and
+`/auth/telegram/start` are removed, not compatibility aliases. Callback paths
+remain `/auth/login/callback` for Yandex and `/auth/telegram/callback` for
+Telegram, each pinned to `WEB_BASE_URL` and the corresponding client/issuer.
+
+For an existing installation, prepare this migration before a separately
+authorized deployment:
+
+1. Remove the retired environment variable and Terraform `web_login_provider`
+   setting from all runtime, loader and operator configuration. Set the same
+   explicit list in `WEB_LOGIN_PROVIDERS` and Terraform `web_login_providers`.
+2. Complete registration/configuration of every enabled client and its exact
+   callback under the appropriate external authority. Create a new Web Lockbox
+   payload version outside Terraform with separate `yandex-login-client-secret`
+   and/or `telegram-oidc-client-secret` entries. The old shared
+   `oidc-client-secret` key is not a fallback.
+3. Pin the approved image/revision and new secret version together with the
+   non-secret client IDs. Co-land the BFF, chooser/UI and gateway POST/discovery
+   routes; do not mix the old GET-start frontend or gateway with the new BFF.
+4. Under separate rollout authority, run metadata/start smoke for every selected
+   provider and then real callback/session checks. Source changes, fixture tests
+   and these instructions do not register clients, load secrets or deploy them.
+
+This ordinary-login increment does not finish dual-proof linking (#172/#239)
+or account settings (#240), automatically link accounts, or grant membership.
+
+### Bounded identity maintenance command
 
 Follow the normative `identity-maintenance.v1` appendix in the accepted design.
 This command is separate from `partition-backfill`, which handles lifecycle
@@ -1259,12 +1301,13 @@ locally, not proof of shared-environment freeze, and not a public V2 installer.
 
 ### Yandex ID login
 
-Set `WEB_LOGIN_PROVIDER=yandex`, `YANDEX_LOGIN_CLIENT_ID` to the registered
-application's client ID, and inject `YANDEX_LOGIN_CLIENT_SECRET` from the
+Include `yandex` in `WEB_LOGIN_PROVIDERS`, set `YANDEX_LOGIN_CLIENT_ID` to the
+registered application's client ID, and inject `YANDEX_LOGIN_CLIENT_SECRET` from the
 operator's credential store. `WEB_BASE_URL` is the exact public HTTPS origin;
 register its `/auth/login/callback` URL with Yandex ID. Browser sign-in starts at
-`/auth/login/start`. Request only the `login:info` permission, not email or avatar
-access. The BFF uses these pinned production endpoints:
+the `/login` chooser's `POST /auth/login/yandex/start` form. Request only the
+`login:info` permission, not email or avatar access. The BFF uses these pinned
+production endpoints:
 
 | Operation | Endpoint |
 | --- | --- |
@@ -1283,14 +1326,16 @@ the user. Access/refresh tokens are not persisted or sent to the browser.
 See the official [code exchange](https://yandex.ru/dev/id/doc/ru/codes/code-url)
 and [account API](https://yandex.ru/dev/id/doc/ru/user-information) contracts.
 
-For cloud configuration, select Terraform `web_login_provider = "yandex"` and
-set non-secret `yandex_login_client_id`. Load the secret with the existing
+For Yandex-only cloud configuration, select Terraform
+`web_login_providers = "yandex"` and set non-secret `yandex_login_client_id`.
+Load the secret with the existing
 [Web Lockbox loading workflow](cloud-development.md), using the matching
-`WEB_LOGIN_PROVIDER=yandex` in the loader environment. The historical Lockbox
-key `oidc-client-secret` stores the selected login secret; Terraform maps that
-key to `YANDEX_LOGIN_CLIENT_SECRET` for Yandex or `TELEGRAM_OIDC_CLIENT_SECRET`
-for Telegram. The key name does not make Yandex an OIDC provider. Never put the
-client secret in Terraform variables/state, command arguments, checked-in
+`WEB_LOGIN_PROVIDERS=yandex` in the loader environment. Lockbox
+`yandex-login-client-secret` maps only to `YANDEX_LOGIN_CLIENT_SECRET`;
+`telegram-oidc-client-secret` maps only to `TELEGRAM_OIDC_CLIENT_SECRET` when
+Telegram is enabled. Both entries are required for `yandex,telegram`, with no
+shared-key fallback. Never put the client secret in Terraform variables/state,
+command arguments, checked-in
 files, container images or logs.
 
 Successful provider verification alone grants no tenant access. Pilot access
@@ -1299,8 +1344,9 @@ requires a separate audited operator invitation or the existing
 for the canonical Sessionless user. A new identity without active membership
 cannot create a Web session, read another user's sessions or inherit quota.
 Equal Telegram/Yandex subject strings or emails are not account links. Explicit
-late linking of two proved accounts is [post-MVP #172](https://gitcode.com/urandon/sessionless/issues/172),
-not an MVP prerequisite.
+late linking of two proved accounts remains unfinished under
+[#172](https://gitcode.com/urandon/sessionless/issues/172)/#239, with account
+settings under #240; ordinary login does not complete those proof flows.
 
 For operator-assisted first access in `cloud-dev`, the existing
 `make web-bootstrap` accepts optional `WEB_BOOTSTRAP_EXTERNAL_PROVIDER=yandex`
@@ -1323,20 +1369,22 @@ provider login. Registered-client callback, Yandex endpoint reachability from
 the deployed runtime and cloud browser smoke remain #34/#35 rollout evidence;
 access to the Yandex Cloud console does not prove these endpoints reachable.
 
-The selected-provider cloud smoke has a credential-free local entry point:
+The configured-provider cloud smoke has a credential-free local entry point:
 
 ```sh
 make cloud-web-smoke-test
 ```
 
 It runs Node.js standard-library fixtures with fake curl/yc clients and checks
-positive redirects, fail-closed configuration/response handling, redaction and
+read-only methods discovery followed by an Origin/form POST for each selected
+provider, positive redirects, fail-closed configuration/response handling, redaction and
 temporary-file cleanup. No Docker, YDB, cloud token or provider login is needed.
 Repository CI runs the same target under the pinned Node.js version. The live
 `make cloud-web-smoke` command requires separately approved cloud rollout
 authority and explicit provider/public client configuration; see the
 [cloud runbook](cloud-development.md#9-verify-the-yandex-foundation). A passing
-login-start check does not prove an actual account callback or logged-in session.
+login-start check never follows provider redirects and does not prove an actual
+account callback or logged-in session.
 
 ### Existing Telegram fixture
 
@@ -1344,8 +1392,9 @@ The Web BFF and Telegram-shaped OIDC fixture are separate Go processes. The
 fixture generates an ephemeral RS256 key at process start and refuses to start
 unless `SESSIONLESS_ENVIRONMENT=local`. Production and cloud-development
 processes selecting Telegram use its real issuer and receive the client secret
-from the process environment or Lockbox. `WEB_LOGIN_PROVIDER=telegram` (or an
-empty selector) preserves the legacy `/auth/telegram/callback` registration.
+from the process environment or Lockbox. Explicit `WEB_LOGIN_PROVIDERS=telegram`
+selects this fixture alone; its `/auth/telegram/callback` registration remains
+unchanged, and its start is `POST /auth/login/telegram/start` from `/login`.
 These fixture values do not configure Yandex login.
 
 Build the binaries and run the credential-free repository checks:

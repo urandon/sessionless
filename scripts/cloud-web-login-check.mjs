@@ -9,15 +9,19 @@ function origin(raw, managed = false) {
   return u.origin;
 }
 function config() {
-  const provider = process.env.WEB_LOGIN_PROVIDER;
-  requireTrue(provider === 'yandex' || provider === 'telegram');
-  const client = process.env[provider === 'yandex' ? 'YANDEX_LOGIN_CLIENT_ID' : 'TELEGRAM_OIDC_CLIENT_ID'];
-  requireTrue(opaque(client));
+  requireTrue(!Object.hasOwn(process.env, 'WEB_LOGIN_PROVIDER'));
+  const mode = process.env.WEB_LOGIN_PROVIDERS;
+  requireTrue(mode === 'yandex' || mode === 'telegram' || mode === 'yandex,telegram');
+  const providers = mode.split(',').map(provider => {
+    const client = process.env[provider === 'yandex' ? 'YANDEX_LOGIN_CLIENT_ID' : 'TELEGRAM_OIDC_CLIENT_ID'];
+    requireTrue(opaque(client));
+    return {provider, client};
+  });
   const web = origin(process.env.CLOUD_WEB_URL, true); origin(process.env.WEB_CONTAINER_URL);
   requireTrue(/^cr\.yandex\/[a-z0-9][a-z0-9_-]*\/web-bff@sha256:[0-9a-f]{64}$/.test(process.env.WEB_IMAGE_REF || ''));
   requireTrue(process.env.WEB_PREPARED_INSTANCES === '0' && /^[1-8]$/.test(process.env.WEB_CONCURRENCY || ''));
   requireTrue(/^(0|[1-9][0-9]{0,2})$/.test(process.env.WEB_COLD_START_WAIT_SECONDS || '0') && Number(process.env.WEB_COLD_START_WAIT_SECONDS || '0') <= 600);
-  return { provider, client, web };
+  return { providers, web };
 }
 function stdin() {
   const data = Buffer.alloc(limit + 1); let size = 0;
@@ -70,7 +74,20 @@ try {
   const selected = config();
   switch (process.argv[2]) {
     case 'config': break;
-    case 'login': login(stdin(), selected); break;
+    case 'login': {
+      const provider = selected.providers.find(p => p.provider === process.argv[3]);
+      requireTrue(provider !== undefined);
+      login(stdin(), {...provider, web:selected.web}); break;
+    }
+    case 'methods': {
+      const body = JSON.parse(stdin());
+      requireTrue(body !== null && !Array.isArray(body) && Object.keys(body).join() === 'methods' && Array.isArray(body.methods) && body.methods.length === selected.providers.length);
+      for (let i=0; i<body.methods.length; i++) {
+        const method=body.methods[i], expected=selected.providers[i].provider;
+        requireTrue(method && Object.keys(method).sort().join() === 'label,provider,start_path' && method.provider===expected && method.label===(expected==='yandex'?'Yandex':'Telegram') && method.start_path==='/auth/login/'+expected+'/start');
+      }
+      break;
+    }
     case 'root': { const h = headers(stdin()); h.checkHSTS(); requireTrue(h.status === 200 && h.get('x-content-type-options') === 'nosniff' && h.get('referrer-policy') === 'strict-origin-when-cross-origin' && h.get('cache-control') === 'no-store'); requireTrue(h.get('content-security-policy').split(';').map(s => s.trim()).includes("frame-ancestors 'none'")); break; }
     case 'me': { const h = headers(stdin()); requireTrue(h.status === 401 && h.get('cache-control') === 'no-store'); break; }
     case 'version': requireTrue(JSON.parse(stdin()).component === 'web-bff'); break;

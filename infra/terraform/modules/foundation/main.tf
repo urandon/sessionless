@@ -318,7 +318,7 @@ resource "yandex_lockbox_secret" "telegram" {
 resource "yandex_lockbox_secret" "web_bff" {
   folder_id           = yandex_resourcemanager_folder.environment.id
   name                = "${var.name_prefix}-web-bff"
-  description         = "Metadata only; Web OIDC and signing payload versions are loaded outside Terraform"
+  description         = "Metadata only; separate Yandex/Telegram login and signing payload versions are loaded outside Terraform"
   kms_key_id          = yandex_kms_symmetric_key.secrets.id
   deletion_protection = var.deletion_protection
   labels              = local.labels

@@ -12,6 +12,27 @@ import (
 
 var webTestTime = time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
 
+func TestWebSecurityIdentityOperationStoppedAction(t *testing.T) {
+	for _, reason := range []string{"cancelled", "expired"} {
+		event := domain.WebSecurityAuditEvent{RequestID: "identity-stop-test", Action: domain.WebSecurityIdentityOperationStopped, Provider: domain.IdentityProviderYandex, TenantID: "tenant-test", UserID: "user-test", MembershipSecurityVersion: 1, ReasonCode: reason, OccurredAt: webTestTime}
+		if err := event.Validate(); err != nil {
+			t.Fatalf("typed content-free identity stop reason=%s: %v", reason, err)
+		}
+		event.Action = domain.WebSecurityAuditAction("web.identity.unknown")
+		if err := event.Validate(); err == nil {
+			t.Fatal("unknown security action accepted")
+		}
+		event.Action, event.ReasonCode = domain.WebSecurityIdentityOperationStopped, "linked"
+		if err := event.Validate(); err == nil {
+			t.Fatal("identity stop audit claimed a positive mutation")
+		}
+		event.ReasonCode, event.SubjectFingerprint = reason, domain.DigestSecret("unnecessary-subject")
+		if err := event.Validate(); err == nil {
+			t.Fatal("identity stop audit retained unnecessary subject DATA")
+		}
+	}
+}
+
 func externalSubject(id string) domain.ExternalSubject {
 	return domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: id}
 }

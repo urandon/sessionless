@@ -77,6 +77,20 @@ carrier timestamps are converted once to UTC microseconds (expiry rounds down,
 never renews); stored physical/JSON times must still match exactly on every read.
 Existing audit tables retain content-free events under their original policy.
 
+The private [`web_identity_outcome_v2.go`](../../internal/ydbstore/web_identity_outcome_v2.go)
+owner reads minimal operation status under current same-user authorization,
+including after legitimate relogin with sensitive operations disabled. Reads do
+not refresh activity, prune records, extend retention or recover a lost cookie.
+A logically expired pending row reports expiry without inventing a stored
+receipt. Explicit cancellation and SQL-clock expiry require the original
+scope, browser, CSRF, revision and trusted configuration. They atomically prune
+the existing operation row and append a typed content-free security event via
+the canonical audit writer. Unknown authorization or storage failures produce
+no terminal receipt; identity, membership, cookie and child-proof rows remain
+unchanged. Negative receipts have no successor revision and retain only until
+original creation plus 24 hours. This reuses the existing challenge and security
+audit tables; it is not a public handler or a serving-mode installation.
+
 The registry's `delete_after` retention is the intended effective SOURCE schema,
 not evidence of applied DDL or runtime enablement. NULL old cells do not expire
 after the switch; logical expiry is checked independently of asynchronous TTL.

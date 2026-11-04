@@ -281,11 +281,11 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 	raw := newSessionCompactionBlobs()
 	audit := &globalClosureStorageAudit{reads: make(map[domain.BlobRef]int)}
 	aBlobs := newGlobalClosureBlobs(raw, audit)
-	aSeed := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", aBlobs, ydbstore.LocalCompactionConnectedLimits{InputTokens: 8192, NetworkOperation: 5 * time.Second})
+	aSeed := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", aBlobs, nonExpiryCompactionConnectedLimits(8192))
 	aSQL := aSeed.InstallTerminalCompletionSQL(t)
 	aBlobs.seed = aSeed
 	a := globalClosureSession(t, aSeed, aBlobs)
-	runSteps := func(s *providerloopsession.LocalV1, firstText, lastText string) {
+	runSteps := func(s *providerloopsession.LocalV1, seed *ydbstore.LocalTerminalPublicationSessionConnectedSeed, firstText, lastText string) {
 		t.Helper()
 		peer.mu.Lock()
 		peer.modelText = firstText
@@ -301,8 +301,9 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 		if err != nil || !second.Model.SendAttempted || second.Compaction == nil || !second.Compaction.SendAttempted || second.Compaction.Observation.Reservation.Operation.Sequence != 2 || second.Model.Observation.Reservation.Operation.Sequence != 3 {
 			t.Fatal("actual one compaction plus MODEL successor", err)
 		}
+		assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, []ports.AuthenticatedAttemptOperationObservationV1{first.Model.Observation, second.Compaction.Observation, second.Model.Observation}, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 	}
-	runSteps(a, strings.Repeat("a", 4096), "exact A terminal answer")
+	runSteps(a, aSeed, strings.Repeat("a", 4096), "exact A terminal answer")
 	aState := completeGlobalClosureRun(t, a, aSeed, aSQL, aBlobs)
 	name := "chain-" + strings.ToLower(rand.Text())
 	bBlobs := newGlobalClosureBlobs(raw, audit)
@@ -310,7 +311,7 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 	bBlobs.seed = bSeed
 	assertDistinctGlobalClosureOwners(t, aSeed, bSeed)
 	b := globalClosureSession(t, bSeed, bBlobs)
-	runSteps(b, strings.Repeat("b", 4096), "exact B terminal answer")
+	runSteps(b, bSeed, strings.Repeat("b", 4096), "exact B terminal answer")
 	bState := completeGlobalClosureRun(t, b, bSeed, bSQL, bBlobs)
 	if bHistory.TTLReads != 0 || bHistory.DetailReads[aState.Run.ID] == 0 {
 		t.Fatal("B did not rejoin A original durable history", bHistory.TTLReads)
@@ -348,6 +349,7 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 	if err != nil || !result.Model.SendAttempted || result.Compaction != nil || result.Model.Observation.Reservation.Operation.Sequence != 1 {
 		t.Fatal("new C must consume complete A1/B1 closure before MODEL", err)
 	}
+	assertOriginalCompactionActiveBudget(t, cSeed.LocalSessionConnectedSeed, []ports.AuthenticatedAttemptOperationObservationV1{result.Model.Observation}, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1})
 	if cHistory.TTLReads != 0 || cHistory.DetailReads[aState.Run.ID] == 0 || cHistory.DetailReads[bState.Run.ID] == 0 {
 		t.Fatal("C omitted original producing Run or used TTL state", cHistory.DetailReads, cHistory.TTLReads)
 	}

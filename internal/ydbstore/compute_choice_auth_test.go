@@ -139,7 +139,7 @@ func (f *computeChoiceSourceFixture) read(budget *computechoice.ResourceBudget) 
 		}
 		defer attempt.Finish()
 		query := &computeChoiceQuery{tx: tx, budget: attempt}
-		current, err := readComputeChoiceAuth(ctx, query, f.cookie.SessionDigest, f.session.ID)
+		current, err := f.store.readComputeChoiceAuth(ctx, query, f.cookie.SessionDigest, f.session.ID)
 		if err != nil {
 			return err
 		}

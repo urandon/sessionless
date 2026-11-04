@@ -148,7 +148,7 @@ func (f *computeChoiceAttachedFixture) read(budget *computechoice.ResourceBudget
 		}
 		defer attempt.Finish()
 		query := &computeChoiceQuery{tx: tx, budget: attempt}
-		auth, err := readComputeChoiceAuth(ctx, query, f.source.cookie.SessionDigest, f.source.session.ID)
+		auth, err := f.source.store.readComputeChoiceAuth(ctx, query, f.source.cookie.SessionDigest, f.source.session.ID)
 		if err != nil {
 			return err
 		}
@@ -441,7 +441,7 @@ func TestComputeChoiceAttachedStatementBudgetBeforeDriverCall(t *testing.T) {
 		}
 		defer attempt.Finish()
 		query := &computeChoiceQuery{tx: tx, budget: attempt}
-		auth, err := readComputeChoiceAuth(ctx, query, f.source.cookie.SessionDigest, f.source.session.ID)
+		auth, err := f.source.store.readComputeChoiceAuth(ctx, query, f.source.cookie.SessionDigest, f.source.session.ID)
 		if err != nil {
 			return err
 		}

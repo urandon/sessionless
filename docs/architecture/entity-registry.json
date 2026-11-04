@@ -1542,6 +1542,7 @@
       "knownRefs": {
         "readers": {
           "paths": [
+            "internal/ydbstore/compute_choice_identity_v2.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
@@ -1551,7 +1552,7 @@
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 8
+          "total": 9
         },
         "writers": {
           "paths": [

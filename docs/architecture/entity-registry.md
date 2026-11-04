@@ -89,6 +89,15 @@ statement budget and three-second deadline; no activity, identity or membership
 row is refreshed. This upgrades those two consumers only, not compute choice,
 search consent, owned canonical allowlists or the complete V2 cutover.
 
+The private consent integration selects the V2 cookie and authenticating
+identity inside each owning transaction: discovery, pre-body intent, final
+read/decision and receipt consumption before SEARCH reservation or send.
+The original shared resource budget charges the existing bounded row helpers;
+there is no activity refresh, new table or public installation. Negative-only
+reconciliation distinguishes observed canonical identity removal/revision from
+malformed or unavailable data. Pending requests remain browser-cookie-free.
+This is a consumer integration, not acceptance of the complete V2 cutover.
+
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has
 no new row, table, TTL, cache, approval registry or custody owner. The original

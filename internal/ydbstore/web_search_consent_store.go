@@ -11,25 +11,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-// Exact bounded private cookie-row loader shared by discovery and query reads.
-// It never refreshes browser activity; current actor checks stay in the same
-// callback as the owning canonical Session/Run/consent lookup.
-func readOwnedConsentWebSession(ctx context.Context, q *ownedAuthorityQuery, digest domain.SecretDigest) (domain.WebSession, error) {
-	if digest.Validate("web_search_consent.web_session_digest") != nil {
-		return domain.WebSession{}, q.budget.deny()
-	}
-	bucket, err := webBucket(string(digest))
-	if err != nil {
-		return domain.WebSession{}, q.budget.deny()
-	}
-	raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, digest)
-	var session domain.WebSession
-	if err != nil || decodeOwnedEffectCanonicalJSON(raw, &session) != nil || session.Validate() != nil || session.SessionDigest != digest {
-		return domain.WebSession{}, q.budget.deny()
-	}
-	return session, nil
-}
-
 func consentLocator(r domain.WebSearchConsentRequestV1) ports.WebSearchConsentLocatorV1 {
 	return ports.WebSearchConsentLocatorV1{TenantID: r.Scope.TenantID, SessionID: r.Scope.SessionID, RunID: r.Scope.RunID, AttemptID: r.Scope.AttemptID, RequestID: r.ID}
 }
@@ -138,7 +119,7 @@ type ownedConsentIntent struct {
 	observedAt time.Time
 }
 
-func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1) (ownedConsentIntent, ports.ReadWebSearchConsentRequestV1, error) {
+func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1, mode ownedConsentIdentityMode) (ownedConsentIntent, ports.ReadWebSearchConsentRequestV1, error) {
 	var result ownedConsentIntent
 	resolved := input
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
@@ -148,10 +129,11 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 		if private != nil {
 			// Only this current cookie row supplies the tenant. No browser
 			// tenant selector, activity refresh, or standalone auth transaction.
-			session, err := readOwnedConsentWebSession(ctx, q, private.WebSessionDigest)
-			if err != nil {
+			browser, found, err := mode.readSession(ctx, q, private.WebSessionDigest)
+			if err != nil || !found {
 				return q.budget.deny()
 			}
+			session := browser.session
 			resolved = ports.ReadWebSearchConsentRequestV1{
 				Locator:          ports.WebSearchConsentLocatorV1{TenantID: session.ActiveTenantID, SessionID: private.SessionID, RunID: private.RunID, AttemptID: private.AttemptID, RequestID: private.RequestID},
 				WebSessionDigest: private.WebSessionDigest,
@@ -184,7 +166,7 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 			return q.budget.deny()
 		}
 		a := domain.WebSearchConsentAuthorityV1{InitiatingUserID: actor}
-		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a) != nil {
+		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a, mode) != nil {
 			return q.budget.deny()
 		}
 		result = ownedConsentIntent{request: state.Request, profile: profile, observedAt: q.at}
@@ -214,16 +196,18 @@ func (store *Store) DiscoverPrivateWebSearchConsent(ctx context.Context, input p
 	}
 	ctx, cancel := ownedConsentContext(ctx)
 	defer cancel()
+	mode := ownedConsentIdentityMode{config: store.webIdentityV2}
 	var result *ports.WebSearchConsentPendingV1
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = nil // never retain a speculative callback result across retry
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
-		web, err := readOwnedConsentWebSession(ctx, q, input.WebSessionDigest)
-		if err != nil {
-			return err
+		browser, found, err := mode.readSession(ctx, q, input.WebSessionDigest)
+		if err != nil || !found {
+			return q.budget.deny()
 		}
+		web := browser.session
 		membership, _, err := readOwnedSessionPrincipal(ctx, q, web.ActiveTenantID, input.SessionID, web.UserID)
-		if err != nil || q.at.Before(web.LastSeenAt) || web.Authorize(membership, domain.TenantPermissionWrite, q.at) != nil {
+		if err != nil || q.at.Before(web.LastSeenAt) || browser.authorizeWrite(membership, q.at) != nil {
 			return q.budget.deny()
 		}
 		raw, err := q.readCanonicalJSON(ctx, "SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2", web.ActiveTenantID, input.RunID)
@@ -333,7 +317,8 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 	}
 	ctx, cancel := ownedConsentContext(ctx)
 	defer cancel()
-	selected, resolved, err := store.readOwnedConsentIntent(ctx, input, private)
+	mode := ownedConsentIdentityMode{config: store.webIdentityV2}
+	selected, resolved, err := store.readOwnedConsentIntent(ctx, input, private, mode)
 	if err != nil {
 		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
@@ -379,7 +364,7 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 			return q.budget.deny()
 		}
 		a, err := store.ownedConsentCurrentAuthorityData(ctx, q, parent, source, state.Request, grant)
-		if err != nil || loadOwnedConsentActor(ctx, q, state.Request, input.WebSessionDigest, &a) != nil {
+		if err != nil || loadOwnedConsentActor(ctx, q, state.Request, input.WebSessionDigest, &a, mode) != nil {
 			return q.budget.deny()
 		}
 		if decision == nil {

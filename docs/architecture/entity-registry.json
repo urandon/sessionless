@@ -1549,9 +1549,10 @@
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 8
+          "total": 9
         },
         "writers": {
           "paths": [
@@ -4177,11 +4178,12 @@
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
             "internal/ydbstore/web_search_consent_store.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 11
+          "total": 12
         },
         "writers": {
           "paths": [

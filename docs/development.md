@@ -1081,6 +1081,16 @@ a schema or use a provider. Controlled-driver tests are separate offline
 evidence; passing these primitives is not proof of the pending complete
 operation/proof/audit/cookie protocol or live account linking.
 
+The separate `make web-consent-identity-v2-ydb-gate` selects the tagged native
+consent identity scenarios in the existing disposable GitHub CI database. It
+uses real data transactions, the original race/repeat/shuffle checks and a
+five-minute test-binary bound, without extending the YDB job's deadline.
+The target requires the CI guard and explicit disposable-current-reader flags;
+it does not start YDB or apply migrations. These scenarios exercise the existing
+MODEL-to-consent-to-reservation/before-send composition with synthetic transport,
+not a provider call, public V2 installation or live account-linking proof.
+Controlled SQL tests remain separate evidence.
+
 ### Identity V2 retention and cutover prerequisites
 
 This is a source-only maintenance contract for #238, not an implemented

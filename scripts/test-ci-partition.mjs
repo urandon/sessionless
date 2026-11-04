@@ -69,6 +69,11 @@ const offlineMcp = [
 ];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
 const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
+const consentIdentityStepName = 'Prove V2 consent identity at reservation and before-send';
+const consentIdentityGateRecipe = [
+  '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
+  "SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 go test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration -run '^TestWebSearchConsentIdentityV2YDB' ./internal/ydbstore",
+].join('\n\t');
 const localRuntimeGateRecipe = [
   '@test "$(GITHUB_ACTIONS)" = true || { echo \'requires disposable GitHub CI\'; exit 1; }',
   'SESSIONLESS_LOCAL_RUNTIME_YDB_GATE=1 SESSIONLESS_LOCAL_RUNTIME_YDB_DISPOSABLE=1 \\\n\t\tgo test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \\\n\t\t-run \'^TestLocalRuntimeYDB\' ./test/ydbintegration',
@@ -214,6 +219,14 @@ function verify({ make, ci, release }) {
     assert.equal(step(text, 'Apply schema twice'), 'run: |\n          make migrate-local\n          make migrate-local', `${name} no migration retry`);
   }
   const ydb = job(ci, 'ydb');
+  assert.deepEqual(target(make, 'web-consent-identity-v2-ydb-gate'), ['prepare']);
+  assert.equal(recipe(make, 'web-consent-identity-v2-ydb-gate'), consentIdentityGateRecipe,
+    'bounded remote-only exact consent identity test selector');
+  assert.equal(step(ydb, consentIdentityStepName),
+    'env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric\n        run: make web-consent-identity-v2-ydb-gate',
+    'consent identity uses real data transactions and propagates failure');
+  assert.ok(ydb.indexOf(consentIdentityStepName) > ydb.indexOf('Apply schema twice'));
+  assert.ok(ydb.indexOf(consentIdentityStepName) < ydb.indexOf('Capture failed YDB Local state'));
   assert.match(ydb, /^    timeout-minutes: 25$/m, 'generation proof preserves existing YDB job bound');
   assert.deepEqual(target(make, 'attached-resource-generation-ydb-gate'), ['prepare']);
   assert.equal(recipe(make, 'attached-resource-generation-ydb-gate'), generationGateRecipe, 'bounded disposable exact generation test selector');
@@ -252,6 +265,28 @@ function verify({ make, ci, release }) {
 }
 
 test('local, release and mirrored CI retain the complete partition', () => verify(original));
+
+test('consent identity native proof retains its guarded selector and transaction mode', () => {
+  for (const [from, to] of [
+    ['@test "$(GITHUB_ACTIONS)" = true', '@true'],
+    ['SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 ', ''],
+    ['SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 ', ''],
+    [' -v', ''], [' -race', ''], ['-count=3', '-count=1'],
+    ['-shuffle=on', '-shuffle=off'], ['-timeout=5m', '-timeout=10m'],
+    [' -tags=ydbintegration', ''], ['^TestWebSearchConsentIdentityV2YDB', '^TestOther'],
+    ['./internal/ydbstore', './test/ydbintegration'],
+  ]) {
+    const changed = consentIdentityGateRecipe.replace(from, to);
+    assert.notEqual(changed, consentIdentityGateRecipe, 'effective consent gate mutation');
+    assert.throws(() => verify({ ...original, make: original.make.replace(consentIdentityGateRecipe, changed) }));
+  }
+  const nativeStep = step(job(original.ci, 'ydb'), consentIdentityStepName);
+  for (const changed of [
+    nativeStep.replace('go_query_mode=data&', 'go_query_mode=scripting&go_fake_tx=scripting&'),
+    nativeStep.replace('run: make web-consent-identity-v2-ydb-gate', 'run: make web-consent-identity-v2-ydb-gate || true'),
+    'if: false\n        ' + nativeStep,
+  ]) assert.throws(() => verify({ ...original, ci: original.ci.replace(nativeStep, changed) }));
+});
 
 test('generation SQL qualification cannot lose its guards, coverage or real transaction mode', () => {
   for (const make of [

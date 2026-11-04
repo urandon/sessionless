@@ -469,6 +469,12 @@ web-identity-v2-ydb-gate: prepare
 		go test -race -count=3 -shuffle=on -timeout=5m \
 		-run '^TestWebIdentityV2YDB' ./internal/ydbstore
 
+.PHONY: web-consent-identity-v2-ydb-gate
+# Actual consent/operation joins in the existing disposable CI database only.
+web-consent-identity-v2-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 go test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration -run '^TestWebSearchConsentIdentityV2YDB' ./internal/ydbstore
+
 local-integration: prepare
 	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
 	YDB_ANONYMOUS_CREDENTIALS="$${YDB_ANONYMOUS_CREDENTIALS:-1}" \

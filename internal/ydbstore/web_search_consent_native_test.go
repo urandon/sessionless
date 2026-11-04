@@ -5,6 +5,7 @@ package ydbstore
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -148,7 +149,25 @@ func TestOwnedConsentYDBActualModelActorDecisionAndStorageReplay(t *testing.T) {
 		if revokeBeforeSend {
 			name = "revoke_after_reserve_zero_send"
 		}
-		t.Run(name, func(t *testing.T) { nativeConsentActorScenario(t, revokeBeforeSend) })
+		t.Run(name, func(t *testing.T) { nativeConsentActorScenario(t, revokeBeforeSend, nil) })
+	}
+}
+
+type nativeConsentIdentityCaseV2 struct {
+	provider                            domain.IdentityProvider
+	staleBeforeReserve, staleBeforeSend bool
+}
+
+// Selected by the dedicated consent-identity gate in existing disposable CI.
+// This real Store operation path uses synthetic transport, not a provider.
+func TestWebSearchConsentIdentityV2YDBAtReserveAndBeforeSend(t *testing.T) {
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
+		for _, phase := range []string{"current", "before-reserve", "before-send"} {
+			t.Run(string(provider)+"/"+phase, func(t *testing.T) {
+				mode := nativeConsentIdentityCaseV2{provider: provider, staleBeforeReserve: phase == "before-reserve", staleBeforeSend: phase == "before-send"}
+				nativeConsentActorScenario(t, false, &mode)
+			})
+		}
 	}
 }
 
@@ -172,7 +191,7 @@ func nativeConsentPendingRequest(t *testing.T, g nativeOwnedParentGraph, keeper 
 	return r, model
 }
 
-func nativeConsentActorScenario(t *testing.T, revokeBeforeSend bool) {
+func nativeConsentActorScenario(t *testing.T, revokeBeforeSend bool, identityMode *nativeConsentIdentityCaseV2) {
 	t.Helper()
 	g, keeper, policy := nativeConsentGraph(t)
 	r, model := nativeConsentPendingRequest(t, g, keeper, policy)
@@ -206,6 +225,10 @@ func nativeConsentActorScenario(t *testing.T, revokeBeforeSend bool) {
 		t.Fatal("actual membership prerequisite", err)
 	}
 	web := domain.WebSession{SessionDigest: domain.DigestSecret("consent-web-" + string(s.AttemptID)), CSRFTokenDigest: domain.DigestSecret("consent-csrf-" + string(s.AttemptID)), UserID: r.InitiatingUserID, ActiveTenantID: s.TenantID, AuthenticatedSubject: domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "123"}, MembershipSecurityVersion: membership.SecurityVersion, IssuedAt: at, LastSeenAt: at, IdleExpiresAt: at.Add(time.Minute), AbsoluteExpiresAt: at.Add(time.Hour)}
+	if identityMode != nil {
+		web.AuthenticatedSubject = domain.ExternalSubject{Provider: identityMode.provider, Subject: "consent-" + string(s.AttemptID)}
+		nativeConsentInstallIdentityV2(t, g, web, at)
+	}
 	if err := g.f.store.CreateWebSession(g.ctx, web); err != nil {
 		t.Fatal("actual web session prerequisite", err)
 	}
@@ -243,7 +266,7 @@ func nativeConsentActorScenario(t *testing.T, revokeBeforeSend bool) {
 	if _, err := g.f.store.DecideWebSearchConsent(g.ctx, decision); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatal("conflicting choice replaced receipt")
 	}
-	nativeConsentSearchSend(t, g, keeper, policy, model, approved, web, revokeBeforeSend)
+	nativeConsentSearchSend(t, g, keeper, policy, model, approved, web, revokeBeforeSend, identityMode)
 	if _, err := g.f.store.ReadWebSearchConsent(g.ctx, read); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatal("revoked actor disclosed consent")
 	}
@@ -264,7 +287,63 @@ func nativeConsentActorScenario(t *testing.T, revokeBeforeSend bool) {
 	if err != nil || recoveredCreate.Status != domain.WebSearchConsentRevokedV1 || recoveredCreate.Revision != 3 {
 		t.Fatal("create lost-ack replay reopened stopped consent", err)
 	}
-	g.requireCount(t, "attempt_operations_v1", 2)
+	wantOperations := uint64(2)
+	if identityMode != nil && identityMode.staleBeforeReserve {
+		wantOperations = 1
+	}
+	g.requireCount(t, "attempt_operations_v1", wantOperations)
+}
+
+func nativeConsentInstallIdentityV2(t *testing.T, g nativeOwnedParentGraph, web domain.WebSession, at time.Time) {
+	t.Helper()
+	subject := web.AuthenticatedSubject
+	bucket, err := webBucket(subject.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	userBucket, err := webBucket(string(web.UserID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exact uniquely owned subject cleanup is registered before its first write.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := g.f.store.db.ExecContext(ctx, `DELETE FROM external_identities_by_user WHERE user_bucket=$1 AND user_id=$2 AND provider=$3 AND subject=$4`, userBucket, web.UserID, subject.Provider, subject.Subject); err != nil {
+			t.Error(err)
+		}
+		if _, err := g.f.store.db.ExecContext(ctx, `DELETE FROM external_identities WHERE shard_bucket=$1 AND provider=$2 AND subject=$3`, bucket, subject.Provider, subject.Subject); err != nil {
+			t.Error(err)
+		}
+	})
+	identity := domain.ExternalIdentityV2{Version: 2, Subject: subject, UserID: web.UserID, CreatedAt: at, UpdatedAt: at, State: domain.ExternalIdentityActiveV2, Revision: 1}
+	if err := g.f.store.authTx(g.ctx, "native-consent.identity-fixture", func(tx *sql.Tx) error { return writeExternalIdentityV2(g.ctx, tx, identity) }); err != nil {
+		t.Fatal("real canonical V2 identity fixture write", err)
+	}
+	g.f.store.webIdentityV2 = &identityConfigurationV2{ManifestDigest: domain.DigestSecret("native-consent-v2-manifest"), Providers: []domain.IdentityProviderBindingV2{{Provider: domain.IdentityProviderYandex, Issuer: domain.YandexOAuthIssuer, ClientID: "native-consent-yandex", CallbackURI: "https://sessionless.example/auth/login/callback"}, {Provider: domain.IdentityProviderTelegram, Issuer: "https://oauth.telegram.org", ClientID: "native-consent-telegram", CallbackURI: "https://sessionless.example/auth/telegram/callback"}}}
+	g.f.store.webSessionIdleTTL = time.Hour
+}
+
+func nativeConsentAdvanceIdentityV2(t *testing.T, g nativeOwnedParentGraph, web domain.WebSession) {
+	t.Helper()
+	if err := g.f.store.authTx(g.ctx, "native-consent.identity-change-fixture", func(tx *sql.Tx) error {
+		identity, found, err := readExternalIdentityV2(g.ctx, tx, web.AuthenticatedSubject)
+		if err != nil {
+			return err
+		}
+		if !found || identity.UserID != web.UserID || identity.Revision != 1 || identity.State != domain.ExternalIdentityActiveV2 {
+			return domain.ErrMembershipDenied
+		}
+		var at time.Time
+		if err := tx.QueryRowContext(g.ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil {
+			return err
+		}
+		identity.Revision++
+		identity.UpdatedAt = at.UTC()
+		return writeExternalIdentityV2(g.ctx, tx, identity)
+	}); err != nil {
+		t.Fatal("actual canonical same-owner identity revision update", err)
+	}
 }
 
 func TestOwnedConsentYDBPendingStopFromActualCurrentFacts(t *testing.T) {
@@ -328,7 +407,7 @@ func TestOwnedConsentYDBPendingStopFromActualCurrentFacts(t *testing.T) {
 	}
 }
 
-func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nativeOperationBodyKeeper, policy serverlessegress.PolicyV1, model domain.AttemptOperationObservationV1, approved domain.WebSearchConsentStateV1, web domain.WebSession, revokeBeforeSend bool) {
+func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nativeOperationBodyKeeper, policy serverlessegress.PolicyV1, model domain.AttemptOperationObservationV1, approved domain.WebSearchConsentStateV1, web domain.WebSession, revokeBeforeSend bool, identityMode *nativeConsentIdentityCaseV2) {
 	t.Helper()
 	parent, _ := g.persistedParent(t)
 	clock := nativeOperationClock{g.ctx, g.f.store}
@@ -398,6 +477,18 @@ func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nat
 	if before.Aggregate != afterDenied.Aggregate || before.Amounts != afterDenied.Amounts || fixture.Requests() != 0 {
 		t.Fatal("denied receipt debited or sent")
 	}
+	if identityMode != nil && identityMode.staleBeforeReserve {
+		nativeConsentAdvanceIdentityV2(t, g, web)
+		denied, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: op, ConsentReceipt: &binding})
+		if !errors.Is(err, domain.ErrMembershipDenied) || denied.Capability != nil {
+			t.Fatal("stale identity reserved SEARCH/returned capability", err)
+		}
+		after, _, _ := nativeAccountingBytes(t, g)
+		if before.Aggregate != after.Aggregate || before.Amounts != after.Amounts || fixture.Requests() != 0 {
+			t.Fatal("stale reserve debited or sent")
+		}
+		return
+	}
 	reserved, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: op, ConsentReceipt: &binding})
 	if err != nil || reserved.Capability == nil {
 		nativeConsentReserveDiagnostic(t, g, op, binding)
@@ -408,10 +499,18 @@ func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nat
 			t.Fatal(err)
 		}
 	}
+	if identityMode != nil && identityMode.staleBeforeSend {
+		nativeConsentAdvanceIdentityV2(t, g, web)
+	}
+	beforeInvoke, _, _ := nativeAccountingBytes(t, g)
 	result, err := proxy.InvokeOwnedOperation(g.ctx, registered, *reserved.Capability, g.f.store, body)
-	if revokeBeforeSend {
+	if revokeBeforeSend || identityMode != nil && identityMode.staleBeforeSend {
 		if err == nil || fixture.Requests() != 0 {
 			t.Fatal("revoked between reserve/send emitted HTTP")
+		}
+		after, _, _ := nativeAccountingBytes(t, g)
+		if beforeInvoke.Aggregate != after.Aggregate || beforeInvoke.Amounts != after.Amounts {
+			t.Fatal("before-send denial refunded/redebited original reservation")
 		}
 		return
 	}

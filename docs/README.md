@@ -126,6 +126,7 @@ Detailed engineering contracts:
 - [Original MCP conservative continuation (#190/#191/#193, engineering contract)](design/mcp-conservative-continuation.md)
 - [Original owned-loop failure projection (#191, engineering contract)](design/owned-loop-failure-projection.md)
 - [Durable answer citations (#196, design)](design/owned-harness-citations.md)
+- [Canonical input and retained output correspondence (#194/#191/#197, design)](design/owned-harness-canonical-history.md)
 - [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
 - [Attached harness media and artifact design](design/attached-harness-media-and-artifacts.md)
 

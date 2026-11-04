@@ -191,29 +191,20 @@ func TestIdentityResolverServingV2RollbackAndAmbiguousCommitReturnNoSpeculativeI
 }
 
 func TestIdentityServingV2UnsupportedLegacyWritersDenyBeforeSQL(t *testing.T) {
-	for _, name := range []string{"create_challenge", "consume_challenge", "enroll", "bootstrap", "bootstrap_subject", "telegram_ingress"} {
+	for _, name := range []string{"enroll", "bootstrap", "bootstrap_subject", "telegram_ingress"} {
 		t.Run(name, func(t *testing.T) {
 			f, store, ctx, identity := newIdentityResolverServingV2(t)
-			challenge := domain.OIDCLoginChallenge{Provider: domain.IdentityProviderYandex, Issuer: domain.YandexOAuthIssuer, Audience: "legacy-test-client", StateDigest: domain.DigestSecret("legacy-challenge"), BrowserBindingDigest: domain.DigestSecret("legacy-browser"), PKCEVerifier: strings.Repeat("p", 43), RedirectPath: "/", CreatedAt: f.at, ExpiresAt: f.at.Add(time.Minute)}
 			grant := domain.DevelopmentBootstrapGrant{TenantID: "rows-tenant", UserID: identity.UserID, Role: domain.TenantMembershipOwner, Environment: domain.DevelopmentEnvironment, Operator: "controlled-test", Reason: "explicit test fixture only", GrantedAt: f.at}
 			binding := domain.FrontendBindingID("existing-binding")
 			enrollment := ports.EnrollmentRequest{Identity: domain.ExternalIdentity{Subject: identity.Subject, UserID: identity.UserID, CreatedAt: identity.CreatedAt, UpdatedAt: identity.UpdatedAt}, TenantID: grant.TenantID, Source: domain.EnrollmentExistingFrontend, FrontendBindingID: &binding, At: f.at}
 			ingress := ports.TelegramIdentityRequest{TenantID: grant.TenantID, Actor: domain.ActorRef{TenantID: grant.TenantID, Frontend: domain.FrontendTelegram, ExternalID: "123", ID: "actor-123"}, Conversation: domain.ConversationRef{TenantID: grant.TenantID, Frontend: domain.FrontendTelegram, ExternalID: "456", ID: "conversation-456"}, SubscriptionConnectionID: "test-connection", Provider: "test-provider", ObservedAt: f.at}
-			for _, validation := range []error{challenge.Validate(), grant.Validate(), validateEnrollmentRequest(enrollment), validateTelegramIdentity(ingress)} {
+			for _, validation := range []error{grant.Validate(), validateEnrollmentRequest(enrollment), validateTelegramIdentity(ingress)} {
 				if validation != nil {
 					t.Fatalf("fixture is invalid before writer guard: %v", validation)
 				}
 			}
 			var err error
 			switch name {
-			case "create_challenge":
-				err = store.CreateLoginChallenge(ctx, challenge)
-			case "consume_challenge":
-				var got domain.OIDCLoginChallenge
-				got, err = store.ConsumeLoginChallenge(ctx, challenge.StateDigest, "legacy-browser", f.at)
-				if !reflect.DeepEqual(got, domain.OIDCLoginChallenge{}) {
-					t.Error("legacy challenge escaped")
-				}
 			case "enroll":
 				_, err = store.Enroll(ctx, enrollment)
 			case "bootstrap":

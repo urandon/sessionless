@@ -2221,17 +2221,19 @@
           "paths": [
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
-            "internal/ydbstore/web_identity_proof_v2.go"
+            "internal/ydbstore/web_identity_proof_v2.go",
+            "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 3
+          "total": 4
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
-            "internal/ydbstore/web_identity_proof_v2.go"
+            "internal/ydbstore/web_identity_proof_v2.go",
+            "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 3
+          "total": 4
         }
       },
       "entityGroup": "identity-web",

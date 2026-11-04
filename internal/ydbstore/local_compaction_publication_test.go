@@ -87,9 +87,9 @@ func (tx *compactionPublicationTx) Rollback() error {
 	return tx.Tx.Rollback()
 }
 
-func compactionPublicationFixture(t *testing.T) (*compactionSourceFixture, *localCompactionGenerationV1, *compactionPublicationSQL) {
+func compactionPublicationFixture(t *testing.T, prebuild localRuntimeActualPrebuild) (*compactionSourceFixture, *localCompactionGenerationV1, *compactionPublicationSQL) {
 	t.Helper()
-	f, g, grant, _ := recordedCompactionEffect(t)
+	f, g, grant, _ := recordedCompactionEffect(t, prebuild)
 	if _, err := f.store.ReadAttemptOperationObservation(t.Context(), grant); err != nil {
 		t.Fatalf("actual durable read before publication: %v", err)
 	}
@@ -116,7 +116,7 @@ func publicationRun(t *testing.T, f *compactionSourceFixture) domain.Run {
 
 func TestLocalCompactionPublicationActualHeadAndNextRequest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, g, engine := compactionPublicationFixture(t)
+		f, g, engine := compactionPublicationFixture(t, localRuntimeActualPrebuild{})
 		canonical := cloneGenerationRows(f.queries.events)
 		before := publicationRun(t, f)
 		ctx, cancel := ownedAuthorityCallContext(t.Context())
@@ -153,7 +153,7 @@ func TestLocalCompactionPublicationLostHeadAcknowledgement(t *testing.T) {
 	for _, mode := range []string{"rollback", "persist"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := compactionPublicationFixture(t)
+				f, g, engine := compactionPublicationFixture(t, localRuntimeActualPrebuild{})
 				engine.loseHead = mode
 				next, err := publishLocalCompaction(t.Context(), g)
 				if err == nil || next != nil || g.publication != nil || engine.headWrites != 1 || f.canonical.retainedPuts != 2 || !g.publicationAttempted {
@@ -178,7 +178,7 @@ func TestLocalCompactionPublicationReadbackAndCurrentStateDenials(t *testing.T) 
 	for _, name := range []string{"changed_run_during_retained_read", "corrupt_manifest", "close_failure", "source_closed"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := compactionPublicationFixture(t)
+				f, g, engine := compactionPublicationFixture(t, localRuntimeActualPrebuild{})
 				entered := false
 				var barrier func()
 				barrier = func() {
@@ -257,7 +257,7 @@ func TestLocalCompactionPublishedReaderRejoinsHeadAfterBlobIO(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := compactionPublicationFixture(t)
+				f, g, engine := compactionPublicationFixture(t, localRuntimeActualPrebuild{})
 				original, err := publishLocalCompaction(t.Context(), g)
 				if err != nil || original == nil || g.publication == nil {
 					t.Fatalf("causal confirmed publication: %v", err)

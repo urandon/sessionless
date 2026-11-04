@@ -12,6 +12,9 @@ import (
 )
 
 const (
+	// The explicit citation instruction's complete final JSON text shares this
+	// fixed ceiling with the decoded answer. Caller admission may be shorter.
+	CitedAnswerBytesV1             = 16 << 10
 	AnswerCitationManifestSchemaV1 = "sessionless.answer-citations.v1"
 	AnswerCitationManifestBytesV1  = 64 << 10
 	AnswerCitationSourcesV1        = 10

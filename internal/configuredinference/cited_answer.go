@@ -11,7 +11,7 @@ import (
 const (
 	CitedAnswerInstructionVersionV1 = "sessionless.owned-agent.citations.v1"
 	CitedAnswerSchemaV1             = "sessionless.cited-answer.v1"
-	MaxCitedAnswerBytesV1           = 16 << 10
+	MaxCitedAnswerBytesV1           = domain.CitedAnswerBytesV1
 	MaxCitedAnswerSourcesV1         = 10
 )
 

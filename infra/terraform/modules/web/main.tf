@@ -27,19 +27,29 @@ locals {
   sequence_parameter = { name = "sequence", in = "path", required = true, schema = { type = "integer" } }
   index_parameter    = { name = "index", in = "path", required = true, schema = { type = "integer" } }
   manifest_parameter = { name = "manifest_id", in = "path", required = true, schema = { type = "string" } }
+  identity_operation_parameter = {
+    name   = "operation_id", in = "path", required = true
+    schema = { type = "string", maxLength = 160, pattern = "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+  }
   api_paths = {
-    "/healthz"                   = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/readyz"                    = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/version"                   = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/methods"        = { get = { operationId = "webLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/yandex/start"   = { post = { operationId = "webYandexLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/telegram/start" = { post = { operationId = "webTelegramLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/callback"       = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/telegram/callback"    = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/logout"               = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/me"             = { get = { operationId = "webMe", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/tenants"        = { get = { operationId = "webTenants", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/active-tenant"  = { post = { operationId = "webActiveTenant", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/healthz"                                                        = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/readyz"                                                         = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/version"                                                        = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/methods"                                             = { get = { operationId = "webLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/yandex/start"                                        = { post = { operationId = "webYandexLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/telegram/start"                                      = { post = { operationId = "webTelegramLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/callback"                                            = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/telegram/callback"                                         = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/logout"                                                    = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/me"                                                  = { get = { operationId = "webMe", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/tenants"                                             = { get = { operationId = "webTenants", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/active-tenant"                                       = { post = { operationId = "webActiveTenant", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/login-methods"                               = { get = { operationId = "webAccountLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/identity-operations"                         = { post = { operationId = "webIdentityOperationStart", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/identity-operations/{operation_id}"          = { parameters = [local.identity_operation_parameter], get = { operationId = "webIdentityOperationOutcome", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/identity-operations/{operation_id}/continue" = { parameters = [local.identity_operation_parameter], post = { operationId = "webIdentityOperationContinue", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/identity-operations/{operation_id}/confirm"  = { parameters = [local.identity_operation_parameter], post = { operationId = "webIdentityOperationConfirm", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/account/identity-operations/{operation_id}/cancel"   = { parameters = [local.identity_operation_parameter], post = { operationId = "webIdentityOperationCancel", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/api/web/v1/sessions" = {
       get  = { operationId = "webSessionsList", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
       post = { operationId = "webSessionsCreate", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
@@ -64,6 +74,10 @@ locals {
     "/login" = {
       get  = { operationId = "webLogin", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
       head = { operationId = "webLoginHead", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
+    }
+    "/account/login-methods" = {
+      get  = { operationId = "webAccountLoginMethodsDocument", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
+      head = { operationId = "webAccountLoginMethodsDocumentHead", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
     }
     "/sessions/{session_id}" = {
       parameters = [local.session_parameter]

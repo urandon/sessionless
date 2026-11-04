@@ -46,6 +46,13 @@ require_regex "$web_module" '"/auth/login/yandex/start"[[:space:]]*=[[:space:]]*
 require_regex "$web_module" '"/auth/login/telegram/start"[[:space:]]*=[[:space:]]*\{ post'
 require_literal "$web_module" '"/auth/login/callback"'
 require_literal "$web_module" '"/auth/telegram/callback"'
+require_regex "$web_module" '"/api/web/v1/account/login-methods"[[:space:]]*=[[:space:]]*\{ get'
+require_regex "$web_module" '"/api/web/v1/account/identity-operations"[[:space:]]*=[[:space:]]*\{ post'
+require_literal "$web_module" '"/account/login-methods"'
+for suffix in '' /continue /confirm /cancel; do
+  require_literal "$web_module" '"/api/web/v1/account/identity-operations/{operation_id}'"$suffix"'"'
+done
+require_literal "$web_module" 'parameters = [local.identity_operation_parameter]'
 require_literal "$web_variables" 'contains(["yandex", "telegram", "yandex,telegram"], var.login_providers)'
 require_literal "$web_variables" '!contains(split(",", var.login_providers), "yandex") ||'
 require_literal "$web_variables" '!contains(split(",", var.login_providers), "telegram") ||'

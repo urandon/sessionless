@@ -399,6 +399,17 @@ The old state-changing GET starts are removed, not aliases. See the
 Ordinary login does not complete linking proofs (#172/#239) or settings (#240),
 automatically link identities, or grant tenant membership.
 
+The gateway forwards only the fixed `/account/login-methods` GET/HEAD document
+and six explicit account API paths (methods GET, operation Start POST, outcome
+GET, and Continue/Confirm/Cancel POST). The four operation paths share the
+bounded opaque `operation_id` path parameter and the existing private Web
+container/gateway service account; no catch-all or public container access is
+introduced. Route availability does not configure `IdentityAccounts`, install
+V2 authority, grant account access or prove a live linking flow. A nil account
+service leaves the API unmounted (HTTP 404, shown as unavailable by the UI). Complete runtime
+composition, migration/cutover and registered-client verification remain
+separate requirements before enabling account linking.
+
 After required secret versions are recorded, configure the GitHub mirror with
 Terraform's non-secret outputs:
 

@@ -10,6 +10,14 @@ mock_provider "yandex" {
 run "yandex_login_web_module" {
   command = plan
   module { source = "../modules/web" }
+  # Make only this computed ID known during the MOCK plan, so assertions read
+  # the real configured yamlencode(spec), not a replacement spec or local map.
+  # https://developer.hashicorp.com/terraform/language/tests/mocking
+  override_resource {
+    target          = yandex_serverless_container.web
+    override_during = plan
+    values          = { id = "web-container-test" }
+  }
   variables {
     folder_id                           = "folder-test"
     name_prefix                         = "sessionless-test"
@@ -59,6 +67,52 @@ run "yandex_login_web_module" {
       !contains(keys(local.api_paths), "/{proxy+}")
     )
     error_message = "The generic login routes must use the explicit gateway allowlist."
+  }
+  assert {
+    condition = toset([
+      for path in keys(yamldecode(yandex_api_gateway.web.spec).paths) : path
+      if startswith(path, "/account/") || startswith(path, "/api/web/v1/account/")
+      ]) == toset([
+      "/account/login-methods",
+      "/api/web/v1/account/login-methods",
+      "/api/web/v1/account/identity-operations",
+      "/api/web/v1/account/identity-operations/{operation_id}",
+      "/api/web/v1/account/identity-operations/{operation_id}/continue",
+      "/api/web/v1/account/identity-operations/{operation_id}/confirm",
+      "/api/web/v1/account/identity-operations/{operation_id}/cancel",
+    ])
+    error_message = "The actual gateway spec must expose exactly the seven closed account paths."
+  }
+  assert {
+    condition = alltrue([
+      for path, methods in {
+        "/account/login-methods"                                          = ["get", "head"]
+        "/api/web/v1/account/login-methods"                               = ["get"]
+        "/api/web/v1/account/identity-operations"                         = ["post"]
+        "/api/web/v1/account/identity-operations/{operation_id}"          = ["get"]
+        "/api/web/v1/account/identity-operations/{operation_id}/continue" = ["post"]
+        "/api/web/v1/account/identity-operations/{operation_id}/confirm"  = ["post"]
+        "/api/web/v1/account/identity-operations/{operation_id}/cancel"   = ["post"]
+        } : try(
+        toset([for key in keys(yamldecode(yandex_api_gateway.web.spec).paths[path]) : key if key != "parameters"]) == toset(methods) &&
+        alltrue([
+          for method in methods :
+          yamldecode(yandex_api_gateway.web.spec).paths[path][method]["x-yc-apigateway-integration"] == {
+            type               = "serverless_containers"
+            container_id       = "web-container-test"
+            service_account_id = "gateway-test"
+          }
+        ]) &&
+        (
+          strcontains(path, "{operation_id}") ?
+          yamldecode(yandex_api_gateway.web.spec).paths[path].parameters == [{
+            name   = "operation_id", in = "path", required = true
+            schema = { type = "string", maxLength = 160, pattern = "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+          }] : !contains(keys(yamldecode(yandex_api_gateway.web.spec).paths[path]), "parameters")
+        ), false
+      )
+    ])
+    error_message = "Every account method and exact bounded path parameter must target the same private Web container through its existing gateway identity."
   }
 }
 

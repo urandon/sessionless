@@ -818,14 +818,29 @@ deployment lock, and repeat smoke tests. Database changes remain
 expand/migrate/contract and forward-compatible; never use an automatic down
 migration as an application rollback.
 
-The Web BFF has no blue/green slots. Retain the previous digest-only Web tfvars
-file, create a saved plan that changes only `web_image_ref` back to that
-known-good digest, review it, and apply it under the same deployment lock. Do
-not use an entire old image manifest because that would also roll back control
-and worker components. Repeat discovery/start smoke for every selected provider
-and real login checks after rollback with the same explicit provider/client configuration via
-`make cloud-web-smoke`; re-promotion is another reviewed saved plan and never
-a rebuild. A login-start redirect alone is not rollback proof for a real account.
+The Web BFF has no blue/green slots. Retain the previous Web-only image,
+gateway/configuration and pinned secret-version records. An image-only saved
+plan changing `web_image_ref` is valid only between revisions with the same
+login route, configuration and secret-key contracts. It is **not** valid across
+the singular-to-plural login migration: an older image expects the retired
+selector, shared secret key and GET routes, not the new POST/discovery contract.
+
+Crossing that boundary requires a separately reviewed, authorized Web-only
+rollback plan restoring a coherent prior image, Web gateway/UI routes,
+provider/client configuration and matching immutable secret payload version.
+Freeze/drain every affected ingress and verify the compatibility of existing
+identity/challenge/session data before restoring traffic; if that compatibility
+cannot be established, stop instead of deploying an old reader. Keep any
+accepted V2 reader/tombstone and old-writer retirement requirements in force.
+Never restore an entire old image manifest, roll back control/worker components,
+run a database Down or restore retired writers as a shortcut.
+
+Apply the admitted saved plan under the deployment lock and use smoke tooling
+matched to that revision's contract, followed by real login checks. For
+compatible post-migration revisions, `make cloud-web-smoke` repeats methods
+discovery and start checks for every selected provider using the matching
+explicit configuration. Re-promotion is another reviewed saved plan, never a
+rebuild. A login-start redirect alone is not real-account rollback proof.
 
 ## Follow-up monitoring and operational checks (#19)
 

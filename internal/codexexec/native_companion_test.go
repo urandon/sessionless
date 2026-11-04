@@ -592,19 +592,29 @@ func (run *companionProcessRun) await(t *testing.T) companionProcessResult {
 		}
 	}
 	run.joined = true
-	if run.parent.Err() != nil {
-		t.Fatalf("outer parent expired before causal native stop: %v", run.parent.Err())
-	}
-	if !result.observed.TermSent || !result.observed.DescendantsReaped {
-		t.Fatalf("actual helper stop/reap absent: %+v, %v", result.observed, result.err)
-	}
-	if state := run.boundary.command.ProcessState; state == nil || state.Pid() != run.pid {
-		t.Fatalf("owned helper PID %d was not waited: %v", run.pid, state)
-	}
-	if err := syscall.Kill(run.pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("owned helper PID %d remains observable after Wait: %v", run.pid, err)
+	if err := run.stoppedProcessWitness(result.observed); err != nil {
+		t.Fatalf("actual owned helper stop/reap absent: %v; result=%+v, %v", err, result.observed, result.err)
 	}
 	return result
+}
+
+// DescendantsReaped is a composite supervisor/boundary certification, not the
+// OS-process witness. A denied conduit intentionally taints boundary cleanup
+// even after its real helper was waited. Keep those two claims independent.
+func (run *companionProcessRun) stoppedProcessWitness(observed attachedworkerdaemon.AttemptResult) error {
+	if run.parent.Err() != nil {
+		return errors.New("outer parent expired before causal helper stop")
+	}
+	if !observed.TermSent {
+		return errors.New("helper TERM was not observed")
+	}
+	if state := run.boundary.command.ProcessState; state == nil || state.Pid() != run.pid {
+		return errors.New("exact owned helper PID was not waited")
+	}
+	if err := syscall.Kill(run.pid, 0); !errors.Is(err, syscall.ESRCH) {
+		return errors.New("owned helper PID remains observable after Wait")
+	}
+	return nil
 }
 
 func companionReceive[T any](t *testing.T, ch <-chan T, operation string) T {
@@ -644,6 +654,39 @@ func TestNativeCompanionForeignCONNECTCancelsAndReapsRunningWorkload(t *testing.
 	result := run.await(t)
 	if !result.observed.Cancelled || result.observed.Deadline || result.err == nil {
 		t.Fatalf("foreign CONNECT did not cause cancellation: %+v, %v", result.observed, result.err)
+	}
+	if result.observed.BoundaryReleased || result.observed.CleanupSucceeded {
+		t.Fatal("denied conduit was certified clean/reusable")
+	}
+	stop, cancel := context.WithTimeout(run.parent, 3*time.Second)
+	defer cancel()
+	if err := run.companion.Stop(stop); !errors.Is(err, errNativeConduitPolicy) || run.companion.Alive() {
+		t.Fatalf("denied companion was not joined with original policy taint: %v", err)
+	}
+	// Deterministic oracle regression for both possible composite outcomes. Do
+	// not try to force scheduler timing with sleeps: actual Wait/PID/ESRCH are
+	// independently established above, and neither composite bit can erase them.
+	for _, composite := range []bool{false, true} {
+		observed := result.observed
+		observed.DescendantsReaped = composite
+		if err := run.stoppedProcessWitness(observed); err != nil {
+			t.Fatalf("composite=%t changed actual process witness: %v", composite, err)
+		}
+	}
+	missingTERM := result.observed
+	missingTERM.TermSent = false
+	if run.stoppedProcessWitness(missingTERM) == nil {
+		t.Fatal("process witness accepted missing TERM")
+	}
+	missingWait := *run
+	missingWait.boundary = &companionProcessBoundary{fixtureIsolationBoundary: &fixtureIsolationBoundary{command: &exec.Cmd{}}}
+	if missingWait.stoppedProcessWitness(result.observed) == nil {
+		t.Fatal("process witness accepted missing actual Wait")
+	}
+	wrongPID := *run
+	wrongPID.pid++
+	if wrongPID.stoppedProcessWitness(result.observed) == nil {
+		t.Fatal("process witness accepted another helper PID")
 	}
 	if lookups.Load() != 0 || dials.Load() != 0 {
 		t.Fatalf("foreign CONNECT reached DNS/dial: lookups=%d dials=%d", lookups.Load(), dials.Load())
@@ -718,6 +761,9 @@ func TestNativeCompanionUsesActualSupervisorDeadlineForDNSDialAndConnections(t *
 		t.Fatalf("dial did not expire under still-live outer parent: dial=%v parent=%v", dial.Err(), run.parent.Err())
 	}
 	result := run.await(t)
+	if !result.observed.DescendantsReaped {
+		t.Fatalf("non-policy deadline path lost composite boundary reap certification: %+v, %v", result.observed, result.err)
+	}
 	if !result.observed.Deadline && !result.observed.Cancelled {
 		t.Fatalf("actual active expiry not observed: %+v, %v", result.observed, result.err)
 	}

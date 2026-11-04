@@ -29,9 +29,40 @@ func (s *localState) runBoundedEngine(caller, call context.Context) (result Mode
 		if e != nil {
 			return result, e
 		}
-		prepared, e := s.entry.PrepareMCP(call)
+		prepared, pending, e := s.entry.PrepareTool(call)
 		if e != nil {
 			return result, ErrIncomplete
+		}
+		if pending != nil {
+			if prepared != nil || s.searchCredentials == nil {
+				return result, ErrIncomplete
+			}
+			state, e := pending.Wait(call)
+			if e != nil || state.Status != domain.WebSearchConsentApprovedV1 {
+				return result, ErrIncomplete
+			}
+			search, e := pending.PrepareSearch(call)
+			if e != nil {
+				return result, ErrIncomplete
+			}
+			reservation, e := search.ReservationRequest()
+			if e != nil {
+				return result, ErrIncomplete
+			}
+			request, e := search.FrozenRequest()
+			if e != nil {
+				return result, ErrIncomplete
+			}
+			credential, cleanup, e := search.CredentialRequest()
+			if e != nil {
+				return result, ErrIncomplete
+			}
+			tool, e := s.invokeSearch(caller, call, reservation, request, credential, cleanup)
+			result.Tool = &tool
+			if e != nil {
+				return result, e
+			}
+			continue // only the original durable known SEARCH admits MODEL2
 		}
 		if prepared == nil {
 			return result, nil

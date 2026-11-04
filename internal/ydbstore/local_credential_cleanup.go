@@ -21,10 +21,12 @@ type localCredentialCleanup struct {
 }
 
 // PrepareCredentialedExecution fixes only lifetime DATA for the genuine entered
-// Bearer invocation. The caller supplies no deadline or approval callback.
+// Bearer invocation or explicitly installed SEARCH service owner. Auth-none
+// MODEL still receives no bearer and has no MODEL materializer participation.
+// The caller supplies no deadline or approval callback.
 // Canonical entry and per-operation Store checks remain the sole authorities.
 func (entry *LocalInvocationEntryV1) PrepareCredentialedExecution(ctx context.Context) (time.Time, error) {
-	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.invocationContext == nil || entry.invocationContext.Err() != nil || entry.credentialCleanup == nil || entry.terminal.Load() != nil || entry.owner.configuration.Auth != domain.ConfiguredInferenceAuthBearerV1 {
+	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.invocationContext == nil || entry.invocationContext.Err() != nil || entry.credentialCleanup == nil || entry.terminal.Load() != nil || !entry.hasCredentialLifecycle() {
 		return time.Time{}, domain.ErrMembershipDenied
 	}
 	p := entry.parent.Authority.HarnessBinding.AgentLoopPolicy
@@ -64,7 +66,7 @@ func (entry *LocalInvocationEntryV1) PrepareCredentialedExecution(ctx context.Co
 // An expired result is still returned as historical DATA for failure cleanup;
 // it never authorizes a send or proves completed cleanup.
 func (entry *LocalInvocationEntryV1) BeginCredentialedCleanup() (time.Time, error) {
-	if !entry.original() || entry.credentialCleanup == nil || entry.owner.configuration.Auth != domain.ConfiguredInferenceAuthBearerV1 {
+	if !entry.original() || entry.credentialCleanup == nil || !entry.hasCredentialLifecycle() {
 		return time.Time{}, domain.ErrMembershipDenied
 	}
 	w := entry.credentialCleanup
@@ -73,6 +75,19 @@ func (entry *LocalInvocationEntryV1) BeginCredentialedCleanup() (time.Time, erro
 		return time.Time{}, domain.ErrMembershipDenied
 	}
 	return d, nil
+}
+
+// Derived constructor metadata only, never a ready flag/current credential or
+// consent check. The original completed immutable tuple selects participation.
+func (entry *LocalInvocationEntryV1) hasCredentialLifecycle() bool {
+	if !entry.original() {
+		return false
+	}
+	if entry.owner.configuration.Auth == domain.ConfiguredInferenceAuthBearerV1 {
+		return true
+	}
+	tuple := entry.owner.ready.Load()
+	return entry.owner.configuration.Auth == domain.ConfiguredInferenceAuthNoneV1 && tuple != nil && tuple.store == entry.owner.store && tuple.search != nil && tuple.search.ValidateConstructor() == nil
 }
 
 // Pure deadline DATA narrowing, reached only after the entry's identity checks.
@@ -99,4 +114,14 @@ func (entry *LocalInvocationEntryV1) credentialedCleanupDeadline() (time.Time, b
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.deadline, w.prepared && !w.deadline.IsZero()
+}
+
+func (entry *LocalInvocationEntryV1) credentialExecutionActive() bool {
+	if !entry.hasCredentialLifecycle() || entry.credentialCleanup == nil {
+		return false
+	}
+	w := entry.credentialCleanup
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.prepared && w.deadline.IsZero() && time.Now().Before(w.active)
 }

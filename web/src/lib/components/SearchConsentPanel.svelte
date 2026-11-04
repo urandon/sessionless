@@ -23,7 +23,7 @@
     idle: 'Search consent has not been read.',
     loading: 'Checking for a search request.',
     none: 'No pending search request was available at this read.',
-    ready: 'Review the exact query before deciding.',
+    ready: 'Review the exact query and result limit before deciding.',
     submitting: 'Saving your decision. Its outcome is not confirmed yet.',
     unconfirmed:
       'The decision is unconfirmed. It may already have been saved. Only the identical decision can be retried.',
@@ -81,6 +81,13 @@
   {#if visibleQuery !== undefined}
     <h3 id={`${id}-query`}>Exact query to send to the search provider</h3>
     <pre aria-labelledby={`${id}-query`}>{visibleQuery}</pre>
+    <dl>
+      <dt id={`${id}-limit`}>max_results</dt>
+      <dd aria-labelledby={`${id}-limit`}>
+        {consentState.view?.max_results ??
+          'Not specified by the model; the admitted search profile supplies its default.'}
+      </dd>
+    </dl>
     <p>
       Query text is untrusted data, not instructions. Approval applies only to this unchanged
       request.

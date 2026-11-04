@@ -43,6 +43,7 @@ type localFailureState struct {
 	ops                                                                                          []LocalCompactionOperationV1
 	run                                                                                          domain.Run
 	accounting                                                                                   ports.OwnedOperationFailureAccountingV1
+	search                                                                                       *localFailureSearchV4
 	plan                                                                                         domain.TerminalCustodyPlanV1
 	metadata                                                                                     domain.RunTerminalFailureV1
 	canonical                                                                                    *canonicaloutput.FailurePlanV1
@@ -66,6 +67,9 @@ func (e *LocalInvocationEntryV1) ClaimFailure() (*LocalFailureV1, error) {
 	if !e.original() || e.failure == nil || e.terminalSelection == nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	if h, handled, err := e.claimSearchFailureV4(); handled {
+		return h, err
+	}
 	// Prefer an actually reserved/authenticated UNKNOWN MODEL tail. It cannot
 	// be replaced with the preceding successful MCP merely to finish a prefix.
 	if m := e.preparedModel.Load(); m != nil && m.self == m && m.entry == e && m.source != nil && m.source.state != nil {
@@ -77,7 +81,7 @@ func (e *LocalInvocationEntryV1) ClaimFailure() (*LocalFailureV1, error) {
 			knownTool = knownTool || op.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 && op.Observation.Outcome == domain.AttemptOperationCompletedV1 && op.Observation.Reason == domain.AttemptOperationReasonNoneV1
 		}
 		if valid && knownTool {
-			h, err := e.claimFailureHolder(m.source, o, 2)
+			h, err := e.claimFailureHolder(m.source, o, 2, nil)
 			m.source.state.mu.Unlock()
 			return h, err
 		}
@@ -94,26 +98,34 @@ func (e *LocalInvocationEntryV1) ClaimFailure() (*LocalFailureV1, error) {
 		return nil, domain.ErrMembershipDenied
 	}
 	if o.Observation.Outcome == domain.AttemptOperationCompletedV1 && o.Observation.Reason == domain.AttemptOperationReasonServiceErrorV1 {
-		return e.claimFailureHolder(m.source, o, 1)
+		return e.claimFailureHolder(m.source, o, 1, nil)
 	}
 	if m.originalForPhase(e, localCompactionBeforeSend) && localFailureUnknownResponseAbsent(o.Reservation, o.Observation) && o.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 {
-		return e.claimFailureHolder(m.source, o, 3)
+		return e.claimFailureHolder(m.source, o, 3, nil)
 	}
 	return nil, domain.ErrMembershipDenied
 }
 
 // Only ClaimFailure's original private holders call this after their
 // issuer-authenticated observation is retained under the original source gate.
-func (e *LocalInvocationEntryV1) claimFailureHolder(source *LocalCompactionSourceV1, terminal ports.AuthenticatedAttemptOperationObservationV1, version uint32) (*LocalFailureV1, error) {
+func (e *LocalInvocationEntryV1) claimFailureHolder(source *LocalCompactionSourceV1, terminal ports.AuthenticatedAttemptOperationObservationV1, version uint32, search *localFailureSearchV4) (*LocalFailureV1, error) {
 	p := e.parent.Authority.HarnessBinding.AgentLoopPolicy
-	if p == nil {
+	if p == nil || (version == 4) != (search != nil) || search != nil && !domain.SearchFailureStopV4(search.stop) {
 		return nil, domain.ErrMembershipDenied
 	}
 	duration := min(p.Limits.MaxCleanupDuration, e.owner.configuration.Limits.CleanupTimeout, 30*time.Second)
+	deadline := time.Now().Add(duration)
+	if e.hasCredentialLifecycle() {
+		var ok bool
+		deadline, ok = e.credentialedCleanupDeadline()
+		if !ok {
+			return nil, domain.ErrMembershipDenied
+		}
+	}
 	if duration <= 0 || !e.terminalSelection.CompareAndSwap(0, 2) {
 		return nil, domain.ErrMembershipDenied
 	}
-	h := &LocalFailureV1{localFailureState: &localFailureState{entry: e, source: source, terminal: terminal.Clone(), version: version, deadline: time.Now().Add(duration), gate: make(chan struct{}, 1)}}
+	h := &LocalFailureV1{localFailureState: &localFailureState{entry: e, source: source, terminal: terminal.Clone(), version: version, search: search, deadline: deadline, gate: make(chan struct{}, 1)}}
 	h.self = h
 	e.failure.Store(h)
 	return h, nil
@@ -149,6 +161,9 @@ func (h *LocalFailureV1) begin(ctx context.Context) (context.Context, func(), er
 func (h *LocalFailureV1) authenticatedRow(row ownedOperationRow, total uint64) bool {
 	if !h.original() || row.observation == nil {
 		return false
+	}
+	if h.version == 4 {
+		return h.authenticatedSearchRowV4(row, total)
 	}
 	r, o := row.reservation, *row.observation
 	var original ports.AuthenticatedAttemptOperationObservationV1
@@ -223,6 +238,9 @@ func (h *LocalFailureV1) readSnapshot(ctx context.Context, q *ownedAuthorityQuer
 }
 
 func (h *LocalFailureV1) capture(ctx context.Context) error {
+	if h.version == 4 {
+		return h.captureSearchV4(ctx)
+	}
 	e := h.entry
 	var snapshot localCompactionSnapshot
 	var snapshotErr error // readSnapshot emits only closed content-free denials.

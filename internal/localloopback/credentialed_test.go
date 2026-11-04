@@ -60,6 +60,42 @@ func TestLocalCredentialWireMutableExactAndNoneUnchanged(t *testing.T) {
 	}
 }
 
+func TestLocalServiceCredentialScopeHasNoModelBearerAndEndsOnlyOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		k, _, allocation, source, op := credentialFixture(t)
+		k.credentialed = false
+		active := time.Now().Add(time.Minute)
+		if err := k.BeginServiceCredentialScope(t.Context(), active); err != nil {
+			t.Fatal(err)
+		}
+		scope := k.credentialScope
+		if scope == nil || !scope.serviceOnly || len(scope.borrowed) != 0 || scope.handle != (ports.ProviderInvocationCredentialV1{}) || !k.credentialAdmittedLocked(scope, allocation, source, op, time.Now()) {
+			t.Fatal("service participation fabricated MODEL credential or denied ordinary none operation")
+		}
+		if bytes.Contains(requestWire("127.0.0.1:12345", []byte(`{}`), scope.borrowed), []byte("Authorization")) {
+			t.Fatal("auth-none MODEL gained a fake bearer")
+		}
+		later := op
+		later.Deadline = active.Add(time.Microsecond)
+		if k.credentialAdmittedLocked(scope, allocation, source, later, time.Now()) {
+			t.Fatal("operation outlived original whole-engine active deadline")
+		}
+		if err := k.BeginServiceCredentialScope(t.Context(), active); err == nil {
+			t.Fatal("second whole service scope admitted")
+		}
+		deadline := time.Now().Add(time.Second)
+		if err := k.EndCredentialScope(t.Context(), deadline); err != nil {
+			t.Fatal("whole engine cleanup", err)
+		}
+		if !k.credentialEnded || k.credentialAdmittedLocked(scope, allocation, source, op, time.Now()) {
+			t.Fatal("final cleanup left admission open")
+		}
+		if err := k.BeginServiceCredentialScope(t.Context(), active); err == nil {
+			t.Fatal("final scope reopened")
+		}
+	})
+}
+
 func TestLocalCredentialScopeExactJoinsAndOneEntry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		k, handle, a, s, op := credentialFixture(t)

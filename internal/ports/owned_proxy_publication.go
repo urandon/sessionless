@@ -69,6 +69,12 @@ func (p OwnedProxyPublicationV2) Bodies() (OwnedProxyBodiesV2, error) {
 			return deny()
 		}
 		bodies.LocalPublicMCPHTTPS = b
+	case domain.RegisteredProxyTransportLocalSearchHTTPSV1:
+		policy, attestation, err := DecodeLocalSearchHTTPSProxyDataV1(p.PolicyBody, p.AttestationBody)
+		if err != nil || !attestation.ObservedAt.Equal(p.ObservedAt) || p.ServiceKind != domain.RegisteredProxyWebSearchV1 {
+			return deny()
+		}
+		bodies.LocalSearchHTTPS = &OwnedLocalSearchHTTPSBodiesV1{Policy: policy, Attestation: attestation}
 	default:
 		return deny()
 	}

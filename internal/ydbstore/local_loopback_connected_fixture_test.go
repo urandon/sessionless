@@ -336,7 +336,7 @@ func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.Owne
 			t.Error(e)
 		}
 	})
-	if e = f.Bootstrap.Complete(bridge); e != nil {
+	if e = f.Bootstrap.Complete(bridge, nil); e != nil {
 		t.Fatal(e)
 	}
 	reserved := f.parent.reserve(t, f.parent.request)

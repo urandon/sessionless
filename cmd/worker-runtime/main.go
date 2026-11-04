@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
@@ -29,6 +31,8 @@ import (
 )
 
 type systemClock struct{}
+
+const workerDependencyCloseTimeout = 5 * time.Second
 
 func (systemClock) Now() time.Time { return time.Now() }
 
@@ -53,28 +57,32 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 	}
 	signals := opssignal.NewWriter(os.Stdout)
 	var localExecution *workerLocalExecution
+	var localSearch *workerLocalSearchCredentials
 	var ydb *ydbclient.Client
 	var invocations *workerTriggerDrain
+	var localCleanupIncomplete atomic.Bool
 	// Registered before acquisition. Invocation cleanup happens inside RunOnce;
 	// installation closure precedes the borrowed database's process-owned close.
 	defer func() {
 		drainCtx, stopDrain := context.WithTimeout(context.Background(), 30*time.Second)
 		drainErr := invocations.close(drainCtx)
 		stopDrain()
-		if drainErr != nil {
+		if drainErr != nil || localCleanupIncomplete.Load() {
 			// Do not close borrowed dependencies under a still-active callback.
 			// main exits with failure; this is not successful join/retirement proof.
 			resultErr = errors.Join(resultErr, drainErr)
-		} else {
-			if err := localExecution.close(); err != nil {
-				resultErr = errors.Join(resultErr, err)
+			if localCleanupIncomplete.Load() {
+				resultErr = errors.Join(resultErr, errWorkerLocalExecution)
 			}
+		} else {
+			closeCtx, cancel := context.WithTimeout(context.Background(), workerDependencyCloseTimeout)
+			defer cancel()
+			var database workerDatabaseProcessCloser
 			if ydb != nil {
-				closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := ydb.Close(closeCtx); err != nil {
-					resultErr = errors.Join(resultErr, err)
-				}
+				database = ydb
+			}
+			if err := closeWorkerProcessDependencies(closeCtx, localSearch, localExecution, database); err != nil {
+				resultErr = errors.Join(resultErr, err)
 			}
 		}
 		if resultErr != nil && localConfig.enabled {
@@ -134,6 +142,10 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 	})
 	if err != nil {
 		return workerRuntimeError(localConfig.enabled, "create worker blob store", err)
+	}
+	localSearch, err = newWorkerLocalSearchCredentials(ctx, localConfig, localExecution, state, blobs)
+	if err != nil {
+		return errWorkerLocalExecution
 	}
 	var harnessRegistry *sessionlessharness.Registry
 	var executionPreparer *serverlessharness.ExactExecutionPreparerV1
@@ -201,9 +213,13 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 	}
 	var localRuntime *worker.LocalRuntime
 	if localExecution != nil {
+		var searchCredentials *providercredential.InvocationService
+		if localSearch != nil {
+			searchCredentials = localSearch.service
+		}
 		localRuntime, err = worker.NewLocalRuntime(worker.LocalRuntimeConfig{
 			Source: localExecution.source, Receipt: localExecution.receipt,
-			DB: ydb.DB, Blobs: blobs, Worker: managerConfig,
+			DB: ydb.DB, Blobs: blobs, Worker: managerConfig, SearchCredentials: searchCredentials,
 		}, systemClock{})
 		if err != nil {
 			return errWorkerLocalExecution
@@ -243,6 +259,9 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 					var runErr error
 					if localRuntime != nil {
 						outcome, runErr = localRuntime.RunOnce(invocationCtx, portlog.NewQueue(logger, "worker-runtime", queue, signals))
+						if errors.Is(runErr, worker.ErrLocalRuntime) {
+							localCleanupIncomplete.Store(true)
+						}
 					} else {
 						outcome, runErr = manager.RunOnce(invocationCtx)
 					}
@@ -272,6 +291,9 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 	var outcome worker.Outcome
 	if localRuntime != nil {
 		outcome, err = localRuntime.RunOnce(ctx, portlog.NewQueue(logger, "worker-runtime", queue, signals))
+		if errors.Is(err, worker.ErrLocalRuntime) {
+			localCleanupIncomplete.Store(true)
+		}
 	} else {
 		manager, managerErr := newManager(queue)
 		if managerErr != nil {

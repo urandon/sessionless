@@ -30,6 +30,7 @@ type InvocationConfig struct {
 }
 
 type InvocationService struct {
+	self     *InvocationService
 	clock    ports.Clock
 	ids      ports.IDGenerator
 	root     string
@@ -67,7 +68,20 @@ func NewInvocationService(config InvocationConfig, planner ports.ProviderCredent
 	if config.FileSystem != nil && config.ScratchRoot != "" {
 		return nil, errors.New("provider credential namespace must have one owner")
 	}
-	return &InvocationService{clock: config.Clock, ids: config.IDs, root: config.ScratchRoot, files: config.FileSystem, maxBytes: config.MaxSecretBytes, planner: planner, bindings: bindings, secrets: secrets, handles: make(map[string]*providerInvocationState)}, nil
+	service := &InvocationService{clock: config.Clock, ids: config.IDs, root: config.ScratchRoot, files: config.FileSystem, maxBytes: config.MaxSecretBytes, planner: planner, bindings: bindings, secrets: secrets, handles: make(map[string]*providerInvocationState)}
+	service.self = service
+	return service, nil
+}
+
+// ValidateConstructor checks only the original object returned by the inert
+// constructor. It performs no clock/backend/secret call and establishes no
+// availability, current binding, grant, consent, catalog or serving readiness.
+// An ordinary copied/zero pointer is not the original credential-map owner.
+func (service *InvocationService) ValidateConstructor() error {
+	if service == nil || service.self != service {
+		return ErrInvalid
+	}
+	return nil
 }
 
 func (service *InvocationService) IssueProviderCredential(ctx context.Context, request ports.ProviderCredentialIssueRequestV1) (ports.ProviderInvocationCredentialV1, error) {

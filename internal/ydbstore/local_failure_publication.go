@@ -53,6 +53,9 @@ func (h *LocalFailureV1) Prepare(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	if h.version == 4 {
+		return h.prepareSearchFailureOutputV4(bodies)
+	}
 	identities := make([]localFailureOperationV1, len(h.ops))
 	for i, op := range h.ops {
 		identities[i] = localFailureOperationV1{Reservation: op.Reservation, Observation: op.Observation}
@@ -218,15 +221,23 @@ func (h *LocalFailureV1) FinishCleanup(ctx context.Context) (err error) {
 	if h.entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return h.rejoin(ctx, q) }) != nil {
 		return domain.ErrMembershipDenied
 	}
-	c, err := decodeLocalFailureCapsule(h.capsule)
-	defer clearLocalFailureNormalized(c)
-	if err != nil {
-		return err
+	var bodies []domain.BlobRef
+	if h.version == 4 {
+		c, decodeErr := decodeLocalFailureReadCapsule(h.capsule)
+		defer c.release()
+		if decodeErr != nil || c.search == nil || c.legacy != nil || h.search == nil || !reflect.DeepEqual(c.search.Accounting, h.search.accounting) || !reflect.DeepEqual(c.search.Consents, h.search.consents) {
+			return domain.ErrMembershipDenied
+		}
+		bodies = c.search.Bodies
+	} else {
+		c, decodeErr := decodeLocalFailureCapsule(h.capsule)
+		defer clearLocalFailureNormalized(c)
+		if decodeErr != nil || !reflect.DeepEqual(c.Accounting, h.accounting) {
+			return domain.ErrMembershipDenied
+		}
+		bodies = c.Bodies
 	}
-	if !reflect.DeepEqual(c.Accounting, h.accounting) {
-		return domain.ErrMembershipDenied
-	}
-	h.retained, err = h.entry.terminalOutputs.FenceRetainedBodies(call, c.Bodies)
+	h.retained, err = h.entry.terminalOutputs.FenceRetainedBodies(call, bodies)
 	if err != nil {
 		return err
 	}

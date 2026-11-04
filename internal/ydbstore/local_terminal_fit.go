@@ -175,6 +175,9 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 	if !entry.original() || source == nil || source.self != source || source.entry != entry || source.state == nil || source.state.cleared || entry.terminalOutputs == nil {
 		return domain.ErrMembershipDenied
 	}
+	if localTerminalNeedsV3(source.state.operations, op) {
+		return entry.terminalSearchFitSourceLocked(ctx, q, source, op, program)
+	}
 	for i, o := range source.state.operations {
 		if chargeLocalTerminalFit(ctx, q, uint64(len(o.Request)+len(o.Response))) != nil {
 			return domain.ErrMembershipDenied

@@ -52,6 +52,7 @@ type localTerminalHistoryV1 struct {
 	legacy               []localTerminalLegacySnapshot
 	runs                 []compactioncontext.HistoricalRunV1
 	runsV2               []compactioncontext.HistoricalRunV2
+	runsV3               []compactioncontext.HistoricalRunV3
 	parents              []*compactioncontext.RetainedV1
 }
 
@@ -100,8 +101,17 @@ func (h *localTerminalHistoryV1) clear() {
 			clear(op.Normalized)
 		}
 	}
+	for _, run := range h.runsV3 {
+		for _, op := range run.Operations {
+			clear(op.Normalized)
+		}
+		for _, catalog := range run.ModelCatalogs {
+			clear(catalog.Tools)
+		}
+	}
 	h.snapshots, h.legacy, h.runs, h.parents = nil, nil, nil, nil
 	h.runsV2 = nil
+	h.runsV3 = nil
 	for _, failure := range h.failures {
 		for _, proxy := range failure.ProxiesV4 {
 			clear(proxy.PolicyBody)
@@ -339,7 +349,7 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 	if err := s.materializeFailureHistories(ctx); err != nil {
 		return err
 	}
-	if len(h.runs)+len(h.runsV2) != 0 || len(h.snapshots) == 0 {
+	if len(h.runs)+len(h.runsV2)+len(h.runsV3) != 0 || len(h.snapshots) == 0 {
 		return nil
 	}
 	var previous *compactioncontext.RetainedV1
@@ -351,6 +361,30 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 		if chargeOwnedAuthorityBody(ctx, uint64(len(body))) != nil {
 			clear(body)
 			return domain.ErrMembershipDenied
+		}
+		if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v3" {
+			capsule, err := decodeLocalTerminalCapsuleV3(body)
+			if err == nil {
+				err = chargeOwnedAuthorityBody(ctx, uint64(len(body)))
+			}
+			clear(body)
+			if err != nil || s.validateHistoricalCapsuleV3(ctx, snapshot, capsule) != nil {
+				return domain.ErrMembershipDenied
+			}
+			historical, err := historicalCapsuleRunV3(capsule, snapshot.Anchor.ID)
+			if err != nil {
+				return domain.ErrMembershipDenied
+			}
+			h.runsV3 = append(h.runsV3, historical)
+			parent, err := s.readHistoricalDerived(ctx, snapshot, previous)
+			if err != nil {
+				return err
+			}
+			h.parents = append(h.parents, parent)
+			if parent != nil {
+				previous = parent
+			}
+			continue
 		}
 		if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v2" {
 			capsule, err := decodeLocalTerminalCapsuleV2(body)

@@ -14,7 +14,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/mcpadmission"
-	"gitcode.com/urandon/sessionless/internal/mcpwire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -24,6 +23,7 @@ type localSnapshotOwner struct {
 	generation *localCompactionGenerationV1
 	model      *localPreparedModelV1
 	mcp        *localPreparedMCPV1
+	search     *localPreparedSearchV1
 }
 
 func (o localSnapshotOwner) present() bool {
@@ -35,6 +35,9 @@ func (o localSnapshotOwner) present() bool {
 		count++
 	}
 	if o.mcp != nil {
+		count++
+	}
+	if o.search != nil {
 		count++
 	}
 	return count == 1
@@ -49,6 +52,9 @@ func (o localSnapshotOwner) original(e *LocalInvocationEntryV1, p localCompactio
 	if o.model != nil {
 		return o.model.originalForPhase(e, p)
 	}
+	if o.search != nil {
+		return o.search.originalForPhase(e, p)
+	}
 	return o.mcp != nil && o.mcp.originalForPhase(e, p)
 }
 func (o localSnapshotOwner) operation() domain.AttemptOperationV1 {
@@ -61,6 +67,9 @@ func (o localSnapshotOwner) operation() domain.AttemptOperationV1 {
 	if o.mcp != nil {
 		return o.mcp.operation
 	}
+	if o.search != nil {
+		return o.search.operation
+	}
 	return domain.AttemptOperationV1{}
 }
 func (o localSnapshotOwner) futureProxyDigest(q *ownedAuthorityQuery, p *ownedProxySnapshot) (domain.RegisteredProxyAttestationDigestV2, error) {
@@ -72,6 +81,9 @@ func (o localSnapshotOwner) futureProxyDigest(q *ownedAuthorityQuery, p *ownedPr
 	}
 	if o.mcp != nil {
 		return o.mcp.entry.localFutureMCPProxyDigest(q, p, o.mcp.operation)
+	}
+	if o.search != nil {
+		return o.search.entry.localFutureSearchProxyDigest(q, p, o.search.operation)
 	}
 	return "", q.budget.deny()
 }
@@ -336,12 +348,16 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	operations := make([]compactioncontext.CompletedOperationV1, len(source.state.operations))
 	var tools []configuredinference.ToolV1
 	if policy.Profile == domain.AgentLoopOwnedPublicV1 {
-		descriptor, err := mcpwire.ParseDescriptorV1(grant.Descriptor, grant.Limits)
+		var err error
+		tools, err = entry.originalModelTools(ctx, profile, grant, at, source.state.operations)
 		if err != nil {
 			return deny()
 		}
-		tools = []configuredinference.ToolV1{{Name: descriptor.Name(), Description: grant.ModelDescription, Parameters: descriptor.InputSchema()}}
-		defer clear(tools[0].Parameters)
+		defer func() {
+			for _, tool := range tools {
+				clear(tool.Parameters)
+			}
+		}()
 	}
 	var bytes uint64
 	for i, o := range source.state.operations {
@@ -353,6 +369,18 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 			// call/grant/result correlation was checked by source materialization;
 			// it is not a MODEL with a conveniently missing installed catalog.
 			if _, err := mcpadmission.DecodeSealedToolResultDataV1(o.Reservation, o.Observation, o.Response); err != nil {
+				return deny()
+			}
+		} else if o.Reservation.Operation.Kind == domain.AttemptOperationWebSearchV1 {
+			if entry.modelCatalog == nil || !entry.originalSearchObservationAllowsSuccessor(o.Reservation, o.Observation) {
+				return deny()
+			}
+		} else if entry.modelCatalog != nil {
+			if o.Reservation.Operation.Kind == domain.AttemptOperationModelV1 {
+				if !frozenLocalCatalogMatchesV3(o.Reservation.Operation.Sequence, o.Request, tools) {
+					return deny()
+				}
+			} else if o.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1 || json.Unmarshal(o.Request, &request) != nil || len(request.Tools) != 0 {
 				return deny()
 			}
 		} else if (o.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && o.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(o.Request, &request) != nil || !installedMCPToolsMatch(request.Tools, tools) {
@@ -371,21 +399,30 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if err != nil {
 		return deny()
 	}
+	searchData, v3, err := entry.localContextDataV3(source)
+	if err != nil {
+		return deny()
+	}
 	var frozen *configuredinference.FrozenRequestV1
-	if v2 {
+	if v3 {
+		frozen, err = compactioncontext.BuildOrdinaryV3(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, searchData)
+	} else if v2 {
 		frozen, err = compactioncontext.BuildOrdinaryV2(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, data)
 	} else {
 		frozen, err = compactioncontext.BuildOrdinaryV1(configuration, effective, *policy, source.state.digest, records, operations, parent, tools, source.state.history.runs)
 	}
 	if err != nil {
-		if errors.Is(err, configuredinference.ErrContextNoFit) {
+		if !v3 && errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit
 		}
 		return deny()
 	}
 	fit, err := entry.owner.source.FitContext(frozen, configuredinference.ContextFitCeilingsV1{InputTokens: effective.MaxInputTokens, OutputTokens: effective.MaxOutputTokens, TotalTokens: configuration.ModelWindowTokens})
 	if err != nil {
-		if errors.Is(err, configuredinference.ErrContextNoFit) {
+		// V3 ordinary history has no retained-V3 producer in this slice. Both
+		// renderer and calibrated-envelope no-fit deny before any MODEL effect;
+		// neither may route into the unchanged legacy compaction writer.
+		if !v3 && errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit
 		}
 		return deny()

@@ -56,6 +56,7 @@ help:
 		'make generate       run Go generators' \
 		'make test           formatting, static analysis, unit tests, race detector' \
 		'make test-mcp-offline verify synthetic joined TLS/Store MCP flow; no public traffic' \
+		'make test-search-offline verify synthetic queued Web SEARCH flow; no public traffic' \
 		'make build          build all component binaries' \
 		'make dockerless-build build only native binaries used by the Dockerless stand' \
 		'make dockerless-web-build build the optional native WebUI/BFF explicitly' \
@@ -196,7 +197,7 @@ test:
 	$(MAKE) test-ordinary
 	$(MAKE) test-connected
 
-.PHONY: test-ordinary test-ordinary-ci-base test-ordinary-ci-tail test-ordinary-ci-failure-source test-connected test-mcp-offline
+.PHONY: test-ordinary test-ordinary-ci-base test-ordinary-ci-tail test-ordinary-ci-failure-source test-connected test-mcp-offline test-search-offline
 test-ordinary: prepare fmt-check lint
 	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
@@ -221,9 +222,10 @@ test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)
 	go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSession(Terminal|Worker)' $(GO_PACKAGE_PATTERNS)
 	$(MAKE) test-mcp-offline
+	$(MAKE) test-search-offline
 
 # CI runs Terminal and the remainder here, and the complete Worker family in
-# go-runtime after offline MCP. Local/release ordering stays unchanged above.
+# go-runtime after offline MCP. SEARCH follows the existing runtime families.
 .PHONY: test-connected-ci test-connected-worker-ci
 test-connected-ci: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
@@ -231,6 +233,16 @@ test-connected-ci: prepare
 
 test-connected-worker-ci: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionWorker' $(GO_PACKAGE_PATTERNS)
+
+# The three overlay destinations must be absent, including dangling symlinks.
+# Neither production source nor the RED-only mutation overlay is replaced here.
+test-search-offline: prepare
+	test ! -e internal/localloopback/search_offline_fixture.go && test ! -L internal/localloopback/search_offline_fixture.go
+	test ! -e internal/providerloopsession/search_offline_fixture.go && test ! -L internal/providerloopsession/search_offline_fixture.go
+	test ! -e internal/worker/search_offline_fixture.go && test ! -L internal/worker/search_offline_fixture.go
+	search_fixture_format=$$(gofmt -l internal/localloopback/testdata/search_offline_fixture.go.txt internal/providerloopsession/testdata/search_offline_fixture.go.txt internal/worker/testdata/search_offline_fixture.go.txt) && test -z "$$search_fixture_format"
+	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession ./internal/worker
+	go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOffline' ./internal/ydbstore
 
 # Additive test instrumentation only: neither normal Go package exposes a
 # resolver/dialer/CA override. The overlay must never replace an existing file.

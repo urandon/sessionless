@@ -57,7 +57,15 @@ func failureSearchProxyData(t *testing.T, allocation domain.RegisteredAllocation
 
 func TestLocalSearchProxyDataCannotPublishThroughOriginalReadyStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		actual, _ := localPreparedModelFixture(t, 0)
+		peer := &localSearchRejectingVerifier{}
+		actual := newLocalBootstrapFixtureWithKeeper(t, localRuntimeActualPrebuild{}, peer)
+		if err := actual.bootstrap.Complete(actual.bridge, nil); err != nil {
+			t.Fatal(err)
+		}
+		blobs := &localEntryBlobs{}
+		if _, err := actual.bootstrap.StartLocalInvocation(actual.actual.ctx, actual.parent.request, blobs); err != nil {
+			t.Fatal("original entered allocation", err)
+		}
 		if !actual.store.validOwnedAllocationContext(t.Context()) || actual.store.ownedProxyPublicationVerifier == nil || actual.parent.request.Validate() != nil {
 			t.Fatal("original Store readiness/request prerequisite would mask unsupported publication")
 		}
@@ -67,15 +75,15 @@ func TestLocalSearchProxyDataCannotPublishThroughOriginalReadyStore(t *testing.T
 			t.Fatal("new closed domain proxy prerequisite")
 		}
 		p := ports.OwnedProxyPublicationV2{TransportKind: proxy.TransportKind, OperationSequence: proxy.OperationSequence, OperationDigest: proxy.OperationDigest, OperationDeadline: proxy.Window.ExpiresAt, ServiceKind: proxy.ServiceKind, Scope: proxy.Scope, LeaseID: data.history.Parent.Reservation.LeaseID, FenceToken: data.history.Parent.Reservation.FenceToken, PhysicalInvocationClaimID: proxy.PhysicalInvocationClaimID, RegisteredAllocationDigest: proxy.RegisteredAllocationDigest, SourceDigest: proxy.SourceDigest, ObservedAt: proxy.Window.ObservedAt, PolicyBody: data.proxyPolicies[1], AttestationBody: data.proxyAttestations[1], Authenticator: bytes.Repeat([]byte{1}, 32)}
-		// This failure is the explicit absent serving-tag arm, independently
-		// asserted before asking the original ready Store to publish anything.
-		if _, err := p.Bodies(); err == nil {
-			t.Fatal("historical body decoder widened serving publication")
+		// The closed DATA shape is valid; the explicitly selected synthetic
+		// denying peer still cannot issue producer authentication or a socket.
+		if _, err := p.Bodies(); err != nil || p.Validate() != nil {
+			t.Fatal("closed SEARCH DATA prerequisite", err)
 		}
-		queries, writes, blobs := actual.queries.statements, actual.parent.graph.writes, actual.canonical.calls
+		queries, writes, bodyCalls := len(actual.parent.graph.statements), actual.parent.graph.writes, blobs.calls
 		out, replayed, err := actual.store.PublishOwnedProxy(t.Context(), actual.parent.request, p)
-		if err == nil || replayed || out.Version != 0 || actual.queries.statements != queries || actual.parent.graph.writes != writes || actual.canonical.calls != blobs {
-			t.Fatal("unsupported SEARCH DATA reached publication SQL/effects", err, replayed, actual.queries.statements-queries, actual.parent.graph.writes-writes, actual.canonical.calls-blobs)
+		if err == nil || replayed || out.Version != 0 || peer.calls != 1 || len(actual.parent.graph.statements) != queries || actual.parent.graph.writes != writes || blobs.calls != bodyCalls {
+			t.Fatal("unauthenticated SEARCH DATA reached publication SQL/effects", err, replayed, peer.calls, len(actual.parent.graph.statements)-queries, actual.parent.graph.writes-writes, blobs.calls-bodyCalls)
 		}
 	})
 }
@@ -119,11 +127,11 @@ func TestLocalSearchProxyDataOriginalReadAndFreshPublicationDenial(t *testing.T)
 			}
 		}
 	}
-	// Public observation DTOs remain unsupported for this tag, even with exact
-	// valid historical DATA and a full-sized invented authenticator.
+	// This DTO validates correlation only; even a full-sized invented
+	// authenticator is not evidence of the actual original transport producer.
 	p := ports.OwnedProxyPublicationV2{TransportKind: proxy.TransportKind, OperationSequence: proxy.OperationSequence, OperationDigest: proxy.OperationDigest, OperationDeadline: proxy.Window.ExpiresAt, ServiceKind: proxy.ServiceKind, Scope: proxy.Scope, LeaseID: f.history.Parent.Reservation.LeaseID, FenceToken: f.history.Parent.Reservation.FenceToken, PhysicalInvocationClaimID: proxy.PhysicalInvocationClaimID, RegisteredAllocationDigest: proxy.RegisteredAllocationDigest, SourceDigest: proxy.SourceDigest, ObservedAt: proxy.Window.ObservedAt, PolicyBody: pb, AttestationBody: ab, Authenticator: bytes.Repeat([]byte{1}, 32)}
-	if p.Validate() == nil {
-		t.Fatal("historical SEARCH DATA became a serving producer")
+	if p.Validate() != nil {
+		t.Fatal("strict SEARCH DATA shape rejected")
 	}
 	snapshot := &ownedProxySnapshot{original: proxy, current: proxy, policyBody: pb, attestationBody: ab}
 	r := f.capsule.Operations[1].Reservation

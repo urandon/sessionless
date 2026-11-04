@@ -473,7 +473,10 @@ type EventContent struct {
 	Text             string                     `json:"text,omitempty"`
 	Attachments      []Attachment               `json:"attachments,omitempty"`
 	ArtifactManifest *AssistantArtifactManifest `json:"artifact_manifest,omitempty"`
-	Data             json.RawMessage            `json:"data,omitempty"`
+	// Citations preserves the one canonical manifest; it grants no page fetch
+	// and makes no claim that an excerpt supports the answer's statements.
+	Citations *domain.AnswerCitationManifestV1 `json:"citations,omitempty"`
+	Data      json.RawMessage                  `json:"data,omitempty"`
 }
 
 // AssistantArtifactManifest provides only opaque selectors needed by the

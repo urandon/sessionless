@@ -12,7 +12,10 @@ import (
 func TestEventExplanationCorrelationCopiesOnlyCanonicalRun(t *testing.T) {
 	id := domain.RunID("canonical-run")
 	item := sessionapi.Event{Event: domain.SessionEvent{ID: "event", Kind: domain.SessionEventAssistantMessage, RunID: &id}, Payload: []byte(`{"summary":"loaded reply"}`)}
-	projected := projectEvent(item)
+	projected, err := projectEvent(item)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if projected.RunID == nil || *projected.RunID != id || projected.RunID == item.Event.RunID {
 		t.Fatal("canonical correlation missing or aliased")
 	}
@@ -23,7 +26,10 @@ func TestEventExplanationCorrelationCopiesOnlyCanonicalRun(t *testing.T) {
 	item.Event.RunID = nil
 	item.Event.Kind = domain.SessionEventSystemNotice
 	item.Payload = []byte(`{"schema":"notice.v1","code":"harness_failed","cancelled":true}`)
-	projected = projectEvent(item)
+	projected, err = projectEvent(item)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if projected.RunID != nil {
 		t.Fatal("generic notice fabricated run correlation")
 	}
@@ -33,7 +39,8 @@ func TestEventExplanationCorrelationCopiesOnlyCanonicalRun(t *testing.T) {
 	}
 	invalid := domain.RunID("bad id")
 	item.Event.RunID = &invalid
-	if projectEvent(item).RunID != nil {
+	projected, err = projectEvent(item)
+	if err != nil || projected.RunID != nil {
 		t.Fatal("invalid source ID emitted")
 	}
 }

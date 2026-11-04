@@ -65,6 +65,8 @@ type KeeperV1 struct {
 	mcpMessages, mcpFrames, mcpBytes uint64
 	mcpCatalogConsumed               bool
 	mcpDeps                          mcpHTTPSDependencies
+	searchDeps                       searchHTTPSDependencies
+	searchSlots                      uint64
 }
 
 type ConnectionV1 struct {
@@ -80,6 +82,7 @@ type ConnectionV1 struct {
 	payload, request                       []byte
 	conn                                   net.Conn
 	mcp                                    *mcpConnectionV1
+	search                                 *searchConnectionV1
 	ctx                                    context.Context
 	cancel                                 context.CancelFunc
 	stopCaller                             func() bool
@@ -218,7 +221,7 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 		return nil, domain.ErrMembershipDenied
 	}
 	k.mu.Lock()
-	if k.closed || k.active != nil || k.sourceLifetime.Err() != nil || !k.credentialAdmittedLocked(k.credentialScope, a, s, op, now) || (k.credentialed && len(k.credentialScope.joins) >= 12) {
+	if k.closed || k.active != nil || k.sourceLifetime.Err() != nil || !k.credentialAdmittedLocked(k.credentialScope, a, s, op, now) || (k.credentialScope != nil && len(k.credentialScope.joins) >= 12) {
 		k.mu.Unlock()
 		clear(owned)
 		clear(request)
@@ -243,7 +246,7 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 	c := &ConnectionV1{keeper: k, store: store, lease: lease, allocation: a, source: s, operation: op, payload: owned, request: request, ctx: ownedCtx, cancel: cancel, preflightDone: make(chan struct{}), invokeDone: make(chan struct{}), cleanupDone: make(chan struct{}), cleanupTimeout: op.CleanupDuration, credentialScope: k.credentialScope}
 	c.self = c
 	c.stopCaller = context.AfterFunc(ctx, cancel)
-	if k.credentialed {
+	if k.credentialScope != nil {
 		c.stopCredential = context.AfterFunc(k.credentialScope.ctx, cancel)
 		k.credentialScope.joins = append(k.credentialScope.joins, c.cleanupDone)
 	}
@@ -320,6 +323,9 @@ func (k *KeeperV1) authenticate(intent []byte) []byte {
 // Historical authentication deliberately survives Close and later operations.
 // It never samples a clock, touches a socket, or claims current permission.
 func (k *KeeperV1) VerifyOwnedProxyPublication(pub ports.OwnedProxyPublicationV2, at time.Time) error {
+	if pub.TransportKind == domain.RegisteredProxyTransportLocalSearchHTTPSV1 {
+		return k.verifySearchPublication(pub, at)
+	}
 	if pub.TransportKind == domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1 {
 		return k.verifyMCPPublication(pub, at)
 	}
@@ -377,6 +383,9 @@ func (c *ConnectionV1) Publication() (ports.OwnedProxyPublicationV2, error) {
 }
 
 func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredProxyAttestationV2, capability ports.AttemptOperationCapabilityV1, payload []byte) (result ResultV1, err error) {
+	if c != nil && c.search != nil {
+		return result, domain.ErrMembershipDenied
+	}
 	if c != nil && c.mcp != nil {
 		return c.invokeMCP(ctx, registered, capability, payload)
 	}
@@ -503,6 +512,10 @@ func (c *ConnectionV1) monitor() {
 	}
 	clear(c.payload)
 	clear(c.request)
+	if c.search != nil {
+		c.search.handle = ports.SearchInvocationCredentialV1{}
+		c.search.request = nil
+	}
 	c.mu.Lock()
 	tainted := c.cleanupTainted
 	if !tainted {
@@ -527,6 +540,9 @@ func (c *ConnectionV1) Close() error {
 		return domain.ErrMembershipDenied
 	}
 	deadline := time.Now().Add(c.cleanupTimeout)
+	if c.search != nil && c.search.cleanupCeiling.Before(deadline) {
+		deadline = c.search.cleanupCeiling
+	}
 	if c.keeper != nil {
 		c.keeper.mu.Lock()
 		if d := c.keeper.terminalDeadline; !d.IsZero() && d.Before(deadline) {
@@ -537,7 +553,15 @@ func (c *ConnectionV1) Close() error {
 		}
 		c.keeper.mu.Unlock()
 	}
-	return c.closeUntil(context.Background(), deadline)
+	err := c.closeUntil(context.Background(), deadline)
+	if c.search != nil {
+		// The distinct SEARCH materializer must not clear borrowed bytes while
+		// an actual request/header copy or socket I/O remains unjoined. The
+		// original deadline verdict stays failure even if cooperative disposal
+		// completes late. No final whole-invocation End is performed here.
+		<-c.cleanupDone
+	}
+	return err
 }
 
 func (c *ConnectionV1) closeUntil(ctx context.Context, deadline time.Time) error {
@@ -654,7 +678,7 @@ func (k *KeeperV1) SealTerminal(deadline time.Time) error {
 		return domain.ErrMembershipDenied
 	}
 	k.terminalDeadline = deadline
-	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil && !k.credentialTainted && (!k.credentialed || k.credentialEnded)
+	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil && !k.credentialTainted && ((!k.credentialed && k.credentialScope == nil) || k.credentialEnded)
 	k.closed = true
 	close(k.terminalSealed)
 	if !k.terminalEligible {

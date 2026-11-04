@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -44,6 +45,9 @@ type LocalConfigV1 struct {
 	Backend      domain.HarnessBackendDescriptorV1
 	Substrate    domain.SubstrateBindingV1
 	Blobs        ports.BlobStore
+	// Optional original constructor owner. Nil means SEARCH is uninstalled;
+	// this pointer alone confers no current credential or search permission.
+	SearchCredentials *providercredential.InvocationService
 }
 
 // Copies share all entry/operation/close state. No caller-provided allocation,
@@ -87,6 +91,7 @@ type localState struct {
 	knownFailure                  *PreparedLocalFailureV1
 	credentialed                  bool
 	credentialReleased            bool
+	searchCredentials             *providercredential.InvocationService
 }
 
 // NewLocalV1 constructs inert owners only. There is no SQL, socket, provider or
@@ -100,6 +105,7 @@ func NewLocalV1(ctx context.Context, c LocalConfigV1) (*LocalV1, error) {
 // callback enters the shared no-secret session/Store/operation implementation.
 func newLocalSession(ctx context.Context, c LocalConfigV1, credentialed bool) (*LocalV1, error) {
 	if ctx == nil || ctx.Err() != nil || c.Source == nil || c.DB == nil || c.Blobs == nil ||
+		c.SearchCredentials != nil && c.SearchCredentials.ValidateConstructor() != nil ||
 		c.StoreOptions.AttemptOperationBodies != nil || c.StoreOptions.OwnedOperationResidualCustody != nil {
 		return nil, ErrSession
 	}
@@ -143,7 +149,7 @@ func newLocalSession(ctx context.Context, c LocalConfigV1, credentialed bool) (*
 		_ = k.Close()
 		return nil, ErrSession
 	}
-	if err := b.Complete(bridge); err != nil {
+	if err := b.Complete(bridge, c.SearchCredentials); err != nil {
 		_ = bridge.Close()
 		_ = k.Close()
 		return nil, ErrSession
@@ -156,7 +162,7 @@ func newLocalSession(ctx context.Context, c LocalConfigV1, credentialed bool) (*
 		call, cancel = context.WithDeadline(lifetime, deadline)
 	}
 	s := &localState{gate: make(chan struct{}, 1), ctx: call, caller: ctx, cancel: cancel, profile: p.Clone(),
-		bootstrap: b, store: store, bridge: bridge, keeper: k, issuer: c.Operate, blobs: c.Blobs, credentialed: credentialed}
+		bootstrap: b, store: store, bridge: bridge, keeper: k, issuer: c.Operate, blobs: c.Blobs, credentialed: credentialed, searchCredentials: c.SearchCredentials}
 	s.stopSource = context.AfterFunc(ctx, cancel)
 	if ctx.Err() != nil || lifetime.Err() != nil || call.Err() != nil {
 		cancel()
@@ -298,7 +304,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 		return result, err
 	}
 	defer finish()
-	if s.credentialed {
+	if s.credentialed || s.searchCredentials != nil {
 		return result, ErrSession
 	}
 	return s.runModelStep(ctx, call)
@@ -496,6 +502,16 @@ func (s *localState) invokeFrozen(caller, call context.Context, operation domain
 func (s *localState) record(grant ports.AttemptOperationObservationGrantV1, outcome domain.AttemptOperationOutcomeV1, reason domain.AttemptOperationReasonV1, ref operationbody.ReferenceV1, usage domain.AttemptOperationUsageV1) (ports.AuthenticatedAttemptOperationObservationV1, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), min(grant.Reservation.Operation.CleanupDuration, 30*time.Second))
 	defer cancel()
+	return s.recordWithin(ctx, grant, outcome, reason, ref, usage)
+}
+
+// SEARCH supplies its already-fixed short cleanup end intersected with the
+// original whole-invocation ceiling. Legacy MODEL/MCP call bounds above remain
+// unchanged; no observation, claim or send authority is minted by this helper.
+func (s *localState) recordWithin(ctx context.Context, grant ports.AttemptOperationObservationGrantV1, outcome domain.AttemptOperationOutcomeV1, reason domain.AttemptOperationReasonV1, ref operationbody.ReferenceV1, usage domain.AttemptOperationUsageV1) (ports.AuthenticatedAttemptOperationObservationV1, error) {
+	if ctx == nil || ctx.Err() != nil {
+		return ports.AuthenticatedAttemptOperationObservationV1{}, ErrIncomplete
+	}
 	digest, err := grant.Reservation.Digest()
 	if err != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, ErrIncomplete

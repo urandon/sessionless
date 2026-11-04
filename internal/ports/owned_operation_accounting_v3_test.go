@@ -21,8 +21,15 @@ func accountingV3Amount(n uint64) *uint64 { return &n }
 
 // Strict structural DATA only: these declarations authenticate no real
 // installation, price documentation, physical effect or erasure receipt.
-func accountingV3Fixture(t *testing.T, amount uint64) (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, []ports.OwnedOperationResidualRowV1, ports.OwnedOperationAccountingDispositionV3) {
+func accountingV3Fixture(t *testing.T, amount uint64, searchTariff ...uint64) (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, []ports.OwnedOperationResidualRowV1, ports.OwnedOperationAccountingDispositionV3) {
 	t.Helper()
+	searchAmount := uint64(0)
+	if len(searchTariff) > 1 || len(searchTariff) == 1 && searchTariff[0] != 20000 {
+		t.Fatal("fixture accepts only the closed optional SEARCH component tariff")
+	}
+	if len(searchTariff) == 1 {
+		searchAmount = searchTariff[0]
+	}
 	at := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 	h := strings.Repeat("a", 64)
 	a, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2("tenant-v3", "owner-v3", "run-v3", "attempt-v3", "subscription-v3", at)
@@ -38,8 +45,8 @@ func accountingV3Fixture(t *testing.T, amount uint64) (domain.OwnedAttemptEffect
 		}
 		return &domain.ExternalServiceCostCeilingV1{Version: 1, Kind: kind, TenantID: "tenant-v3", OwnerUserID: "owner-v3", BillingOwnerUserID: "owner-v3", ResourceID: string(kind) + "-resource", ResourceRevision: 1, RevocationGeneration: 1, ProfileID: string(kind) + "-profile", ProfileRevision: 1, ScopedGrantDigest: accountingV3Hash(string(kind) + "grant"), Currency: c.Currency, PriceRevision: "service-price-v3", PriceObservedAt: at, PriceExpiresAt: at.Add(time.Hour), PriceEvidenceDigest: accountingV3Hash(string(kind) + "price"), TermsEvidenceDigest: accountingV3Hash(string(kind) + "terms"), PriceState: state, MaxAmountMicrounits: accountingV3Amount(n)}
 	}
-	c.MCPToolCost, c.WebSearchCost = service(domain.ExternalServiceMCPToolV1, amount), service(domain.ExternalServiceWebSearchV1, 0)
-	c.MaxTotalAmountMicrounits = accountingV3Amount(amount)
+	c.MCPToolCost, c.WebSearchCost = service(domain.ExternalServiceMCPToolV1, amount), service(domain.ExternalServiceWebSearchV1, searchAmount)
+	c.MaxTotalAmountMicrounits = accountingV3Amount(amount + searchAmount)
 	sub := a.SubstrateBinding
 	sub.Kind, sub.Region, sub.ImageDigest, sub.WorkloadMode = domain.SubstrateLocalDevelopmentV1, "", "", domain.SubstrateWorkloadInProcessDirectV1
 	sub.LocalInstallationID, sub.LocalInstallationRevision = "installation-v3", 1

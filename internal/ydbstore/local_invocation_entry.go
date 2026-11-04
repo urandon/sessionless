@@ -49,12 +49,16 @@ type LocalInvocationEntryV1 struct {
 	compactionGeneration *atomic.Pointer[localCompactionGenerationV1]
 	preparedModel        *atomic.Pointer[localPreparedModelV1]
 	preparedMCP          *atomic.Pointer[localPreparedMCPV1]
+	preparedSearch       *atomic.Pointer[localPreparedSearchV1]
+	pendingSearch        *atomic.Pointer[localSearchConsentV1]
+	searchWait           *localSearchWaitBudget
 	preparationMu        *sync.Mutex
 	terminal             *atomic.Pointer[LocalTerminalV1]
 	failure              *atomic.Pointer[LocalFailureV1]
 	terminalSelection    *atomic.Uint32
 	observationLineage   *localOriginalObservationLineage
 	credentialCleanup    *localCredentialCleanup
+	modelCatalog         *localModelCatalogV3
 }
 
 func (entry *LocalInvocationEntryV1) original() bool {
@@ -285,6 +289,9 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 	}
 	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, terminalOutputs: terminalOutputs, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1]), preparedModel: new(atomic.Pointer[localPreparedModelV1]), preparedMCP: new(atomic.Pointer[localPreparedMCPV1]), preparationMu: new(sync.Mutex), terminal: new(atomic.Pointer[LocalTerminalV1]), credentialCleanup: new(localCredentialCleanup)}
 	entry.failure = new(atomic.Pointer[LocalFailureV1])
+	entry.pendingSearch = new(atomic.Pointer[localSearchConsentV1])
+	entry.preparedSearch = new(atomic.Pointer[localPreparedSearchV1])
+	entry.searchWait = &localSearchWaitBudget{}
 	entry.terminalSelection = new(atomic.Uint32)
 	entry.observationLineage = &localOriginalObservationLineage{}
 	entry.self = entry

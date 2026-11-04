@@ -36,7 +36,7 @@ func (v *LocalV1) PrepareTerminal(ctx context.Context) (_ *PreparedLocalTerminal
 
 // Caller owns the same original gate; no second entry or renewed lifetime.
 func (s *localState) prepareTerminal(ctx, call context.Context) (_ *PreparedLocalTerminalV1, err error) {
-	if s.entry == nil || !s.runtimeStarted || s.runtimeFailed || (s.credentialed && !s.credentialReleased) {
+	if s.entry == nil || !s.runtimeStarted || s.runtimeFailed || ((s.credentialed || s.searchCredentials != nil) && !s.credentialReleased) {
 		return nil, ErrSession
 	}
 	s.mu.Lock()

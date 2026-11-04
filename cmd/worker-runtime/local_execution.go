@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/worker"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -20,16 +22,17 @@ var errWorkerLocalExecution = errors.New("owner-local worker runtime unavailable
 type workerLocalExecutionConfig struct {
 	enabled                           bool
 	installation, executable, receipt string
+	searchKeyFile, searchKeyEpoch     string
 }
 
 func workerLocalExecutionFromEnv(getenv func(string) string) (workerLocalExecutionConfig, error) {
 	if getenv == nil {
 		return workerLocalExecutionConfig{}, errWorkerLocalExecution
 	}
-	c := workerLocalExecutionConfig{installation: getenv("WEB_LOCAL_INSTALLATION_ROOT"), executable: getenv("WEB_LOCAL_WORKER_EXECUTABLE"), receipt: getenv("WEB_LOCAL_PROFILE_RECEIPT_FILE")}
+	c := workerLocalExecutionConfig{installation: getenv("WEB_LOCAL_INSTALLATION_ROOT"), executable: getenv("WEB_LOCAL_WORKER_EXECUTABLE"), receipt: getenv("WEB_LOCAL_PROFILE_RECEIPT_FILE"), searchKeyFile: getenv("WORKER_SEARCH_CREDENTIAL_KEY_FILE"), searchKeyEpoch: getenv("WORKER_SEARCH_CREDENTIAL_KEY_EPOCH")}
 	switch getenv("WORKER_LOCAL_EXECUTION_ENABLED") {
 	case "", "false":
-		if c.installation != "" || c.executable != "" || c.receipt != "" {
+		if c.installation != "" || c.executable != "" || c.receipt != "" || c.searchKeyFile != "" || c.searchKeyEpoch != "" {
 			return workerLocalExecutionConfig{}, errWorkerLocalExecution
 		}
 		return c, nil
@@ -47,7 +50,23 @@ func workerLocalExecutionFromEnv(getenv func(string) string) (workerLocalExecuti
 			return workerLocalExecutionConfig{}, errWorkerLocalExecution
 		}
 	}
+	if !c.searchKeySelectionValid() {
+		return workerLocalExecutionConfig{}, errWorkerLocalExecution
+	}
 	return c, nil
+}
+
+// Validate only explicit nonsecret configuration, before any key-file I/O.
+// Reserve the Source HMAC pathname even on case-insensitive filesystems; there
+// is no key-content comparison, discovery or borrowing of the Source key.
+func (c workerLocalExecutionConfig) searchKeySelectionValid() bool {
+	if c.searchKeyFile == "" || c.searchKeyEpoch == "" {
+		return c.searchKeyFile == "" && c.searchKeyEpoch == ""
+	}
+	return filepath.IsAbs(c.installation) && filepath.Clean(c.installation) == c.installation &&
+		filepath.IsAbs(c.searchKeyFile) && filepath.Clean(c.searchKeyFile) == c.searchKeyFile && c.searchKeyFile != "/" && strings.IndexByte(c.searchKeyFile, 0) < 0 &&
+		s3store.ValidateProviderCredentialKeyEpoch(c.searchKeyEpoch) == nil &&
+		!strings.EqualFold(c.searchKeyFile, filepath.Join(c.installation, "source.key"))
 }
 
 // Process-owned installation; concrete LocalRuntime borrows it for each fresh
@@ -77,6 +96,11 @@ func openWorkerLocalExecution(ctx context.Context, c workerLocalExecutionConfig)
 	}
 	profile, err := source.Configuration()
 	if err != nil || profile.Auth != domain.ConfiguredInferenceAuthNoneV1 {
+		_ = source.Close()
+		return nil, errWorkerLocalExecution
+	}
+	declaration, err := source.SearchCredentialConfiguration()
+	if err != nil || (declaration != nil) != (c.searchKeyFile != "" && c.searchKeyEpoch != "") {
 		_ = source.Close()
 		return nil, errWorkerLocalExecution
 	}

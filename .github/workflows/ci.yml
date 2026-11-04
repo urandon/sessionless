@@ -173,6 +173,9 @@ jobs:
       - name: Run ordinary failure and Source tests over all packages
         run: make test-ordinary-ci-failure-source
 
+      - name: Run additive offline SEARCH connected fixtures
+        run: make test-search-offline
+
   web-browser:
     name: Web browser and accessibility
     runs-on: ubuntu-latest

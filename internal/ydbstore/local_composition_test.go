@@ -12,18 +12,52 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
+	"gitcode.com/urandon/sessionless/internal/websearch"
 )
 
 // This keeper cannot issue/verify any transport proof. Its panic proves that
 // constructor identity checks invoke no supposed approval/verification callback.
 type localBootstrapDenyKeeper struct{ identity byte }
 
+// These unimplemented peers intentionally cannot serve a credential. The
+// original constructor and composition must not call them or infer readiness.
+type localBootstrapInertCredentialPeers struct {
+	ports.ProviderCredentialSecretStore
+}
+
+func (localBootstrapInertCredentialPeers) Now() time.Time {
+	panic("composition called credential clock")
+}
+func (localBootstrapInertCredentialPeers) NewID(context.Context, ports.IDKind) (string, error) {
+	panic("composition called credential ID source")
+}
+func (localBootstrapInertCredentialPeers) PlanProviderCredentialDelivery(context.Context, domain.HarnessBindingV2) (ports.ProviderCredentialDeliveryTemplateV1, error) {
+	panic("composition called credential planner")
+}
+
 func (*localBootstrapDenyKeeper) VerifyOwnedProxyPublication(ports.OwnedProxyPublicationV2, time.Time) error {
 	panic("bootstrap called verifier")
 }
 func (*localBootstrapDenyKeeper) VerifyOwnedProxyPublicationCurrent(ports.OwnedProxyPublicationV2, time.Time) error {
 	panic("bootstrap called current verifier")
+}
+func (*localBootstrapDenyKeeper) PreflightSearch(context.Context, domain.RegisteredAllocationV2, domain.AttemptExecutionSourceV1, domain.AttemptOperationV1, *websearch.FrozenRequestV2, ports.SearchInvocationCredentialV1, []byte) (ports.LocalSearchConnectionV1, error) {
+	panic("bootstrap called SEARCH transport")
+}
+
+// Only this explicit construction variant selects a denying synthetic peer.
+// It cannot create a publication or actual DNS/TLS observation.
+type localSearchRejectingVerifier struct{ calls int }
+
+func (k *localSearchRejectingVerifier) VerifyOwnedProxyPublication(ports.OwnedProxyPublicationV2, time.Time) error {
+	k.calls++
+	return domain.ErrMembershipDenied
+}
+func (k *localSearchRejectingVerifier) VerifyOwnedProxyPublicationCurrent(ports.OwnedProxyPublicationV2, time.Time) error {
+	k.calls++
+	return domain.ErrMembershipDenied
 }
 
 type localBootstrapFixture struct {
@@ -32,7 +66,7 @@ type localBootstrapFixture struct {
 	bootstrap *LocalOwnedStoreBootstrapV1
 	store     *Store
 	bridge    *serverlessharness.BoundedOwnedAllocationPreparationV1
-	keeper    *localBootstrapDenyKeeper
+	keeper    ports.OwnedProxyPublicationVerifierV2
 }
 
 // Genuine private-file Source and real preparation/operation issuers, canonical
@@ -45,6 +79,10 @@ func newLocalBootstrapFixture(t *testing.T) localBootstrapFixture {
 }
 
 func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeActualPrebuild) localBootstrapFixture {
+	return newLocalBootstrapFixtureWithKeeper(t, prebuild, &localBootstrapDenyKeeper{identity: 1})
+}
+
+func newLocalBootstrapFixtureWithKeeper(t *testing.T, prebuild localRuntimeActualPrebuild, keeper ports.OwnedProxyPublicationVerifierV2) localBootstrapFixture {
 	t.Helper()
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID, SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
@@ -86,7 +124,6 @@ func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeAct
 			t.Error(err)
 		}
 	})
-	keeper := &localBootstrapDenyKeeper{identity: 1}
 	store, err := b.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: actual.source, OwnedProfilePublicationVerifier: actual.source}, keeper)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +154,7 @@ func TestLocalOwnedStoreBootstrapInertThenSameStoreBurnAndPublication(t *testing
 		if f.parent.sql.inserts != 0 || f.parent.sql.burnUpdates != 0 {
 			t.Fatal("inert Store changed canonical state")
 		}
-		if err := f.bootstrap.Complete(f.bridge); err != nil {
+		if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 			t.Fatal(err)
 		}
 		store, bridge, err := f.bootstrap.RuntimeFor(f.keeper)
@@ -146,12 +183,12 @@ func TestLocalOwnedStoreBootstrapCopiesForeignAndRepeatedInitializationDeny(t *t
 	synctest.Test(t, func(t *testing.T) {
 		f := newLocalBootstrapFixture(t)
 		other := newLocalBootstrapFixture(t)
-		if err := f.bootstrap.Complete(other.bridge); err == nil {
+		if err := f.bootstrap.Complete(other.bridge, nil); err == nil {
 			t.Fatal("foreign concrete bridge accepted")
 		}
 		copyBootstrap := new(LocalOwnedStoreBootstrapV1)
 		reflect.ValueOf(copyBootstrap).Elem().Set(reflect.ValueOf(f.bootstrap).Elem())
-		if err := copyBootstrap.Complete(f.bridge); err == nil {
+		if err := copyBootstrap.Complete(f.bridge, nil); err == nil {
 			t.Fatal("copied bootstrap initialized original")
 		}
 		if _, _, err := copyBootstrap.RuntimeFor(f.keeper); err == nil {
@@ -159,13 +196,13 @@ func TestLocalOwnedStoreBootstrapCopiesForeignAndRepeatedInitializationDeny(t *t
 		}
 		copyBridge := new(serverlessharness.BoundedOwnedAllocationPreparationV1)
 		reflect.ValueOf(copyBridge).Elem().Set(reflect.ValueOf(f.bridge).Elem())
-		if err := f.bootstrap.Complete(copyBridge); err == nil {
+		if err := f.bootstrap.Complete(copyBridge, nil); err == nil {
 			t.Fatal("copied bridge accepted for initial binding")
 		}
-		if err := f.bootstrap.Complete(f.bridge); err != nil {
+		if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.bootstrap.Complete(f.bridge); err == nil {
+		if err := f.bootstrap.Complete(f.bridge, nil); err == nil {
 			t.Fatal("repeated Complete accepted")
 		}
 		if _, _, err := f.bootstrap.RuntimeFor(other.keeper); err == nil {
@@ -210,7 +247,7 @@ func TestLocalOwnedStoreBootstrapAtomicTuplePublication(t *testing.T) {
 		}
 		wg.Go(func() {
 			<-start
-			if err := f.bootstrap.Complete(f.bridge); err != nil {
+			if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 				t.Error(err)
 			}
 		})
@@ -218,6 +255,43 @@ func TestLocalOwnedStoreBootstrapAtomicTuplePublication(t *testing.T) {
 		wg.Wait()
 		if _, _, err := f.bootstrap.RuntimeFor(f.keeper); err != nil {
 			t.Fatal("atomic completion not retained")
+		}
+	})
+}
+
+func TestLocalOwnedStoreBootstrapRetainsOriginalOptionalSearchOwner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newLocalBootstrapFixture(t)
+		peers := localBootstrapInertCredentialPeers{}
+		owner, err := providercredential.NewInvocationService(providercredential.InvocationConfig{Clock: peers, IDs: peers}, peers, f.store, peers)
+		if err != nil || owner.ValidateConstructor() != nil {
+			t.Fatalf("original inert constructor: %v", err)
+		}
+		// Copy before the original service mutex is ever used.
+		copyOwner := new(providercredential.InvocationService)
+		reflect.ValueOf(copyOwner).Elem().Set(reflect.ValueOf(owner).Elem())
+		for _, invalid := range []*providercredential.InvocationService{{}, copyOwner} {
+			if err := f.bootstrap.Complete(f.bridge, invalid); err == nil || f.bootstrap.ready.Load() != nil || f.store.ownedAllocationPublicationVerifier != nil {
+				t.Fatal("invalid SEARCH constructor owner changed original tuple")
+			}
+		}
+		if err := f.bootstrap.Complete(f.bridge, owner); err != nil {
+			t.Fatal(err)
+		}
+		tuple := f.bootstrap.ready.Load()
+		if tuple == nil || tuple.store != f.store || tuple.bridge != f.bridge || tuple.keeper != f.keeper || tuple.search != owner {
+			t.Fatal("complete did not retain the exact original immutable owners")
+		}
+		if !sameLocalOwnerPointer(tuple.searchTransport, f.keeper) {
+			t.Fatal("SEARCH transport was not the SAME retained keeper")
+		}
+		missing := newLocalBootstrapFixtureWithKeeper(t, localRuntimeActualPrebuild{}, &localSearchRejectingVerifier{})
+		if err := missing.bootstrap.Complete(missing.bridge, owner); err == nil || missing.bootstrap.ready.Load() != nil {
+			t.Fatal("service without callable original transport completed")
+		}
+		without := newLocalBootstrapFixture(t)
+		if err := without.bootstrap.Complete(without.bridge, nil); err != nil || without.bootstrap.ready.Load().search != nil {
+			t.Fatal("nil SEARCH owner did not remain genuinely uninstalled")
 		}
 	})
 }

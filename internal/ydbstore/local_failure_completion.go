@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -72,22 +73,39 @@ func (h *LocalFailureV1) readMaterials(ctx context.Context) (*ports.CanonicalEve
 		return nil, err
 	}
 	defer clear(body)
-	c, err := decodeLocalFailureCapsule(body)
-	defer clearLocalFailureNormalized(c)
-	if err != nil {
-		return nil, err
+	var p *canonicaloutput.FailurePlanV1
+	var identities []localCapsuleEventV1
+	if h.version == 4 {
+		c, decodeErr := decodeLocalFailureReadCapsule(body)
+		defer c.release()
+		if decodeErr != nil || c.search == nil || c.legacy != nil || h.search == nil || !reflect.DeepEqual(c.search.Accounting, h.search.accounting) || !reflect.DeepEqual(c.search.Consents, h.search.consents) {
+			return nil, domain.ErrMembershipDenied
+		}
+		metadata, metadataErr := localFailureV4Metadata(h.plan, *c.search, h.metadata.RetiredAllocationDigest)
+		if metadataErr != nil || metadata != h.metadata {
+			return nil, domain.ErrMembershipDenied
+		}
+		p, err = localFailureV4Plan(h.run, *c.search, h.snapshot.Job.Job.Limits)
+		identities = c.search.Events
+	} else {
+		c, decodeErr := decodeLocalFailureCapsule(body)
+		defer clearLocalFailureNormalized(c)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		metadata, metadataErr := failureMetadata(h.plan, c, h.metadata.RetiredAllocationDigest)
+		if metadataErr != nil || metadata != h.metadata {
+			return nil, domain.ErrMembershipDenied
+		}
+		p, err = localFailurePlan(h.run, h.snapshot.Job.Job.Limits, c)
+		identities = c.Events
 	}
-	metadata, err := failureMetadata(h.plan, c, h.metadata.RetiredAllocationDigest)
-	if err != nil || metadata != h.metadata {
-		return nil, domain.ErrMembershipDenied
-	}
-	p, err := localFailurePlan(h.run, h.snapshot.Job.Job.Limits, c)
 	if err != nil {
 		return nil, err
 	}
 	defer p.Release()
 	events := p.Events()
-	if len(events) != len(h.drafts) || len(c.Events) != len(h.drafts) {
+	if len(events) != len(h.drafts) || len(identities) != len(h.drafts) {
 		return nil, domain.ErrMembershipDenied
 	}
 	materials := ports.NewCanonicalEventMaterialSetV1()
@@ -98,7 +116,7 @@ func (h *LocalFailureV1) readMaterials(ctx context.Context) (*ports.CanonicalEve
 		}
 	}()
 	for i, draft := range h.drafts {
-		if c.Events[i] != (localCapsuleEventV1{ID: draft.ID, Kind: draft.Kind, IdempotencyKey: draft.IdempotencyKey, Payload: draft.Payload, DisplayText: draft.DisplayText}) || events[i].ID != draft.ID || events[i].Kind != draft.Kind {
+		if identities[i] != (localCapsuleEventV1{ID: draft.ID, Kind: draft.Kind, IdempotencyKey: draft.IdempotencyKey, Payload: draft.Payload, DisplayText: draft.DisplayText}) || events[i].ID != draft.ID || events[i].Kind != draft.Kind {
 			return nil, domain.ErrMembershipDenied
 		}
 		actual, err := h.entry.readCompactionBlob(ctx, draft.Payload, uint64(len(events[i].Payload)))

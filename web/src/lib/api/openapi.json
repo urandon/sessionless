@@ -666,6 +666,12 @@
             "minLength": 1,
             "maxLength": 1024,
             "description": "Exact decoded query, at most 1024 UTF-8 bytes; private browser memory only, not public execution evidence."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "Exact optional model argument from the same immutable consent body. Omitted only when the model omitted it; not a browser override or dispatch authority."
           }
         }
       },
@@ -1281,6 +1287,71 @@
         "required": ["run_id", "manifest_id"],
         "properties": { "run_id": { "type": "string" }, "manifest_id": { "type": "string" } }
       },
+      "AnswerCitationSourceV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "rank",
+          "url",
+          "title",
+          "title_truncated",
+          "operation_digest",
+          "observation_digest",
+          "response_digest",
+          "retrieved_at",
+          "content_kind"
+        ],
+        "properties": {
+          "source_id": { "type": "string", "pattern": "^source-[0-9a-f]{64}$" },
+          "rank": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Exact source URL; server enforces at most 2048 UTF-8 bytes and public HTTPS syntax. No fetch or DNS-safety assertion."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Exact untrusted source title, at most 512 UTF-8 bytes; render as text."
+          },
+          "title_truncated": { "type": "boolean" },
+          "operation_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "observation_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "response_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "retrieved_at": { "type": "string", "format": "date-time" },
+          "published_at": { "type": "string", "format": "date-time" },
+          "content_kind": { "type": "string", "enum": ["search_excerpt"] }
+        }
+      },
+      "AnswerCitationManifestV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One canonical manifest, at most 64 KiB encoded JSON. Source IDs are unique and bind their original operation/rank/URL. Not a page-read or claim-support assertion.",
+        "required": ["schema", "run_id", "attempt_id", "sources"],
+        "properties": {
+          "schema": { "type": "string", "enum": ["sessionless.answer-citations.v1"] },
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "sources": {
+            "type": "array",
+            "maxItems": 10,
+            "items": { "$ref": "#/components/schemas/AnswerCitationSourceV1" }
+          }
+        }
+      },
       "EventContent": {
         "type": "object",
         "additionalProperties": false,
@@ -1291,6 +1362,7 @@
             "items": { "$ref": "#/components/schemas/Attachment" }
           },
           "artifact_manifest": { "$ref": "#/components/schemas/ArtifactManifest" },
+          "citations": { "$ref": "#/components/schemas/AnswerCitationManifestV1" },
           "data": {}
         }
       },

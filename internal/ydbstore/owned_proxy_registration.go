@@ -134,6 +134,9 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 				mcpPolicy.MCPProfileID == cost.ProfileID && mcpPolicy.MCPProfileRevision == cost.ProfileRevision && mcpPolicy.MCPProfileDigest != "" && mcpPolicy.DescriptorDigest != "" &&
 				cost.Kind == domain.ExternalServiceMCPToolV1 && cost.TenantID == source.Scope.TenantID && cost.OwnerUserID == source.Scope.OwnerUserID
 		}
+		if proof.TransportKind == domain.RegisteredProxyTransportLocalSearchHTTPSV1 {
+			policyJoin = store.localSearchPublicationPolicy(ctx, q, parent, source, allocation.original, proof, bodies)
+		}
 		if ad != allocationDigest || sd != sourceDigest || proof.Scope != source.Scope || proof.LeaseID != parent.Reservation.LeaseID || proof.FenceToken != parent.Reservation.FenceToken || proof.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || observedAt.Before(allocation.original.Window.ObservedAt) || observedAt.After(q.at) || !policyJoin {
 			return q.budget.deny()
 		}
@@ -157,7 +160,20 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		if store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublicationCurrent(proof.Clone(), q.at) != nil {
 			return q.budget.deny()
 		}
-		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
+		var searchJoined *localCompactionSnapshot
+		if proof.TransportKind == domain.RegisteredProxyTransportLocalSearchHTTPSV1 {
+			joined, err := store.localSearchPublicationCurrent(ctx, q, proof, parent, source, allocation, burnAt)
+			if err != nil {
+				return q.budget.deny()
+			}
+			searchJoined = &joined // actual same-callback read, never across a write
+		}
+		var accounting *ownedAttemptAccounting
+		if searchJoined != nil {
+			accounting = &searchJoined.Accounting
+		} else {
+			accounting, err = readOwnedAttemptAccounting(ctx, q, parent, source)
+		}
 		if err != nil || accounting == nil || !accounting.SetupReservedAt.Equal(burnAt) {
 			return q.budget.deny()
 		}
@@ -165,8 +181,15 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 			return q.budget.deny()
 		}
 		if proof.OperationSequence > 1 {
-			previous, err := readOwnedOperation(ctx, q, domain.AttemptOperationV1{Scope: ownedOperationScope(parent), Sequence: proof.OperationSequence - 1})
-			if err != nil || previous == nil || previous.observation == nil || (!ownedObservationAllowsSuccessor(previous.reservation, *previous.observation) && !store.localMCPProxyContinuation(ctx, q, parent, source, proof, previous)) {
+			var previous *ownedOperationRow
+			if searchJoined != nil {
+				if len(searchJoined.Operations) > 0 {
+					previous = &searchJoined.Operations[len(searchJoined.Operations)-1]
+				}
+			} else {
+				previous, err = readOwnedOperation(ctx, q, domain.AttemptOperationV1{Scope: ownedOperationScope(parent), Sequence: proof.OperationSequence - 1})
+			}
+			if err != nil || previous == nil || previous.observation == nil || (!ownedObservationAllowsSuccessor(previous.reservation, *previous.observation) && !store.localMCPProxyContinuation(ctx, q, parent, source, proof, previous) && !store.localSearchProxyContinuation(ctx, q, parent, source, proof, previous)) {
 				return q.budget.deny()
 			}
 		}
@@ -327,6 +350,13 @@ func buildOwnedProxyRecord(bodies ports.OwnedProxyBodiesV2, allocation domain.Re
 			return deny()
 		}
 		return domain.BuildRegisteredLocalPublicMCPHTTPSProxyAttestationV1(allocation, source, transport, policyDigest, b.Attestation.Observation, pb, ab, window, sequence, operation)
+	case domain.RegisteredProxyTransportLocalSearchHTTPSV1:
+		b := bodies.LocalSearchHTTPS
+		transport, err := b.Policy.TransportDigest()
+		if err != nil || service != domain.RegisteredProxyWebSearchV1 || !b.Attestation.ObservedAt.Equal(window.ObservedAt) || b.Attestation.ValidateForPolicy(b.Policy) != nil {
+			return deny()
+		}
+		return domain.BuildRegisteredLocalSearchHTTPSProxyAttestationV1(allocation, source, transport, policyDigest, b.Attestation.Observation, pb, ab, window, sequence, operation)
 	default:
 		return deny()
 	}

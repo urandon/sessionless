@@ -266,6 +266,9 @@ func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionD
 	if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v2" {
 		return verifyRetainedDeletionBodiesV2(ctx, reader, snapshot, ownership, previous, writer, body)
 	}
+	if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v3" {
+		return verifyRetainedDeletionBodiesV3(ctx, reader, snapshot, ownership, previous, writer, body)
+	}
 	var capsule localRetainedTerminalCapsuleV1
 	if decodeOwnedEffectCanonicalJSON(string(body), &capsule) != nil {
 		return deny()
@@ -299,6 +302,95 @@ func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionD
 	}
 	defer clear(payload)
 	if validateHistoricalCapsuleData(snapshot, capsule, []sessioncontext.EventPayload{{Event: snapshot.Anchor, Payload: payload}}, nil) != nil {
+		return deny()
+	}
+	return verifyRetainedDeletionDerived(ctx, reader, snapshot, ownership, previous, capsule.ProfileDigest)
+}
+
+// V3 success reads the same sealed retained facts and ALL writer rows; it is
+// not a current grant lookup, erased-body reconstruction or new query program.
+func verifyRetainedDeletionBodiesV3(ctx context.Context, reader SessionDeletionBlobReader, snapshot localTerminalHistorySnapshot, ownership retainedDeletionOwnershipData, previous *compactioncontext.RetainedV1, writer *retainedDeletionWriterData, body []byte) (*compactioncontext.RetainedV1, error) {
+	deny := func() (*compactioncontext.RetainedV1, error) { return nil, domain.ErrMembershipDenied }
+	capsule, err := decodeLocalTerminalCapsuleV3(body)
+	if err != nil {
+		return deny()
+	}
+	defer func() {
+		for _, item := range capsule.Operations {
+			clear(item.NormalizedBody)
+		}
+	}()
+	if writer != nil {
+		if !reflect.DeepEqual(writer.producer.terminal, snapshot) || len(writer.operations) != len(capsule.Operations) || capsule.Accounting.ValidateFor(snapshot.Parent, snapshot.Admission.Source) != nil {
+			return deny()
+		}
+		for i, row := range writer.operations {
+			if row.observation == nil || !reflect.DeepEqual(row.reservation, capsule.Operations[i].Reservation) || !reflect.DeepEqual(*row.observation, capsule.Operations[i].Observation) {
+				return deny()
+			}
+		}
+	}
+	if chargeOwnedAuthorityBody(ctx, uint64(len(body))) != nil {
+		return deny()
+	}
+	byID := make(map[domain.SessionEventID]bool, len(capsule.Events))
+	for _, item := range capsule.Events {
+		if byID[item.ID] {
+			return deny()
+		}
+		byID[item.ID] = true
+	}
+	count := 0
+	var trigger domain.SessionEvent
+	hasTrigger := false
+	for id, event := range ownership.events {
+		if id == snapshot.Run.TriggerEventID {
+			if event.Kind != domain.SessionEventUserMessage || event.RunID == nil || *event.RunID != snapshot.Run.ID {
+				return deny()
+			}
+			// Normal ingress assigns the original user input this RunID too.
+			// It is not a capsule output. Retain it for the SAME strict V3
+			// correspondence validator below, rather than silently omitting it.
+			trigger, hasTrigger = event, true
+			continue
+		}
+		if event.RunID != nil && *event.RunID == snapshot.Run.ID {
+			if !byID[id] {
+				return deny()
+			}
+			count++
+		}
+	}
+	if count != len(capsule.Events) {
+		return deny()
+	}
+	records := make([]sessioncontext.EventPayload, 0, len(capsule.Events)+1)
+	defer func() {
+		for _, record := range records {
+			clear(record.Payload)
+		}
+	}()
+	if hasTrigger {
+		// Input is not a terminal capsule: use the reader's existing ordinary
+		// body ceiling, charged to the SAME logical materialization budget.
+		payload, err := readRetainedDeletionBlob(ctx, reader, trigger.Payload, 1<<20)
+		if err != nil {
+			return deny()
+		}
+		records = append(records, sessioncontext.EventPayload{Event: trigger, Payload: payload})
+	}
+	for _, item := range capsule.Events {
+		event, found := ownership.events[item.ID]
+		if !found || event.Kind != item.Kind || event.Payload != item.Payload || event.IdempotencyKey != item.IdempotencyKey || event.RunID == nil || *event.RunID != snapshot.Run.ID {
+			return deny()
+		}
+		payload, err := readRetainedDeletionBlob(ctx, reader, event.Payload, domain.MaxTerminalCapsuleBytesV1)
+		if err != nil {
+			return deny()
+		}
+		records = append(records, sessioncontext.EventPayload{Event: event, Payload: payload})
+	}
+	if validateHistoricalCapsuleDataV3(snapshot, capsule, records) != nil {
 		return deny()
 	}
 	return verifyRetainedDeletionDerived(ctx, reader, snapshot, ownership, previous, capsule.ProfileDigest)

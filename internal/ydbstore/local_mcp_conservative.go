@@ -36,6 +36,9 @@ func (entry *LocalInvocationEntryV1) prepareMCPConservativeLocked(ctx context.Co
 	if !entry.original() || ctx == nil || ctx.Err() != nil {
 		return domain.ErrMembershipDenied
 	}
+	if err := entry.prepareSearchConservativeLocked(ctx); err != nil {
+		return err
+	}
 	m := entry.preparedMCP.Load()
 	if m == nil {
 		return nil
@@ -104,6 +107,9 @@ func (entry *LocalInvocationEntryV1) prepareMCPConservativeLocked(ctx context.Co
 func (entry *LocalInvocationEntryV1) originalObservationAllowsSuccessor(r domain.AttemptOperationReservationV1, o domain.AttemptOperationObservationV1) bool {
 	if !entry.original() || r.Operation.Scope != ownedOperationScope(entry.parent) || r.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil {
 		return false
+	}
+	if r.Operation.Kind == domain.AttemptOperationWebSearchV1 {
+		return entry.originalSearchObservationAllowsSuccessor(r, o)
 	}
 	if ownedObservationAllowsSuccessor(r, o) {
 		return true

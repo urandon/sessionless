@@ -35,6 +35,26 @@ describe('private search consent response contract', () => {
     }
   });
 
+  it('preserves the optional generated result limit only in the private view', () => {
+    const value = { ...pending, query: 'public query' };
+    expect(validateConsentSummary(value, 'request-1', true)).not.toHaveProperty('max_results');
+    for (const max_results of [1, 3, 5]) {
+      const withLimit = { ...value, max_results };
+      expect(validateConsentSummary(withLimit, 'request-1', true)).toEqual(withLimit);
+      expect(() => validateConsentSummary(withLimit, 'request-1')).toThrow();
+      expect(() =>
+        validateConsentDiscovery(
+          { session_id: 'ses-1', run_id: 'run-1', max_results },
+          'ses-1',
+          'run-1',
+        ),
+      ).toThrow();
+    }
+    for (const max_results of [null, 0, 6, 1.5, '3', true, {}, []]) {
+      expect(() => validateConsentSummary({ ...value, max_results }, 'request-1', true)).toThrow();
+    }
+  });
+
   it('rejects mismatched selectors, revisions, malformed instants and private metadata', () => {
     for (const patch of [
       { request_id: 'foreign' },

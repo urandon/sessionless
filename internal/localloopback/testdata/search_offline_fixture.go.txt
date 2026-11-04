@@ -1,0 +1,52 @@
+//go:build sessionless_search_offline
+
+package localloopback
+
+import (
+	"context"
+	"crypto/x509"
+	"net"
+	"net/netip"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+)
+
+// Additive test binary only. It substitutes controlled DNS/socket/TLS DATA,
+// never original Source/Store/claim/grant/consent/HMAC or before-send authority.
+func (k *KeeperV1) ConfigureSearchOfflineNetwork(lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool) error {
+	if k == nil || k.self != k || lookup == nil || dial == nil || roots == nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed || k.active != nil || k.credentialScopeUsed || k.credentialScope != nil || k.credentialEnded || k.searchSlots != 0 || k.sourceLifetime == nil || k.sourceLifetime.Err() != nil || k.searchDeps.lookup != nil || k.searchDeps.dial != nil || k.searchDeps.roots != nil {
+		return domain.ErrMembershipDenied
+	}
+	if _, _, err := k.bootstrap.RuntimeFor(k); err != nil {
+		return domain.ErrMembershipDenied
+	}
+	k.searchDeps = searchHTTPSDependencies{lookup: lookup, dial: dial, roots: roots.Clone()}
+	return nil
+}
+
+// Shutdown-only test control over the SAME owned connection. No connection,
+// key, capability or publication proof escapes the borrow's original owner.
+func (k *KeeperV1) StopActiveSearchOffline() error {
+	if k == nil || k.self != k {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	c := k.active
+	if k.closed || c == nil {
+		k.mu.Unlock()
+		return domain.ErrMembershipDenied
+	}
+	c.mu.Lock()
+	valid := c.self == c && c.keeper == k && c.search != nil && c.ready && !c.used && !c.closed && c.conn != nil
+	c.mu.Unlock()
+	k.mu.Unlock()
+	if !valid {
+		return domain.ErrMembershipDenied
+	}
+	return c.Close()
+}

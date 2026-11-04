@@ -290,7 +290,7 @@ func TestLocalSourceVerifierCurrentSQLRemainsIndependent(t *testing.T) {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newLocalBootstrapFixture(t)
-				if err := f.bootstrap.Complete(f.bridge); err != nil {
+				if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 					t.Fatal(err)
 				}
 				if f.actual.source.VerifyOwnedAttemptEffectSource(f.parent.source) != nil {

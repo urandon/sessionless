@@ -33,6 +33,26 @@ func validateSearchCredentialManifest(m ManifestV1) error {
 	return nil
 }
 
+// SearchCredentialConfiguration returns only nonsecret constructor DATA. Nil
+// means authenticated omission, never a closed/invalid Source or a serving
+// declaration lookup failure. Serving must still use the exact-profile reader
+// below and independently check current binding, grant, consent and send rights.
+func (s *Source) SearchCredentialConfiguration() (*ports.SearchCredentialDeclarationV1, error) {
+	if s == nil {
+		return nil, ErrDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.receipt == nil || s.verifyOriginalInstallationLocked(*s.receipt) != nil {
+		return nil, ErrDenied
+	}
+	if s.searchCredential == nil {
+		return nil, nil
+	}
+	declaration := *s.searchCredential
+	return &declaration, nil
+}
+
 // ReadSearchCredentialDeclaration returns only original nonsecret DATA for the
 // exact installed profile. Omission, closure and expiry deny; no current/latest
 // generation or environment lookup exists. The lifecycle independently checks

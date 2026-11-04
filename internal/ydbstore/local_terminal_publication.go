@@ -72,6 +72,11 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 	if !alive() || chargeOwnedAuthorityBody(call, uint64(len(p.capsule))) != nil {
 		return deny()
 	}
+	if p.capsuleVersion == 3 {
+		if _, err := p.accountingRows(); err != nil {
+			return deny()
+		}
+	}
 	store := h.entry.owner.store
 	var postimage domain.Run
 	// This latch lives OUTSIDE the SDK callback. An attempted/unknown mutation
@@ -124,7 +129,7 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 		return deny()
 	}
 	events := p.canonical.Events()
-	if len(events) != len(p.drafts) || p.capsuleVersion != 1 && p.capsuleVersion != 2 || p.capsuleVersion == 1 && len(events) != 1 || p.capsuleVersion == 2 && (len(events) < 3 || len(events) > 9 || len(events)%2 != 1) {
+	if len(events) != len(p.drafts) || p.capsuleVersion != 1 && p.capsuleVersion != 2 && p.capsuleVersion != 3 || p.capsuleVersion == 1 && len(events) != 1 || (p.capsuleVersion == 2 || p.capsuleVersion == 3) && (len(events) < 3 || len(events) > 9 || len(events)%2 != 1) {
 		return deny()
 	}
 	bodies := make([][]byte, len(events))
@@ -140,7 +145,7 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 			return deny()
 		}
 	}
-	if p.capsuleVersion == 2 && (h.entry.terminalOutputs.WriteCanonicalEventsV2(call, postimage, p.drafts, bodies) != nil || !alive()) {
+	if (p.capsuleVersion == 2 || p.capsuleVersion == 3) && (h.entry.terminalOutputs.WriteCanonicalEventsV2(call, postimage, p.drafts, bodies) != nil || !alive()) {
 		return deny()
 	}
 	// Recheck current authority after storage I/O. Registered residue remains on

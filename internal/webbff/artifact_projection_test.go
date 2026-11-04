@@ -19,7 +19,7 @@ func TestProjectAssistantEventExposesOnlyArtifactSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected := projectEvent(sessionapi.Event{
+	projected, err := projectEvent(sessionapi.Event{
 		Event: domain.SessionEvent{
 			ID: "event-assistant", TenantID: "tenant-a", SessionID: "session-a",
 			Sequence: 2, Kind: domain.SessionEventAssistantMessage, RunID: &runID,
@@ -31,6 +31,9 @@ func TestProjectAssistantEventExposesOnlyArtifactSelectors(t *testing.T) {
 		},
 		Payload: payload,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if projected.Content.Text != "finished" || projected.Content.Data != nil ||
 		projected.Content.ArtifactManifest == nil ||
 		projected.Content.ArtifactManifest.RunID != runID ||

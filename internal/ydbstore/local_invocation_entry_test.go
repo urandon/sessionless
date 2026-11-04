@@ -70,7 +70,7 @@ func (*localEntryBlobs) Delete(context.Context, domain.TenantID, domain.BlobRef)
 
 func completeLocalEntryFixture(t *testing.T, f localBootstrapFixture) {
 	t.Helper()
-	if err := f.bootstrap.Complete(f.bridge); err != nil {
+	if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -299,7 +299,7 @@ func TestLocalInvocationEntryMissingCopiedAndPreinstalledBodiesDeny(t *testing.T
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = bridge.Close() })
-		if err := other.Complete(bridge); err != nil {
+		if err := other.Complete(bridge, nil); err != nil {
 			t.Fatal(err)
 		}
 		entry, err = other.StartLocalInvocation(f.actual.ctx, f.parent.request, &localEntryBlobs{})
@@ -329,7 +329,7 @@ func TestLocalInvocationEntryPreservesResidualOnlyConstructor(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = bridge.Close() })
-		if err := other.Complete(bridge); err != nil {
+		if err := other.Complete(bridge, nil); err != nil {
 			t.Fatal(err)
 		}
 		entry, err := other.StartLocalInvocation(f.actual.ctx, f.parent.request, &localEntryBlobs{})

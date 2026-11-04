@@ -3,6 +3,7 @@ package providercredential
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,54 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+func TestSearchInvocationConstructorOriginValidIssueDenied(t *testing.T) {
+	for _, kind := range []string{"nil", "zero", "copied"} {
+		t.Run(kind, func(t *testing.T) {
+			service, bindings, secrets, request, _ := searchInvocationFixture(t)
+			if err := request.Validate(); err != nil {
+				t.Fatal("valid closed request prerequisite", err)
+			}
+			var target *InvocationService
+			switch kind {
+			case "zero":
+				target = &InvocationService{}
+			case "copied":
+				// Deliberately copy the not-yet-used constructor object, including
+				// its future private origin identity. Its mutex has not been used;
+				// no goroutine or credential borrow exists during this test copy.
+				copy := reflect.New(reflect.TypeOf(service).Elem())
+				copy.Elem().Set(reflect.ValueOf(service).Elem())
+				target = copy.Interface().(*InvocationService)
+			}
+			handle, err := service.IssueSearchCredential(t.Context(), request)
+			if err != nil || handle.Validate() != nil {
+				t.Fatal("actual constructor/current binding positive", err)
+			}
+			defer func() {
+				if err := service.ReleaseSearchCredential(context.Background(), handle); err != nil {
+					t.Error(err)
+				}
+			}()
+			loads, recoveries, reads := bindings.loadCalls, secrets.recoverCalls, secrets.readCalls
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Error("valid closed SEARCH request panicked on nonconstructor owner")
+				}
+				if bindings.loadCalls != loads || secrets.recoverCalls != recoveries || secrets.readCalls != reads {
+					t.Error("nonconstructor owner reached credential backend")
+				}
+			}()
+			got, err := target.IssueSearchCredential(t.Context(), request)
+			if err == nil {
+				_ = service.ReleaseSearchCredential(context.Background(), got)
+			}
+			if !errors.Is(err, ErrInvalid) || got != (ports.SearchInvocationCredentialV1{}) {
+				t.Error("nonconstructor owner did not deny the valid SEARCH request")
+			}
+		})
+	}
+}
 
 func searchInvocationFixture(t *testing.T) (*InvocationService, *fakeBindingStore, *fakeSecretStore, ports.SearchCredentialIssueRequestV1, ports.ProviderCredentialIssueRequestV1) {
 	t.Helper()
@@ -368,5 +417,67 @@ func TestSearchInvocationIssueAuthenticatesExactCurrentCredential(t *testing.T) 
 				t.Fatalf("case=%s handle=%+v err=%v handles=%d reads=%d", name, h, err, len(s.handles), secrets.readCalls)
 			}
 		})
+	}
+}
+
+func TestSearchInvocationConstructorOriginBorrowReleaseDenied(t *testing.T) {
+	for _, kind := range []string{"nil", "zero", "copied"} {
+		t.Run(kind, func(t *testing.T) {
+			service, bindings, secrets, request, _ := searchInvocationFixture(t)
+			if err := service.ValidateConstructor(); err != nil {
+				t.Fatal("original constructor identity", err)
+			}
+			var target *InvocationService
+			switch kind {
+			case "zero":
+				target = &InvocationService{}
+			case "copied":
+				// As in the causal Issue regression, copy before mutex first use.
+				copy := reflect.New(reflect.TypeOf(service).Elem())
+				copy.Elem().Set(reflect.ValueOf(service).Elem())
+				target = copy.Interface().(*InvocationService)
+			}
+			if !errors.Is(target.ValidateConstructor(), ErrInvalid) {
+				t.Fatal("nonconstructor accepted as original object")
+			}
+			handle, err := service.IssueSearchCredential(t.Context(), request)
+			if err != nil || handle.Validate() != nil {
+				t.Fatal("actual constructor/current binding baseline", err)
+			}
+			defer func() { _ = service.ReleaseSearchCredential(context.Background(), handle) }()
+			loads, recoveries, reads, callbacks := bindings.loadCalls, secrets.recoverCalls, secrets.readCalls, 0
+			if err := target.MaterializeSearchCredential(t.Context(), handle, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+				callbacks++
+				return nil
+			}); !errors.Is(err, ErrInvalid) {
+				t.Fatal("nonconstructor materialization did not deny", err)
+			}
+			if err := target.ReleaseSearchCredential(t.Context(), handle); !errors.Is(err, ErrInvalid) {
+				t.Fatal("nonconstructor release did not deny", err)
+			}
+			if bindings.loadCalls != loads || secrets.recoverCalls != recoveries || secrets.readCalls != reads || callbacks != 0 || len(service.handles) != 1 {
+				t.Fatal("nonconstructor touched backend/borrow/original handle")
+			}
+			if err := service.MaterializeSearchCredential(t.Context(), handle, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+				callbacks++
+				return nil
+			}); err != nil || callbacks != 1 {
+				t.Fatal("original exact one-shot borrow changed", err)
+			}
+		})
+	}
+}
+
+func TestSearchInvocationConstructorIdentityIsNotCurrentPermission(t *testing.T) {
+	service, bindings, secrets, request, _ := searchInvocationFixture(t)
+	locator := ports.ProviderCredentialLocatorV1{TenantID: request.Declaration.TenantID, OwnerUserID: request.Declaration.Resource.OwnerUserID, ResourceKind: request.Declaration.Resource.Kind, ResourceID: request.Declaration.Resource.ResourceID}
+	row := bindings.bindings[locator]
+	row.State, row.SecretRef, row.SecretFingerprint = domain.ProviderCredentialRevokedV1, domain.CredentialSecretRef{}, ""
+	bindings.bindings[locator] = row
+	if err := service.ValidateConstructor(); err != nil || bindings.loadCalls != 0 || secrets.recoverCalls != 0 || secrets.readCalls != 0 {
+		t.Fatal("inert identity check became a current/backend probe", err)
+	}
+	if handle, err := service.IssueSearchCredential(t.Context(), request); err == nil || handle != (ports.SearchInvocationCredentialV1{}) || secrets.readCalls != 0 {
+		t.Fatal("original constructor identity bypassed actual current revocation")
 	}
 }

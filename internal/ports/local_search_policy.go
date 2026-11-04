@@ -2,14 +2,53 @@ package ports
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/strictjson"
+	"gitcode.com/urandon/sessionless/internal/websearch"
 )
 
-// Historical DATA only. The original resource grant owns the endpoint, API,
+// LocalSearchTransportV1 is an actual synchronous owned transport, not a
+// readiness probe or approval callback. Construction retains this SAME keeper;
+// the original entry/Store still authenticate preparation, receipt and send.
+type LocalSearchTransportV1 interface {
+	PreflightSearch(context.Context, domain.RegisteredAllocationV2, domain.AttemptExecutionSourceV1, domain.AttemptOperationV1, *websearch.FrozenRequestV2, SearchInvocationCredentialV1, []byte) (LocalSearchConnectionV1, error)
+}
+
+// A connection and its mutable key-bearing copies must join before the original
+// synchronous materialization callback returns. No connection may escape it.
+type LocalSearchConnectionV1 interface {
+	Publication() (OwnedProxyPublicationV2, error)
+	InvokeSearch(context.Context, domain.RegisteredProxyAttestationV2, AttemptOperationCapabilityV1, []byte) (LocalSearchTransportResultV1, error)
+	Close() error
+}
+
+type LocalSearchTransportResultV1 struct {
+	Body                        []byte
+	Metadata                    websearch.HTTPMetadataV1
+	RequestBytes, ResponseBytes uint64
+	ObservedAt                  time.Time
+	SendAttempted               bool
+}
+
+// This pure builder describes the fixed existing endpoint/contract. It creates
+// no DNS/TLS observation, connection, credential, current grant or send right.
+func BuildLocalSearchHTTPSProxyPolicyV1(c domain.ConfiguredInferenceProfileV1, g domain.WebSearchResourceGrantV2) (LocalSearchHTTPSProxyPolicyV1, error) {
+	if c.Validate() != nil || g.Validate() != nil || c.TenantID != g.TenantID || c.OwnerUserID != g.OwnerUserID {
+		return LocalSearchHTTPSProxyPolicyV1{}, domain.ErrMembershipDenied
+	}
+	digest, err := c.Digest()
+	p := LocalSearchHTTPSProxyPolicyV1{Version: 1, Grant: g, ConfiguredProfileDigest: digest, ConnectorArtifactDigest: c.WorkerExecutableDigest, HostIdentityDigest: c.LocalHostIdentityDigest, NetworkNamespaceIdentityDigest: c.LocalNetworkNamespaceIdentityDigest, MaxOperationTimeout: min(c.Limits.OperationTimeout, 15*time.Second), AutomaticRetriesDenied: true, ResumptionDenied: true}
+	if err != nil || p.Validate() != nil {
+		return LocalSearchHTTPSProxyPolicyV1{}, domain.ErrMembershipDenied
+	}
+	return p, nil
+}
+
+// Immutable policy DATA only. The original resource grant owns the endpoint, API,
 // compiler/schema, resource and payer tuples; no second endpoint selector exists.
 type LocalSearchHTTPSProxyPolicyV1 struct {
 	Version                        uint32                          `json:"version"`
@@ -85,8 +124,8 @@ func (a LocalSearchHTTPSProxyAttestationV1) ValidateForPolicy(p LocalSearchHTTPS
 	return nil
 }
 
-// Separate historical decoder: intentionally NOT an arm of the serving
-// OwnedProxyPublicationV2 codec/union, which continues to reject this tag.
+// One canonical strict DATA decoder shared by historical and current producer
+// correspondence. Decoding never authenticates the actual transport owner.
 func DecodeLocalSearchHTTPSProxyDataV1(policyBody, attestationBody []byte) (LocalSearchHTTPSProxyPolicyV1, LocalSearchHTTPSProxyAttestationV1, error) {
 	var p LocalSearchHTTPSProxyPolicyV1
 	var a LocalSearchHTTPSProxyAttestationV1

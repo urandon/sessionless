@@ -103,6 +103,20 @@ func readRetainedDeletionOperations(ctx context.Context, q *ownedAuthorityQuery,
 			if e != nil || (sequence == accounting.Aggregate.Operations) != last {
 				return nil, q.budget.deny()
 			}
+		} else if row.reservation.Operation.SearchWire != nil {
+			// Explicit paid-SEARCH DATA collection only, never V1/V2 eligibility.
+			// Its later strict V3 capsule/consent/seal reader must match every
+			// actual row before deletion can be approved. No grant/body recovery
+			// or additional SQL read is needed to reproduce this bounded frontier.
+			op := row.reservation.Operation
+			candidate, err := ports.BuildOwnedOperationAccountingRowV4(row.reservation, *row.observation, parent, source)
+			if err != nil || candidate.Kind != domain.AttemptOperationWebSearchV1 || len(result) == 0 || result[len(result)-1].reservation.Operation.Kind != domain.AttemptOperationModelV1 || result[len(result)-1].observation == nil || op.ModelResponseDigest != result[len(result)-1].observation.ResponseDigest {
+				return nil, q.budget.deny()
+			}
+			baseline.Aggregate, err = baseline.Aggregate.Add(domain.AttemptOperationDebitV1{BodyBytes: ownedConsentMetadataReservationBytes + op.SearchWire.ArgumentsBytes})
+			if err != nil {
+				return nil, q.budget.deny()
+			}
 		} else if !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
 			// SQL DATA collection only, not deletion eligibility or fresh effect
 			// authority. This arm MUST subsequently match an actual V2 capsule,
@@ -174,6 +188,9 @@ func readRetainedDeletionProxies(ctx context.Context, q *ownedAuthorityQuery, p 
 			return q.budget.deny()
 		}
 		if p.failure != nil && p.failure.Run.TerminalFailure != nil && p.failure.Run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && r.Operation.Kind == domain.AttemptOperationWebSearchV1 && validateRetainedSearchProxyOperationV4(proxy, r) != nil {
+			return q.budget.deny()
+		}
+		if p.failure == nil && r.Operation.SearchWire != nil && validateRetainedSearchProxyOperationV4(proxy, r) != nil {
 			return q.budget.deny()
 		}
 		if p.failure != nil && p.failure.Run.TerminalFailure != nil && p.failure.Run.TerminalFailure.CapsuleSchema == "sessionless.terminal-failure-custody.v4" && sequence > 1 {

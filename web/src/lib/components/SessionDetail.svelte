@@ -57,6 +57,7 @@
   import { ApiError } from '$lib/api/client';
   import RunExplanationDrawer from './RunExplanationDrawer.svelte';
   import SearchConsentPanel from './SearchConsentPanel.svelte';
+  import AnswerCitations from './AnswerCitations.svelte';
   import { SearchConsentController, type SearchConsentState } from '$lib/search-consent/controller';
   import {
     RunExplanationController,
@@ -1010,6 +1011,9 @@
                 <p class="event-muted">
                   Structured {kindLabel(event.kind).toLowerCase()} recorded.
                 </p>
+              {/if}
+              {#if event.kind === 'assistant_message' && event.content.citations}
+                <AnswerCitations manifest={event.content.citations} runId={event.run_id} />
               {/if}
               {#if event.content.attachments?.length}
                 <ul class="attachment-list" aria-label="Attachments">

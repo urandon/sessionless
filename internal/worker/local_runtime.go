@@ -9,6 +9,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -20,11 +21,12 @@ var ErrLocalRuntime = errors.New("local worker runtime unavailable")
 // opened from the original installation/receipt. All dependencies are borrowed;
 // there is no installer, resource discovery or model permission in this DATA.
 type LocalRuntimeConfig struct {
-	Source  *localoperator.Source
-	Receipt ports.OwnedProfilePublicationReceiptV1
-	DB      *sql.DB
-	Blobs   ports.BlobStore
-	Worker  Config
+	Source            *localoperator.Source
+	Receipt           ports.OwnedProfilePublicationReceiptV1
+	DB                *sql.DB
+	Blobs             ports.BlobStore
+	Worker            Config
+	SearchCredentials *providercredential.InvocationService
 }
 
 // LocalRuntime retains installation-level dependencies only. It never retains
@@ -52,6 +54,7 @@ func nilLocalRuntimeDependency(value any) bool {
 // still established by the original Manager/Store at each admitted effect.
 func NewLocalRuntime(c LocalRuntimeConfig, clock ports.Clock) (*LocalRuntime, error) {
 	if c.Source == nil || c.DB == nil || nilLocalRuntimeDependency(c.Blobs) || nilLocalRuntimeDependency(clock) ||
+		c.SearchCredentials != nil && c.SearchCredentials.ValidateConstructor() != nil ||
 		c.Worker.LocalOwnedSession != nil || c.Worker.ExecutionPreparer != nil || c.Worker.CredentialMode != CredentialDisabled || c.Worker.CredentialLifecycle != nil {
 		return nil, ErrLocalRuntime
 	}
@@ -81,30 +84,50 @@ func (r *LocalRuntime) RunOnce(ctx context.Context, queue ports.Queue) (outcome 
 	if r == nil || r.capacity <= 0 || nilLocalRuntimeDependency(r.clock) || nilLocalRuntimeDependency(ctx) || ctx.Err() != nil || nilLocalRuntimeDependency(queue) {
 		return "", ErrLocalRuntime
 	}
+	session, err := r.newLocalSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	return r.runLocalSession(ctx, queue, session)
+}
+
+// One canonical constructor path for each message. The additive offline test
+// helper may configure only this actual inert session before running the same
+// private Manager/close path; production accepts no factory or callback.
+func (r *LocalRuntime) newLocalSession(ctx context.Context) (*providerloopsession.LocalV1, error) {
+	if r == nil || r.capacity <= 0 || nilLocalRuntimeDependency(r.clock) || nilLocalRuntimeDependency(ctx) || ctx.Err() != nil {
+		return nil, ErrLocalRuntime
+	}
 	prepare, err := serverlessharness.NewCapabilityIssuer(r.clock.Now, nil)
 	if err != nil {
-		return "", ErrLocalRuntime
+		return nil, ErrLocalRuntime
 	}
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(r.clock.Now, nil, r.capacity)
 	if err != nil {
-		return "", ErrLocalRuntime
+		return nil, ErrLocalRuntime
 	}
 	c := r.config
 	session, err := providerloopsession.NewLocalV1(ctx, providerloopsession.LocalConfigV1{
 		Source: c.Source, DB: c.DB, Blobs: c.Blobs, Prepare: prepare, Operate: operate,
 		Backend: c.Receipt.Profile.Backend, Substrate: c.Receipt.Profile.Substrate,
+		SearchCredentials: c.SearchCredentials,
 		StoreOptions: ydbstore.Options{OwnedProfilePublicationVerifier: c.Source,
 			AttemptSpendingPublicationVerifier: c.Source, OwnedAttemptEffectSourceVerifier: c.Source},
 	})
 	if err != nil {
-		return "", ErrLocalRuntime
+		return nil, ErrLocalRuntime
 	}
+	return session, nil
+}
+
+func (r *LocalRuntime) runLocalSession(ctx context.Context, queue ports.Queue, session *providerloopsession.LocalV1) (outcome Outcome, resultErr error) {
 	defer func() {
 		if err := session.Close(); err != nil {
 			outcome = ""
 			resultErr = errors.Join(resultErr, ErrLocalRuntime)
 		}
 	}()
+	c := r.config
 	state, err := session.WorkerState()
 	if err != nil {
 		return "", ErrLocalRuntime

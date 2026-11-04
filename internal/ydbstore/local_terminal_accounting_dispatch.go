@@ -14,12 +14,16 @@ func (p *LocalPreparedOutputV1) accountingRows() ([]ports.OwnedOperationResidual
 	}
 	switch p.capsuleVersion {
 	case 1:
-		if p.accounting != nil && p.accountingV3 == nil && p.accounting.historicalValid() {
+		if p.accounting != nil && p.accountingV3 == nil && p.accountingV4 == nil && p.accounting.historicalValid() {
 			return p.accounting.operations, nil
 		}
 	case 2:
-		if p.accounting == nil && p.accountingV3 != nil && p.accountingV3.historicalValid() {
+		if p.accounting == nil && p.accountingV3 != nil && p.accountingV4 == nil && p.accountingV3.historicalValid() {
 			return p.accountingV3.operations, nil
+		}
+	case 3:
+		if p.accounting == nil && p.accountingV3 == nil && p.accountingV4 != nil && p.accountingV4.historicalValid() {
+			return p.accountingV4.operations, nil
 		}
 	}
 	return nil, domain.ErrMembershipDenied
@@ -32,6 +36,9 @@ func (p *LocalPreparedOutputV1) accountingDigest() (string, error) {
 	if p.capsuleVersion == 1 {
 		return p.accounting.Digest()
 	}
+	if p.capsuleVersion == 3 {
+		return p.accountingV4.Digest()
+	}
 	return p.accountingV3.Digest()
 }
 
@@ -41,6 +48,13 @@ func (p *LocalPreparedOutputV1) residualDigest(retired domain.RegisteredAllocati
 	}
 	if p.capsuleVersion == 1 {
 		v, err := p.accounting.Residual(retired, erased)
+		if err != nil {
+			return "", err
+		}
+		return v.Digest()
+	}
+	if p.capsuleVersion == 3 {
+		v, err := p.accountingV4.Residual(retired, erased)
 		if err != nil {
 			return "", err
 		}

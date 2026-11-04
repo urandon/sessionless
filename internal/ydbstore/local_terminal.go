@@ -87,7 +87,7 @@ func (entry *LocalInvocationEntryV1) ClaimTerminal(ctx context.Context) (*LocalT
 		return nil, domain.ErrMembershipDenied
 	}
 	h := &LocalTerminalV1{entry: entry, deadline: time.Now().Add(duration)}
-	if entry.owner.configuration.Auth == domain.ConfiguredInferenceAuthBearerV1 {
+	if entry.hasCredentialLifecycle() {
 		deadline, ok := entry.credentialedCleanupDeadline()
 		if !ok {
 			return nil, domain.ErrMembershipDenied

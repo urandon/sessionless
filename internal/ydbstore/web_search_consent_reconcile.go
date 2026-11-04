@@ -38,51 +38,61 @@ func (store *Store) ReconcileWebSearchConsent(ctx context.Context, input ports.R
 		if err != nil || !found || input.Locator.ValidateForRequest(state.Request) != nil || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
 			return q.budget.deny()
 		}
-		if state.Status != domain.WebSearchConsentPendingV1 && state.Status != domain.WebSearchConsentApprovedV1 {
-			// Existing immutable stop/deny evidence, never a repaired request.
-			if state.Revision != input.ExpectedRevision+1 && state.Revision != input.ExpectedRevision {
-				return q.budget.deny()
-			}
-			result = state.Clone()
-			return nil
-		}
-		if state.Revision != input.ExpectedRevision {
-			return q.budget.deny()
-		}
-		a, revoked, err := store.loadOwnedConsentStopAuthority(ctx, q, parent, source, state)
-		if err != nil {
-			return err
-		}
-		var next domain.WebSearchConsentStateV1
-		// Valid structural current heads that no longer equal the original
-		// authenticated Source are OBSERVED revocation, not permission. The
-		// fixed pure projection has no independent source-state grant field;
-		// append only this actually loaded stop, after cancellation/claim loss.
-		if revoked && a.Run.CancellationRequestedAt == nil && a.Run.Status == domain.RunRunning && a.Attempt.Status == domain.AttemptRunning && a.ClaimState == domain.WebSearchConsentClaimActiveV1 {
-			if !ownedEffectTime(q.at) || q.at.Before(state.UpdatedAt) || q.at.Before(a.Run.UpdatedAt) || q.at.Before(a.Attempt.UpdatedAt) || a.Lease.ValidateForAttempt(a.Run, a.Attempt) != nil {
-				return q.budget.deny()
-			}
-			next = state.Clone()
-			next.Status, next.Revision, next.UpdatedAt = domain.WebSearchConsentRevokedV1, state.Revision+1, q.at
-		} else {
-			next, err = domain.StopWebSearchConsentV1(state, input.ExpectedRevision, a, q.at)
-			if err != nil {
-				return q.budget.deny()
-			}
-		}
-		projection, err := replaceOwnedConsentState(*states, next, parent, q.at)
-		if err != nil || writeOwnedConsentStates(ctx, q, parent, projection) != nil {
-			return q.budget.deny()
-		}
-		actual, err := readOwnedConsentStates(ctx, q, parent)
-		result, found = findOwnedConsent(actual, state.Request.ID)
-		if err != nil || !found || result.Status != next.Status || result.Revision != next.Revision || !result.UpdatedAt.Equal(next.UpdatedAt) {
-			return q.budget.deny()
-		}
-		return nil
+		result, err = store.reconcileOwnedConsentStateTx(ctx, q, parent, source, states, state, input.ExpectedRevision)
+		return err
 	})
 	if err != nil || ctx.Err() != nil {
 		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
+	}
+	return result, nil
+}
+
+// Both the public negative-only reconciler and the original private holder use
+// this SAME transaction reducer/CAS/readback. All arguments are the actual rows
+// already loaded in q, not a public proof or a replacement consent request.
+func (store *Store) reconcileOwnedConsentStateTx(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, states *ownedConsentStates, state domain.WebSearchConsentStateV1, expectedRevision uint64) (domain.WebSearchConsentStateV1, error) {
+	deny := func() (domain.WebSearchConsentStateV1, error) {
+		return domain.WebSearchConsentStateV1{}, q.budget.deny()
+	}
+	if states == nil || state.Status != domain.WebSearchConsentPendingV1 && state.Status != domain.WebSearchConsentApprovedV1 {
+		// Existing immutable stop/deny evidence, never a repaired request.
+		if states == nil || state.Revision != expectedRevision+1 && state.Revision != expectedRevision {
+			return deny()
+		}
+		return state.Clone(), nil
+	}
+	if state.Revision != expectedRevision {
+		return deny()
+	}
+	a, revoked, err := store.loadOwnedConsentStopAuthority(ctx, q, parent, source, state)
+	if err != nil {
+		return domain.WebSearchConsentStateV1{}, err
+	}
+	var next domain.WebSearchConsentStateV1
+	// Valid structural current heads that no longer equal the original
+	// authenticated Source are OBSERVED revocation, not permission. The fixed
+	// pure projection has no independent source-state grant field; append only
+	// this actually loaded stop, after cancellation/claim loss.
+	if revoked && a.Run.CancellationRequestedAt == nil && a.Run.Status == domain.RunRunning && a.Attempt.Status == domain.AttemptRunning && a.ClaimState == domain.WebSearchConsentClaimActiveV1 {
+		if !ownedEffectTime(q.at) || q.at.Before(state.UpdatedAt) || q.at.Before(a.Run.UpdatedAt) || q.at.Before(a.Attempt.UpdatedAt) || a.Lease.ValidateForAttempt(a.Run, a.Attempt) != nil {
+			return deny()
+		}
+		next = state.Clone()
+		next.Status, next.Revision, next.UpdatedAt = domain.WebSearchConsentRevokedV1, state.Revision+1, q.at
+	} else {
+		next, err = domain.StopWebSearchConsentV1(state, expectedRevision, a, q.at)
+		if err != nil {
+			return deny()
+		}
+	}
+	projection, err := replaceOwnedConsentState(*states, next, parent, q.at)
+	if err != nil || writeOwnedConsentStates(ctx, q, parent, projection) != nil {
+		return deny()
+	}
+	actual, err := readOwnedConsentStates(ctx, q, parent)
+	result, found := findOwnedConsent(actual, state.Request.ID)
+	if err != nil || !found || result.Status != next.Status || result.Revision != next.Revision || !result.UpdatedAt.Equal(next.UpdatedAt) {
+		return deny()
 	}
 	return result, nil
 }

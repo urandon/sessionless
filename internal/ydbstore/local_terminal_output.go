@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
+	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -37,6 +38,7 @@ type LocalPreparedOutputV1 struct {
 	completion           *localTerminalCompletionV2
 	accounting           *localTerminalAccountingV2
 	accountingV3         *localTerminalAccountingV3
+	accountingV4         *localTerminalAccountingV4
 	capsuleVersion       uint32
 	cancellation         domain.SessionEventDraft
 	cancellationBody     []byte
@@ -132,17 +134,19 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	}
 	var normalized uint64
 	var answer string
-	hasMCP := false
+	hasMCP, hasSearch := false, false
 	for _, item := range ops {
 		hasMCP = hasMCP || item.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1
+		hasSearch = hasSearch || item.Reservation.Operation.Kind == domain.AttemptOperationWebSearchV1
 	}
+	hasTools := hasMCP || hasSearch
 	for i, o := range ops {
 		op := o.Reservation.Operation
 		row := s.state.snapshot.Operations[i]
 		if row.observation == nil || !reflect.DeepEqual(o.Reservation, row.reservation) || !reflect.DeepEqual(o.Observation, *row.observation) ||
 			op.Scope != scope || op.Sequence != uint64(i+1) || o.Reservation.ValidateForParent(h.entry.parent.Authority, h.entry.parent.Reservation) != nil ||
 			o.Observation.ValidateForReservation(o.Reservation) != nil || o.Observation.Outcome != domain.AttemptOperationCompletedV1 ||
-			(op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 && op.Kind != domain.AttemptOperationMCPToolV1) || len(o.Response) == 0 || len(o.Response) > 64<<10 ||
+			(op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 && op.Kind != domain.AttemptOperationMCPToolV1 && op.Kind != domain.AttemptOperationWebSearchV1) || len(o.Response) == 0 || len(o.Response) > 64<<10 ||
 			uint64(len(o.Response)) > (384<<10)-normalized || uint64(len(o.Response)) != o.Observation.ResponseBytes || uint64(len(o.Request)) != op.RequestBytes {
 			return deny()
 		}
@@ -151,7 +155,7 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		if hex.EncodeToString(rs[:]) != op.RequestDigest || hex.EncodeToString(ss[:]) != o.Observation.ResponseDigest {
 			return deny()
 		}
-		if hasMCP {
+		if hasTools {
 			// Exact issuer/private MCP witness classification, not a relaxed
 			// generic measured-money predicate. Current Source/Store joins above
 			// and below independently revalidate retained financial authority.
@@ -185,7 +189,21 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		return deny()
 	}
 	var encoded *canonicaloutput.PlanV1
-	if hasMCP {
+	var catalogs []compactioncontext.ModelCatalogV3
+	var consents []domain.WebSearchConsentStateV1
+	if hasSearch {
+		if s.state.snapshot.Consents == nil {
+			return deny()
+		}
+		for _, state := range s.state.snapshot.Consents.States {
+			consents = append(consents, state.Clone())
+		}
+		catalogs, e = localOriginalModelCatalogsV3(profile, ops)
+		if e != nil {
+			return deny()
+		}
+		encoded, e = buildLocalCanonicalPlanV3(run, s.state.snapshot.Job.Job.Limits, pd, &profile, h.entry.source, ops, consents, catalogs, manifest.ID)
+	} else if hasMCP {
 		encoded, e = buildLocalCanonicalPlanV2(run, s.state.snapshot.Job.Job.Limits, pd, &profile, ops, manifest.ID)
 	} else {
 		encoded, e = canonicaloutput.EncodeCompletionV1(run.ID, s.state.snapshot.Job.Job.Limits, ports.ExecutionResult{Summary: answer}, manifest.ID)
@@ -200,7 +218,7 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		}
 	}()
 	events := encoded.Events()
-	if len(events) == 0 || len(events) > 9 || events[len(events)-1].Kind != domain.SessionEventAssistantMessage || !hasMCP && len(events) != 1 || hasMCP && (len(events) < 3 || len(events)%2 != 1) {
+	if len(events) == 0 || len(events) > 9 || events[len(events)-1].Kind != domain.SessionEventAssistantMessage || !hasTools && len(events) != 1 || hasTools && (len(events) < 3 || len(events)%2 != 1) {
 		return deny()
 	}
 	drafts := make([]domain.SessionEventDraft, len(events))
@@ -216,8 +234,21 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	}
 	var accounting *localTerminalAccountingV2
 	var accountingV3 *localTerminalAccountingV3
+	var accountingV4 *localTerminalAccountingV4
 	var body []byte
-	if hasMCP {
+	if hasSearch {
+		accountingV4, e = prepareLocalTerminalAccountingV4(call, h, at)
+		if e != nil {
+			return deny()
+		}
+		materials := make([]localCapsuleOperationMaterial, len(ops))
+		for i, item := range ops {
+			materials[i] = localCapsuleOperationMaterial{reservation: item.Reservation, observation: item.Observation, normalized: item.Response, bytes: uint64(len(item.Response))}
+		}
+		sink := localCapsuleSink{limit: cap, emit: true}
+		e = encodeLocalTerminalCapsuleV3To(&sink, scope, pd, s.state.digest, materials, run.DerivedContext, identities, 0, manifest, accountingV4.disposition, consents, catalogs)
+		body = sink.body
+	} else if hasMCP {
 		accountingV3, e = prepareLocalTerminalAccountingV3(call, h, at)
 		if e != nil {
 			return deny()
@@ -264,7 +295,7 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	if plan.Validate() != nil {
 		return deny()
 	}
-	if !hasMCP {
+	if !hasTools {
 		accounting, e = prepareLocalTerminalAccounting(call, h, at, genericProfile)
 		if e != nil {
 			return deny()
@@ -289,8 +320,10 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		return deny()
 	}
 	p := &LocalPreparedOutputV1{parent: h, mu: new(sync.Mutex), plan: plan, manifest: manifest, drafts: drafts, canonical: encoded, capsule: body,
-		accounting: accounting, accountingV3: accountingV3, capsuleVersion: 1, cancellation: cancellation, cancellationBody: notice.Payload}
-	if hasMCP {
+		accounting: accounting, accountingV3: accountingV3, accountingV4: accountingV4, capsuleVersion: 1, cancellation: cancellation, cancellationBody: notice.Payload}
+	if hasSearch {
+		p.capsuleVersion = 3
+	} else if hasMCP {
 		p.capsuleVersion = 2
 	}
 	p.self = p

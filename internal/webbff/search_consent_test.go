@@ -265,6 +265,52 @@ func TestSearchConsentHTTPReadRejectsAuthorityBodiesAndForeignView(t *testing.T)
 	}
 }
 
+func TestSearchConsentHTTPPreservesOptionalGeneratedResultLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit *uint8
+		want  int
+	}{
+		{name: "omitted", want: http.StatusOK},
+		{name: "one", limit: searchConsentLimit(1), want: http.StatusOK},
+		{name: "five", limit: searchConsentLimit(5), want: http.StatusOK},
+		{name: "zero", limit: searchConsentLimit(0), want: http.StatusServiceUnavailable},
+		{name: "too-large", limit: searchConsentLimit(6), want: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, auth, cookie, _ := searchConsentHTTPFixture(t, true)
+			store.view.MaxResults = tc.limit
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, searchConsentReadRequest(cookie))
+			if w.Code != tc.want || auth.authorizations != 0 || w.Body.Len() > 8<<10 {
+				t.Fatalf("private argument response: status=%d want=%d activity=%d bytes=%d", w.Code, tc.want, auth.authorizations, w.Body.Len())
+			}
+			if tc.want != http.StatusOK {
+				if strings.Contains(w.Body.String(), store.view.Query) || strings.Contains(w.Body.String(), "max_results") {
+					t.Fatal("invalid private argument escaped a denied view")
+				}
+				return
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			raw, present := got["max_results"]
+			if present != (tc.limit != nil) {
+				t.Fatalf("max_results presence=%t want=%t", present, tc.limit != nil)
+			}
+			if present {
+				var value uint8
+				if err := json.Unmarshal(raw, &value); err != nil || value != *tc.limit {
+					t.Fatalf("exact max_results=%s want=%d err=%v", raw, *tc.limit, err)
+				}
+			}
+		})
+	}
+}
+
+func searchConsentLimit(value uint8) *uint8 { return &value }
+
 func TestSearchConsentHTTPDecisionUsesExactCSRFAndClosedCASInput(t *testing.T) {
 	for _, tc := range []string{"valid", "csrf", "origin", "extra", "duplicate", "case-alias", "revision", "choice", "query", "content-type", "oversized", "trailing"} {
 		t.Run(tc, func(t *testing.T) {

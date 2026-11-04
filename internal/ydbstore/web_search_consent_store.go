@@ -417,14 +417,16 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 	if private != nil {
 		// Only a confirmed final transaction may release decoded query bytes.
 		// The strict original argument validator ran BEFORE that transaction;
-		// this decode only extracts its exact, unnormalized query DATA.
+		// this decode only extracts its exact, unnormalized argument DATA.
 		var decoded struct {
-			Query string `json:"query"`
+			Query      string `json:"query"`
+			MaxResults *uint8 `json:"max_results"`
 		}
 		if json.Unmarshal(arguments, &decoded) != nil || ctx.Err() != nil || !grant.sourceOpen() {
 			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 		}
 		view.Query = decoded.Query
+		view.MaxResults = decoded.MaxResults
 	}
 	if ctx.Err() != nil || !grant.sourceOpen() {
 		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied

@@ -111,36 +111,47 @@ func (*localPreparedMCPV1) String() string { return "LocalPreparedMCPV1{private:
 // A verified final MODEL answer returns (nil,nil); incomplete or unknown data
 // remains a denial. No caller-supplied call, request, grant or operation exists.
 func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPreparedMCPV1, error) {
+	mcp, _, err := entry.prepareTool(ctx, false)
+	return mcp, err
+}
+
+// PrepareTool decodes the SAME durable MODEL after one original capture. Its
+// closed arms cannot be selected by supplied call/operation/receipt DATA.
+func (entry *LocalInvocationEntryV1) PrepareTool(ctx context.Context) (*localPreparedMCPV1, *localSearchConsentV1, error) {
+	return entry.prepareTool(ctx, true)
+}
+
+func (entry *LocalInvocationEntryV1) prepareTool(ctx context.Context, allowSearch bool) (*localPreparedMCPV1, *localSearchConsentV1, error) {
 	if !entry.original() {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	unlock, err := entry.beginLocalMutation(ctx)
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	defer unlock()
 	old := entry.preparedMCP.Load()
 	if old != nil {
 		if old.source == nil || old.source.state == nil {
-			return nil, domain.ErrMembershipDenied
+			return nil, nil, domain.ErrMembershipDenied
 		}
 		old.source.state.mu.Lock()
 		completed := old.originalForPhase(entry, localCompactionCompleted)
 		old.source.state.mu.Unlock()
 		if !completed {
-			return nil, domain.ErrMembershipDenied
+			return nil, nil, domain.ErrMembershipDenied
 		}
 	}
 	callCtx, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer finish()
 	callCtx, cancel := ownedAuthorityCallContext(callCtx)
 	defer cancel()
 	source, err := entry.captureCompactionSource(callCtx, localSourceMCPPreparation)
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	valid := false
 	defer func() {
@@ -149,35 +160,42 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		}
 	}()
 	if source.state == nil || len(source.state.operations) == 0 {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	last := source.state.operations[len(source.state.operations)-1]
 	if last.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || last.Observation.ValidateForReservation(last.Reservation) != nil || !ownedObservationAllowsSuccessor(last.Reservation, last.Observation) {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	decoded, err := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, last.Request, last.Response, domain.AttemptOperationModelV1)
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	if decoded.Call == nil {
 		if decoded.Stop != configuredinference.StopFinalV1 {
-			return nil, domain.ErrMembershipDenied
+			return nil, nil, domain.ErrMembershipDenied
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	defer clear(decoded.Call.Arguments)
+	if decoded.Call.Name == "web_search" {
+		if !allowSearch || decoded.Stop != configuredinference.StopToolV1 {
+			return nil, nil, domain.ErrMembershipDenied
+		}
+		pending, err := entry.createLocalSearchConsent(ctx, callCtx, source, last, decoded.Call)
+		return nil, pending, err
+	}
 	// The existing one-catalog-page envelope cannot admit a second MCP setup.
 	// Preserve the completed original holder; a final MODEL above is a verified
 	// no-op, not permission to reset this holder or refill any budget.
 	if old != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	if decoded.Stop != configuredinference.StopToolV1 {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	policy := entry.parent.Authority.HarnessBinding.AgentLoopPolicy
 	if policy == nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	ref := entry.source.Profile
 	var at time.Time
@@ -207,31 +225,31 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		return nil
 	})
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	bound, err := mcpadmission.BindConfiguredCallV1(entry.owner.configuration, grant, last.Reservation, last.Observation, last.Request, last.Response)
 	if err != nil || bound.ID() != decoded.Call.ID || bound.Name() != decoded.Call.Name || !bytes.Equal(bound.Arguments(), decoded.Call.Arguments) {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	// The fresh Run/call ID is not permission to replay an unresolved effect.
 	// Authenticate actual historical capsules before the first request PUT,
 	// proxy, reservation or network action, in this SAME bounded logical call.
 	if source.materializeHistoryLocked(callCtx) != nil || source.denyUnresolvedMCP(bound, grant) != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	for _, prior := range source.state.operations {
 		if prior.Reservation.Operation.CallID == bound.ID() {
-			return nil, domain.ErrMembershipDenied
+			return nil, nil, domain.ErrMembershipDenied
 		}
 	}
 	request, err := bound.Request()
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	requestBody := request.Body()
 	defer clear(requestBody)
 	if len(requestBody) == 0 || uint64(len(requestBody)) > policy.Limits.MaxToolArgumentBytes || uint64(len(requestBody)) > 4<<10 {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	// The metadata call has its own shorter SQL/body deadline, not the external
 	// operation lifetime. As with MODEL preparation, compare the immutable
@@ -239,22 +257,22 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 	// the unchanged bounded metadata context.
 	operation, err := entry.localPreparedMCPOperation(ctx, source, bound, request, grant, at)
 	if err != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	if err := entry.terminalFitSourceLocked(callCtx, nil, source, operation, nil); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	m := &localPreparedMCPV1{entry: entry, source: source, call: bound, request: request, grant: grant, operation: operation, conservative: new(atomic.Pointer[localMCPConservativeV2])}
 	m.self = m
 	if !entry.preparedMCP.CompareAndSwap(nil, m) {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	if chargeOwnedAuthorityBody(callCtx, uint64(len(requestBody))) != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	refBody, err := entry.bodies.Write(callCtx, requestBody)
 	if err != nil || callCtx.Err() != nil || refBody.Digest != operation.RequestDigest || refBody.Bytes != operation.RequestBytes {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	operation.RequestRef = refBody.Ref
 	err = entry.owner.store.ownedAuthorityTx(callCtx, func(ctx context.Context, q *ownedAuthorityQuery) error {
@@ -275,11 +293,11 @@ func (entry *LocalInvocationEntryV1) PrepareMCP(ctx context.Context) (*localPrep
 		return nil
 	})
 	if err != nil || callCtx.Err() != nil {
-		return nil, domain.ErrMembershipDenied
+		return nil, nil, domain.ErrMembershipDenied
 	}
 	m.operation = operation
 	valid = true
-	return m, nil
+	return m, nil, nil
 }
 
 func (entry *LocalInvocationEntryV1) localPreparedMCPOperation(ctx context.Context, source *LocalCompactionSourceV1, call mcpadmission.CallV1, request mcpwire.RequestV1, grant mcpadmission.MCPToolGrantV1, at time.Time) (domain.AttemptOperationV1, error) {

@@ -72,7 +72,7 @@ func NewProviderCredentialSecretStore(objects *Store, config ProviderCredentialO
 	if config.MaxSecretBytes == 0 {
 		config.MaxSecretBytes = 8 << 10
 	}
-	if objects == nil || objects.bucket == "" || config.Clock == nil || bindings == nil || !validProviderEpoch(config.KeyEpoch) || len(injectedKey) != 32 || bytes.Equal(injectedKey, make([]byte, 32)) || config.MaxSecretBytes < 1 || config.MaxSecretBytes > 64<<10 {
+	if objects == nil || objects.bucket == "" || config.Clock == nil || bindings == nil || ValidateProviderCredentialKeyEpoch(config.KeyEpoch) != nil || len(injectedKey) != 32 || bytes.Equal(injectedKey, make([]byte, 32)) || config.MaxSecretBytes < 1 || config.MaxSecretBytes > 64<<10 {
 		return nil, errProviderCredentialObject
 	}
 	if objects.iamClient != nil {

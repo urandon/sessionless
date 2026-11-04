@@ -194,6 +194,9 @@ func (v *LocalV1) RunWorkerLoop(ctx context.Context) (result ModelStepResultV1, 
 			s.cancel()
 		}
 	}()
+	if s.searchCredentials != nil {
+		return s.runServiceCredentialEngine(ctx, call)
+	}
 	return s.runBoundedEngine(ctx, call)
 }
 

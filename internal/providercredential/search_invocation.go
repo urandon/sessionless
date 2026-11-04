@@ -21,6 +21,9 @@ func (service *InvocationService) searchBorrowCurrent(ctx context.Context, handl
 	if purpose != invocationCredentialSearch {
 		return nil
 	}
+	if service.ValidateConstructor() != nil {
+		return ErrInvalid
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -35,7 +38,7 @@ func (service *InvocationService) searchBorrowCurrent(ctx context.Context, handl
 // this service owns current credential binding and one-shot key custody only.
 // No MODEL binding/planner, new signing key or parallel handle map is created.
 func (service *InvocationService) IssueSearchCredential(ctx context.Context, request ports.SearchCredentialIssueRequestV1) (ports.SearchInvocationCredentialV1, error) {
-	if ctx == nil || ctx.Err() != nil || request.Validate() != nil {
+	if service.ValidateConstructor() != nil || ctx == nil || ctx.Err() != nil || request.Validate() != nil {
 		return ports.SearchInvocationCredentialV1{}, ErrInvalid
 	}
 	if !service.clock.Now().UTC().Before(request.ExpiresAt) {
@@ -75,14 +78,14 @@ func (service *InvocationService) IssueSearchCredential(ctx context.Context, req
 }
 
 func (service *InvocationService) MaterializeSearchCredential(ctx context.Context, handle ports.SearchInvocationCredentialV1, consume ports.ProviderCredentialConsumerV1) error {
-	if handle.Validate() != nil {
+	if service.ValidateConstructor() != nil || handle.Validate() != nil {
 		return ErrInvalid
 	}
 	return service.materializeInvocationCredential(ctx, handle.Credential, invocationCredentialSearch, handle, consume)
 }
 
 func (service *InvocationService) ReleaseSearchCredential(ctx context.Context, handle ports.SearchInvocationCredentialV1) error {
-	if handle.Validate() != nil {
+	if service.ValidateConstructor() != nil || handle.Validate() != nil {
 		return ErrInvalid
 	}
 	return service.releaseInvocationCredential(ctx, handle.Credential, invocationCredentialSearch, handle)

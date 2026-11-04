@@ -1,0 +1,37 @@
+//go:build sessionless_search_offline
+
+package worker
+
+import (
+	"context"
+	"crypto/x509"
+	"errors"
+	"net"
+	"net/netip"
+
+	"gitcode.com/urandon/sessionless/internal/ports"
+)
+
+// This test-only method uses the same actual session constructor, Manager run
+// and close path as public RunOnce. It is explicitly shared-production-path
+// evidence, not a claim that the literal public entry accepts network options.
+func (r *LocalRuntime) RunOnceSearchOffline(ctx context.Context, queue ports.Queue, lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool, shutdown chan<- func() error) (Outcome, error) {
+	if nilLocalRuntimeDependency(queue) {
+		return "", ErrLocalRuntime
+	}
+	session, err := r.newLocalSession(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := session.ConfigureSearchOfflineNetwork(lookup, dial, roots); err != nil {
+		return "", errors.Join(err, session.Close())
+	}
+	if shutdown != nil {
+		select {
+		case shutdown <- session.StopActiveSearchOffline:
+		default:
+			return "", errors.Join(ErrLocalRuntime, session.Close())
+		}
+	}
+	return r.runLocalSession(ctx, queue, session)
+}

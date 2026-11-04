@@ -241,28 +241,48 @@ func (entry *LocalInvocationEntryV1) currentRetainedRunWithBurn(ctx context.Cont
 	if err != nil {
 		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
+	if entry.validateRetainedCurrentParent(ctx, q, op, request, parent, source) != nil {
+		return domain.Run{}, time.Time{}, q.budget.deny()
+	}
+	allocation, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burn)
+	if err != nil {
+		return domain.Run{}, time.Time{}, q.budget.deny()
+	}
+	run, err := entry.currentRetainedRunFromAllocation(ctx, q, op, allocation)
+	if err != nil {
+		return domain.Run{}, time.Time{}, err
+	}
+	return run, burn, nil
+}
+
+// Shared only within an original current transaction. A caller reusing an
+// outer read must pass those actual parent/Source rows, never a public DTO.
+func (entry *LocalInvocationEntryV1) validateRetainedCurrentParent(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1, request ports.ReserveAttemptEffectRequestV1, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1) error {
 	pd, pe := parent.Digest()
 	ed, ee := entry.parent.Digest()
 	sd, se := source.Digest()
 	es, ese := entry.source.Digest()
-	if pe != nil || ee != nil || se != nil || ese != nil || pd != ed || sd != es || !q.at.Before(op.Deadline) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+	if pe != nil || ee != nil || se != nil || ese != nil || pd != ed || sd != es || !q.at.Before(op.Deadline) || entry.owner.store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
+		return q.budget.deny()
 	}
-	allocation, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burn)
-	if err != nil || allocation == nil || allocation.current.LocalRuntime == nil || allocation.current.ValidateAt(q.at) != nil || op.Deadline.After(allocation.current.Window.ExpiresAt) {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+	return nil
+}
+
+func (entry *LocalInvocationEntryV1) currentRetainedRunFromAllocation(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1, allocation *ownedAllocationSnapshots) (domain.Run, error) {
+	if allocation == nil || allocation.current.LocalRuntime == nil || allocation.current.ValidateAt(q.at) != nil || op.Deadline.After(allocation.current.Window.ExpiresAt) {
+		return domain.Run{}, q.budget.deny()
 	}
 	actual, ae := allocation.original.Digest()
 	original, oe := entry.allocation.Digest()
 	tuple := entry.owner.ready.Load()
-	if ae != nil || oe != nil || actual != original || tuple == nil || tuple.store != store || tuple.bridge.VerifyEnteredLocalAllocation(entry.allocation, q.at) != nil {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+	if ae != nil || oe != nil || actual != original || tuple == nil || tuple.store != entry.owner.store || tuple.bridge.VerifyEnteredLocalAllocation(entry.allocation, q.at) != nil {
+		return domain.Run{}, q.budget.deny()
 	}
 	run, found, err := readRunPayload(ctx, q, op.Scope.TenantID, op.Scope.RunID)
 	if err != nil || !found || run.Validate() != nil || run.ID != op.Scope.RunID || run.TenantID != op.Scope.TenantID || run.SessionID != op.Scope.SessionID || run.CancellationRequestedAt != nil || run.Status != domain.RunRunning {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+		return domain.Run{}, q.budget.deny()
 	}
-	return run.Clone(), burn, nil
+	return run.Clone(), nil
 }
 
 func (entry *LocalInvocationEntryV1) retainedContext(ctx context.Context, op domain.AttemptOperationV1) (context.Context, func(), error) {

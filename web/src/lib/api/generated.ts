@@ -444,6 +444,8 @@ export interface components {
             expires_at: string;
             /** @description Exact decoded query, at most 1024 UTF-8 bytes; private browser memory only, not public execution evidence. */
             query: string;
+            /** @description Exact optional model argument from the same immutable consent body. Omitted only when the model omitted it; not a browser override or dispatch authority. */
+            max_results?: number;
         };
         DecideSearchConsentV1: {
             /** @constant */
@@ -671,10 +673,40 @@ export interface components {
             run_id: string;
             manifest_id: string;
         };
+        AnswerCitationSourceV1: {
+            source_id: string;
+            rank: number;
+            /**
+             * Format: uri
+             * @description Exact source URL; server enforces at most 2048 UTF-8 bytes and public HTTPS syntax. No fetch or DNS-safety assertion.
+             */
+            url: string;
+            /** @description Exact untrusted source title, at most 512 UTF-8 bytes; render as text. */
+            title: string;
+            title_truncated: boolean;
+            operation_digest: string;
+            observation_digest: string;
+            response_digest: string;
+            /** Format: date-time */
+            retrieved_at: string;
+            /** Format: date-time */
+            published_at?: string;
+            /** @enum {string} */
+            content_kind: "search_excerpt";
+        };
+        /** @description One canonical manifest, at most 64 KiB encoded JSON. Source IDs are unique and bind their original operation/rank/URL. Not a page-read or claim-support assertion. */
+        AnswerCitationManifestV1: {
+            /** @enum {string} */
+            schema: "sessionless.answer-citations.v1";
+            run_id: string;
+            attempt_id: string;
+            sources: components["schemas"]["AnswerCitationSourceV1"][];
+        };
         EventContent: {
             text?: string;
             attachments?: components["schemas"]["Attachment"][];
             artifact_manifest?: components["schemas"]["ArtifactManifest"];
+            citations?: components["schemas"]["AnswerCitationManifestV1"];
             data?: unknown;
         };
         SessionEvent: {

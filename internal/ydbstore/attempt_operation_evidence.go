@@ -28,14 +28,15 @@ type ownedOperationEvidence struct {
 	compaction  *localCompactionGenerationV1
 	model       *localPreparedModelV1
 	mcp         *localPreparedMCPV1
+	search      *localPreparedSearchV1
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
-	// The closed new search encoding has no installed authentic producer yet.
-	// Deny before local/fixture routing or any body/SQL materialization; neither
-	// plain arm DATA nor retained history may become fresh dispatch evidence.
+	// Only the original private MODEL/consent/prepared holder may select the
+	// explicit SEARCH wire. Uninstalled/plain/retained DATA never falls through
+	// into the legacy fixture tool grammar.
 	if op.SearchWire != nil {
-		return nil, domain.ErrMembershipDenied
+		return store.prepareLocalSearchEvidence(ctx, op)
 	}
 	// A sealed local entry is a handled denial, even when no prepared MODEL or
 	// generation exists. Never fall back to fixture/generic evidence grammar.

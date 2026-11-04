@@ -74,13 +74,11 @@ export function validateConsentSummary(
   requestId: string,
   withQuery = false,
 ): SearchConsentSummary | SearchConsentView {
-  const v = closed(value, [
-    'request_id',
-    'revision',
-    'status',
-    'expires_at',
-    ...(withQuery ? ['query'] : []),
-  ]);
+  const v = closed(
+    value,
+    ['request_id', 'revision', 'status', 'expires_at', ...(withQuery ? ['query'] : [])],
+    withQuery ? ['max_results'] : [],
+  );
   requireValid(
     validConsentSelector(v.request_id) && v.request_id === requestId && instant(v.expires_at),
   );
@@ -110,6 +108,14 @@ export function validateConsentSummary(
       encoded.length <= 1024 &&
         new TextDecoder('utf-8', { fatal: true }).decode(encoded) === v.query,
     );
+    if (Object.hasOwn(v, 'max_results')) {
+      requireValid(
+        typeof v.max_results === 'number' &&
+          Number.isInteger(v.max_results) &&
+          v.max_results >= 1 &&
+          v.max_results <= 5,
+      );
+    }
   }
   return structuredClone(value) as SearchConsentSummary | SearchConsentView;
 }

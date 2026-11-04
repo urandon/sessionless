@@ -28,7 +28,7 @@ func localSearchPolicyData(t *testing.T) (ports.LocalSearchHTTPSProxyPolicyV1, p
 	return p, a
 }
 
-func TestLocalSearchPolicyDataStrictAndCannotPublish(t *testing.T) {
+func TestLocalSearchPolicyDataStrictAndClosedPublicationShape(t *testing.T) {
 	p, a := localSearchPolicyData(t)
 	pb, _ := json.Marshal(p)
 	ab, _ := json.Marshal(a)
@@ -70,10 +70,26 @@ func TestLocalSearchPolicyDataStrictAndCannotPublish(t *testing.T) {
 	pub.ObservedAt = a.ObservedAt
 	pub.OperationDeadline = a.ExpiresAt
 	pub.PolicyBody, pub.AttestationBody = pb, ab
-	if _, err := pub.Bodies(); err == nil {
-		t.Fatal("historical SEARCH codec became a serving publication arm")
+	if bodies, err := pub.Bodies(); err != nil || bodies.LocalSearchHTTPS == nil || bodies.LocalLoopback != nil || bodies.LocalPublicMCPHTTPS != nil || bodies.PinnedHTTPS != nil {
+		t.Fatal("closed explicit SEARCH DATA publication shape", err)
 	}
-	if pub.Validate() == nil {
-		t.Fatal("public DTO fabricated SEARCH producer authority")
+	if pub.Validate() != nil {
+		t.Fatal("correlated DATA shape rejected; actual original producer authentication is separate")
+	}
+}
+
+func TestLocalSearchPolicyBuildUsesOriginalConfiguredProfileAndGrant(t *testing.T) {
+	c := localMCPConfiguredProfileFixture(t)
+	p, _ := localSearchPolicyData(t)
+	g := p.Grant
+	g.TenantID, g.OwnerUserID, g.BillingOwnerUserID = c.TenantID, c.OwnerUserID, c.OwnerUserID
+	actual, err := ports.BuildLocalSearchHTTPSProxyPolicyV1(c, g)
+	digest, _ := c.Digest()
+	if err != nil || actual.ConfiguredProfileDigest != digest || actual.Grant != g || actual.MaxOperationTimeout != 15*time.Second || actual.ConnectorArtifactDigest != c.WorkerExecutableDigest {
+		t.Fatal("fixed endpoint policy disconnected from original DATA", err)
+	}
+	g.OwnerUserID = "foreign-owner"
+	if _, err := ports.BuildLocalSearchHTTPSProxyPolicyV1(c, g); err == nil {
+		t.Fatal("foreign grant owner accepted")
 	}
 }

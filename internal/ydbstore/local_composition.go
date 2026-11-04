@@ -10,6 +10,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 )
 
@@ -46,9 +47,11 @@ type localFreshReservationV1 struct {
 }
 
 type localOwnedStoreTupleV1 struct {
-	store  *Store
-	bridge *serverlessharness.BoundedOwnedAllocationPreparationV1
-	keeper ports.OwnedProxyPublicationVerifierV2
+	store           *Store
+	bridge          *serverlessharness.BoundedOwnedAllocationPreparationV1
+	keeper          ports.OwnedProxyPublicationVerifierV2
+	search          *providercredential.InvocationService
+	searchTransport ports.LocalSearchTransportV1
 }
 
 func NewLocalOwnedStoreBootstrapV1(source *localoperator.Source, prepare *serverlessharness.CapabilityIssuer, operate *serverlessharness.OperationCapabilityIssuer) (*LocalOwnedStoreBootstrapV1, error) {
@@ -98,6 +101,7 @@ func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, ke
 	}
 	for _, pair := range [][2]any{
 		{options.OwnedAttemptEffectSourceVerifier, b.source},
+		{options.OwnedWebSearchResourceGrantCustody, b.source},
 		{options.AttemptEffectGrantIssuer, b.prepare}, {options.OwnedPreparationGrantVerifier, b.prepare},
 		{options.AttemptOperationIssuer, b.operate}, {options.OwnedProxyPublicationVerifier, keeper},
 	} {
@@ -112,6 +116,7 @@ func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, ke
 	}
 	options.AttemptEffectGrantIssuer, options.OwnedPreparationGrantVerifier = b.prepare, b.prepare
 	options.OwnedAttemptEffectSourceVerifier = b.source
+	options.OwnedWebSearchResourceGrantCustody = b.source
 	options.AttemptOperationIssuer, options.OwnedProxyPublicationVerifier = b.operate, keeper
 	var bodySlot *localOperationBodySlot
 	if options.AttemptOperationBodies == nil && options.OwnedOperationResidualCustody == nil {
@@ -133,12 +138,21 @@ func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, ke
 // Complete publishes the exact one-time tuple. The connector already retains
 // b from construction and resolves RuntimeFor itself; no mutable BindStore
 // callback, prior-binding assertion or caller Boolean participates here.
-func (b *LocalOwnedStoreBootstrapV1) Complete(bridge *serverlessharness.BoundedOwnedAllocationPreparationV1) error {
-	if b == nil || b.self != b || bridge == nil || !bridge.MatchesLocalComposition(b.source, b.prepare, b) {
+func (b *LocalOwnedStoreBootstrapV1) Complete(bridge *serverlessharness.BoundedOwnedAllocationPreparationV1, search *providercredential.InvocationService) error {
+	if b == nil || b.self != b || bridge == nil || !bridge.MatchesLocalComposition(b.source, b.prepare, b) ||
+		search != nil && search.ValidateConstructor() != nil {
 		return domain.ErrMembershipDenied
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	var transport ports.LocalSearchTransportV1
+	if search != nil {
+		var ok bool
+		transport, ok = b.keeper.(ports.LocalSearchTransportV1)
+		if !ok || !sameLocalOwnerPointer(transport, b.keeper) {
+			return domain.ErrMembershipDenied
+		}
+	}
 	if b.store == nil || b.store.localBootstrap != b || b.ready.Load() != nil ||
 		!sameLocalOwnerPointer(b.store.attemptOperationIssuer, b.operate) || !sameLocalOwnerPointer(b.store.ownedProxyPublicationVerifier, b.keeper) ||
 		!sameLocalOwnerPointer(b.store.attemptEffectGrantIssuer, b.prepare) || !sameLocalOwnerPointer(b.store.ownedPreparationGrantVerifier, b.prepare) ||
@@ -146,7 +160,7 @@ func (b *LocalOwnedStoreBootstrapV1) Complete(bridge *serverlessharness.BoundedO
 		return domain.ErrMembershipDenied
 	}
 	b.store.ownedAllocationPublicationVerifier = bridge
-	b.ready.Store(&localOwnedStoreTupleV1{store: b.store, bridge: bridge, keeper: b.keeper})
+	b.ready.Store(&localOwnedStoreTupleV1{store: b.store, bridge: bridge, keeper: b.keeper, search: search, searchTransport: transport})
 	return nil
 }
 

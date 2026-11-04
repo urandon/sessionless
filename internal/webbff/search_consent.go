@@ -129,11 +129,12 @@ func (h *Handler) getSearchConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	digest := sha256.Sum256([]byte(view.Query))
-	if !consentMatchesInput(view.State, input) || !utf8.ValidString(view.Query) || len(view.Query) == 0 || len(view.Query) > 1024 || hex.EncodeToString(digest[:]) != view.State.Request.QueryDigest {
+	invalidMaximum := view.MaxResults != nil && (*view.MaxResults < 1 || *view.MaxResults > 5)
+	if !consentMatchesInput(view.State, input) || !utf8.ValidString(view.Query) || len(view.Query) == 0 || len(view.Query) > 1024 || hex.EncodeToString(digest[:]) != view.State.Request.QueryDigest || invalidMaximum {
 		h.writeConsentError(w, r, errors.New("invalid private consent view"))
 		return
 	}
-	h.writeBoundedJSON(w, r, webcontract.SearchConsentViewV1{SearchConsentSummaryV1: consentSummary(view.State), Query: view.Query}, searchConsentResponseBytes)
+	h.writeBoundedJSON(w, r, webcontract.SearchConsentViewV1{SearchConsentSummaryV1: consentSummary(view.State), Query: view.Query, MaxResults: view.MaxResults}, searchConsentResponseBytes)
 }
 
 func (h *Handler) decideSearchConsent(w http.ResponseWriter, r *http.Request) {

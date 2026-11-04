@@ -50,6 +50,15 @@ func (bridge *BoundedOwnedAllocationPreparationV1) BeginLocalMCPProtocolOperatio
 	return bridge.beginLocalOperation(source, allocation, op, at)
 }
 
+// SEARCH owns the same original one-way allocation resource slot, but never
+// selects MODEL or MCP transport semantics. SQL receipt/send gates are separate.
+func (bridge *BoundedOwnedAllocationPreparationV1) BeginLocalSearchOperation(source *localoperator.Source, allocation domain.RegisteredAllocationV2, op domain.AttemptOperationV1, at time.Time) (*LocalModelOperationLeaseV1, error) {
+	if op.Kind != domain.AttemptOperationWebSearchV1 || op.SearchWire == nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	return bridge.beginLocalOperation(source, allocation, op, at)
+}
+
 func (bridge *BoundedOwnedAllocationPreparationV1) beginLocalOperation(source *localoperator.Source, allocation domain.RegisteredAllocationV2, op domain.AttemptOperationV1, at time.Time) (*LocalModelOperationLeaseV1, error) {
 	if bridge == nil || bridge.local == nil || source == nil || bridge.local.source != source ||
 		bridge.VerifyEnteredLocalAllocation(allocation, at) != nil {

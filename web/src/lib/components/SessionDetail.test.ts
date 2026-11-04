@@ -13,12 +13,28 @@ import {
 } from '$lib/api/client';
 import SessionDetail, { type SessionDetailApi } from './SessionDetail.svelte';
 import { barrier, explanation } from '$lib/run-explanation/test-fixtures';
+import { citationManifest } from '$lib/citations/test-fixtures';
 
 const identity: Identity = {
   user_id: 'usr-1',
   provider: 'yandex',
   tenants: [{ tenant_id: 'ten-1', role: 'owner', active: true }],
 };
+
+function citedPage(): EventPage {
+  return {
+    items: [
+      {
+        event_id: 'evt-cited',
+        run_id: 'run-cited',
+        sequence: 1,
+        kind: 'assistant_message',
+        content: { text: 'Canonical cited answer', citations: citationManifest() },
+        created_at: '2026-11-04T00:00:00Z',
+      },
+    ],
+  };
+}
 
 const session: SessionSummary = {
   session_id: 'ses-1',
@@ -28,6 +44,73 @@ const session: SessionSummary = {
   created_at: '2026-08-18T00:00:00Z',
   updated_at: '2026-08-18T01:00:00Z',
 };
+
+describe('SessionDetail canonical answer citations', () => {
+  it('does not restore source links from a late poll after identity denial', async () => {
+    const identityRead = barrier<Identity>();
+    const eventRead = barrier<ConditionalResult<EventPage>>();
+    const client = api({
+      getIdentity: vi
+        .fn()
+        .mockResolvedValueOnce(identity)
+        .mockReturnValueOnce(identityRead.promise),
+      listEvents: vi
+        .fn()
+        .mockResolvedValueOnce(fresh(citedPage()))
+        .mockReturnValueOnce(eventRead.promise),
+    });
+    render(SessionDetail, { client, sessionId: 'ses-1', explanationEnabled: true });
+    await screen.findByRole('link', { name: /Source 1: <img/ });
+    await fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(client.listEvents).toHaveBeenCalledTimes(2));
+    identityRead.reject(new ApiError('access_denied', 'Unavailable', 403));
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: /Source 1: <img/ })).not.toBeInTheDocument(),
+    );
+    eventRead.resolve(fresh(citedPage()));
+    await eventRead.promise;
+    await tick();
+    expect(screen.queryByRole('link', { name: /Source 1: <img/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Canonical cited answer')).not.toBeInTheDocument();
+  });
+  it('reads the same stored references after a refresh and remount', async () => {
+    const client = api({ listEvents: vi.fn().mockResolvedValue(fresh(citedPage())) });
+    const view = render(SessionDetail, { client, sessionId: 'ses-1' });
+    const first = await screen.findByRole('link', { name: /Source 1: <img/ });
+    expect(first).toHaveAttribute('href', 'https://example.com/source');
+    await fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(client.listEvents).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('link', { name: /Source 1: <img/ })).toHaveAttribute(
+      'href',
+      'https://example.com/source',
+    );
+    view.unmount();
+    render(SessionDetail, { client, sessionId: 'ses-1' });
+    expect(await screen.findByRole('link', { name: /Source 1: <img/ })).toHaveAttribute(
+      'href',
+      'https://example.com/source',
+    );
+    expect(client.createMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 404])('clears citation content after denied event read %s', async (status) => {
+    const code =
+      status === 401 ? 'unauthenticated' : status === 403 ? 'access_denied' : 'not_found';
+    const client = api({
+      listEvents: vi
+        .fn()
+        .mockResolvedValueOnce(fresh(citedPage()))
+        .mockRejectedValue(new ApiError(code, 'Unavailable', status)),
+    });
+    render(SessionDetail, { client, sessionId: 'ses-1' });
+    await screen.findByRole('link', { name: /Source 1: <img/ });
+    await fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: /Source 1: <img/ })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Canonical cited answer')).not.toBeInTheDocument();
+  });
+});
 
 function fresh<T>(data: T): ConditionalResult<T> {
   return { state: 'fresh', data, etag: '"v1"', pollAfterMs: 15000 };
@@ -371,6 +454,7 @@ describe('SessionDetail explanation lifecycle', () => {
     status: 'pending' as const,
     expires_at: new Date(consentTime + 60000).toISOString(),
     query: ' <script>private query</script>\nhttps://not-a-link.example/ ',
+    max_results: 3,
   };
   function withSearch(overrides: Partial<SessionDetailApi> = {}): SessionDetailApi {
     return withRun({
@@ -409,6 +493,7 @@ describe('SessionDetail explanation lifecycle', () => {
     expect(query.textContent).toBe(consentView.query);
     expect(document.querySelector('script')).toBeNull();
     expect(query.querySelector('a')).toBeNull();
+    expect(screen.getByRole('definition', { name: 'max_results' })).toHaveTextContent('3');
     expect(client.discoverSearchConsent).toHaveBeenCalledWith(
       'ses-1',
       'run-1',
@@ -430,6 +515,7 @@ describe('SessionDetail explanation lifecycle', () => {
       expect.any(AbortSignal),
     );
     expect(screen.getByText(/Approval was recorded/)).toBeInTheDocument();
+    expect(screen.queryByRole('definition', { name: 'max_results' })).not.toBeInTheDocument();
     await fireEvent.keyDown(screen.getByRole('heading', { name: 'Web search consent' }), {
       key: 'Escape',
     });

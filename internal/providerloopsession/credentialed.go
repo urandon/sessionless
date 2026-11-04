@@ -87,6 +87,37 @@ func (v *CredentialedV1) Close() error {
 func (*CredentialedV1) String() string     { return "CredentialedV1{private:[redacted]}" }
 func (v *CredentialedV1) GoString() string { return v.String() }
 
+// Auth-none MODEL participates only in the SAME whole-invocation cleanup
+// window when the concrete SEARCH service is installed. It never issues or
+// materializes a MODEL handle and never supplies a fabricated bearer. Each
+// SEARCH later borrows/releases its distinct one-shot handle synchronously.
+func (s *localState) runServiceCredentialEngine(caller, call context.Context) (result ModelStepResultV1, err error) {
+	if s.credentialed || s.searchCredentials == nil || s.searchCredentials.ValidateConstructor() != nil || s.entry == nil {
+		return result, ErrSession
+	}
+	active, err := s.entry.PrepareCredentialedExecution(call)
+	if err != nil {
+		return result, ErrSession
+	}
+	defer func() {
+		deadline, cleanupErr := s.entry.BeginCredentialedCleanup()
+		cleanup, cancel := context.WithDeadline(context.WithoutCancel(caller), deadline)
+		defer cancel()
+		joined := s.keeper.EndCredentialScope(cleanup, deadline)
+		if cleanupErr != nil || joined != nil || cleanup.Err() != nil || !time.Now().Before(deadline) {
+			err = ErrIncomplete
+			return
+		}
+		s.mu.Lock()
+		s.credentialReleased = true
+		s.mu.Unlock()
+	}()
+	if s.keeper.BeginServiceCredentialScope(call, active) != nil {
+		return result, ErrSession
+	}
+	return s.runBoundedEngine(caller, call)
+}
+
 func ownedCredentialHandle(h ports.ProviderInvocationCredentialV1, r ports.ProviderCredentialIssueRequestV1) bool {
 	// A foreign result is not a safely owned handle and must never be released
 	// on this invocation's behalf. Expiry is validated separately, AFTER the

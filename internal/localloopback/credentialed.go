@@ -24,6 +24,10 @@ type credentialScopeV1 struct {
 	ending   bool
 	done     chan struct{}
 	err      error
+	// Explicit service-only participation has no MODEL handle or key. SEARCH
+	// borrows its distinct handle/key only for its own synchronous connection.
+	serviceOnly     bool
+	serviceDeadline time.Time
 	// AttemptOperationV1.Validate already bounds original sequences to twelve.
 	// Retain only join signals, not completed connection/credential metadata.
 	joins []<-chan struct{}
@@ -71,12 +75,41 @@ func (k *KeeperV1) BeginCredentialScope(ctx context.Context, handle ports.Provid
 	return nil
 }
 
+// BeginServiceCredentialScope installs only the original whole-engine join
+// window for auth-none MODEL plus SEARCH. No handle, key, credential callback,
+// current permission, SQL or socket is acquired by this method.
+func (k *KeeperV1) BeginServiceCredentialScope(ctx context.Context, deadline time.Time) error {
+	if k == nil || k.self != k || k.credentialed || ctx == nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed || k.credentialScopeUsed || k.active != nil || k.sourceLifetime == nil || k.sourceLifetime.Err() != nil {
+		return domain.ErrMembershipDenied
+	}
+	k.credentialScopeUsed = true
+	if ctx.Err() != nil || deadline.IsZero() || !time.Now().Before(deadline) {
+		k.credentialTainted = true
+		return domain.ErrMembershipDenied
+	}
+	if end, ok := ctx.Deadline(); ok && deadline.After(end) {
+		k.credentialTainted = true
+		return domain.ErrMembershipDenied
+	}
+	call, cancel := context.WithDeadline(ctx, deadline)
+	k.credentialScope = &credentialScopeV1{ctx: call, cancel: cancel, admitted: true, serviceOnly: true, serviceDeadline: deadline, done: make(chan struct{})}
+	return nil
+}
+
 // credentialAdmittedLocked authenticates the original scope, never the key as
 // authority. The actual Store still revalidates canonical generation/revocation
 // and the one-use operation capability immediately before each physical send.
 func (k *KeeperV1) credentialAdmittedLocked(scope *credentialScopeV1, a domain.RegisteredAllocationV2, s domain.AttemptExecutionSourceV1, op domain.AttemptOperationV1, now time.Time) bool {
 	if !k.credentialed {
-		return scope == nil && k.credentialScope == nil
+		if scope == nil {
+			return k.credentialScope == nil && !k.credentialEnded
+		}
+		return scope == k.credentialScope && scope.serviceOnly && !k.credentialTainted && !k.credentialEnded && scope.admitted && !scope.ending && scope.ctx != nil && scope.ctx.Err() == nil && len(scope.borrowed) == 0 && scope.handle == (ports.ProviderInvocationCredentialV1{}) && now.Before(scope.serviceDeadline) && !op.Deadline.After(scope.serviceDeadline)
 	}
 	if k.credentialTainted || k.credentialEnded || scope == nil || scope != k.credentialScope || !scope.admitted || scope.ending || scope.ctx == nil || scope.ctx.Err() != nil || !validBearerBytes(scope.borrowed) {
 		return false
@@ -116,7 +149,7 @@ func requestWire(address string, payload, credential []byte) []byte {
 // late completion is a sticky failure, never an on-time cleanup receipt. This
 // relies on the owned cooperative TCP/context I/O, not an injected transport.
 func (k *KeeperV1) EndCredentialScope(ctx context.Context, originalCleanupDeadline time.Time) error {
-	if k == nil || k.self != k || !k.credentialed {
+	if k == nil || k.self != k {
 		return domain.ErrMembershipDenied
 	}
 	invalidContext := ctx == nil
@@ -124,6 +157,10 @@ func (k *KeeperV1) EndCredentialScope(ctx context.Context, originalCleanupDeadli
 		ctx = context.Background()
 	}
 	k.mu.Lock()
+	if !k.credentialed && (k.credentialScope == nil || !k.credentialScope.serviceOnly) {
+		k.mu.Unlock()
+		return domain.ErrMembershipDenied
+	}
 	if invalidContext {
 		k.credentialTainted = true
 	}

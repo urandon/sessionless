@@ -146,11 +146,20 @@ type generationSourceV1 struct {
 // prompt, native transcript, fit assertion or restored effect permission.
 func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
 	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1) (*generationSourceV1, error) {
-	return buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, history, nil)
+	return buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, history, nil, nil)
 }
 
 func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
-	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1, route *contextRouteV2) (*generationSourceV1, error) {
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1, route *contextRouteV2, searchRoute *contextRouteV3) (*generationSourceV1, error) {
+	if route != nil && searchRoute != nil {
+		return nil, ErrCanonical
+	}
+	if searchRoute != nil {
+		if policy.Profile != domain.AgentLoopOwnedPublicV1 || searchRoute.mcp == nil || parent != nil && parent.version != 1 && parent.version != 2 {
+			return nil, ErrCanonical
+		}
+		route = searchRoute.mcp // The unchanged, separately tagged MCP arm only.
+	}
 	if route == nil && parent != nil && parent.version == 2 {
 		return nil, ErrCanonical
 	}
@@ -220,6 +229,7 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 	}
 	byAnchorV2 := make(map[domain.SessionEventID]historicalV2Frames)
 	beforeV2 := make(map[domain.SessionEventID]historicalV2Frames)
+	historyBudget := MaxBytesV1
 	if route != nil {
 		if len(route.history)+len(history) > len(records) {
 			return nil, ErrCanonical
@@ -228,7 +238,6 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 		for _, old := range history {
 			seenScopes[old.Scope] = true
 		}
-		historyBudget := MaxBytesV1
 		for _, old := range route.history {
 			if old.Scope.Validate() != nil || old.Anchor.Validate() != nil || len(old.Operations) < 3 || len(old.Operations) > 12 || len(old.ConservativeMCP) > 4 || len(old.Projections) < 3 || len(old.Projections) > 9 {
 				return nil, ErrCanonical
@@ -246,6 +255,54 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 				}
 			}
 			f, r, err := route.historical(profile, old, records)
+			if err != nil {
+				return nil, ErrCanonical
+			}
+			byAnchorV2[old.Anchor] = historicalV2Frames{}
+			for i, frame := range f {
+				at := old.Anchor
+				for _, projection := range old.Projections {
+					if projection.OperationSequence > frame.Sequence {
+						at = projection.EventID
+						break
+					}
+				}
+				slot := beforeV2[at]
+				slot.frames, slot.sources = append(slot.frames, frame), append(slot.sources, r[i])
+				beforeV2[at] = slot
+			}
+		}
+	}
+	if searchRoute != nil {
+		if len(searchRoute.history)+len(route.history)+len(history) > len(records) {
+			return nil, ErrCanonical
+		}
+		seenScopes := make(map[domain.AttemptOperationScopeV1]bool)
+		for _, old := range history {
+			seenScopes[old.Scope] = true
+		}
+		for _, old := range route.history {
+			seenScopes[old.Scope] = true
+		}
+		for _, old := range searchRoute.history {
+			if _, exists := byAnchor[old.Anchor]; exists || seenScopes[old.Scope] || old.Scope.RunID == policy.RunID {
+				return nil, ErrCanonical
+			}
+			if _, exists := byAnchorV2[old.Anchor]; exists {
+				return nil, ErrCanonical
+			}
+			seenScopes[old.Scope] = true
+			for _, item := range old.Operations {
+				if !take(&historyBudget, uint64(len(item.Normalized))) {
+					return nil, ErrCanonical
+				}
+			}
+			for _, catalog := range old.ModelCatalogs {
+				if !take(&historyBudget, uint64(len(catalog.Tools))) {
+					return nil, ErrCanonical
+				}
+			}
+			f, r, err := searchRoute.historical(profile, old, records)
 			if err != nil {
 				return nil, ErrCanonical
 			}
@@ -324,6 +381,23 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 					// projection; render the verified canonical body only once.
 					key, e := OperationSourceKeyV1(projected.Reservation, projected.Observation)
 					if e != nil {
+						return nil, ErrCanonical
+					}
+					row.SourceID = key
+					frames[len(frames)-1].SourceID = key
+					frames[len(frames)-1].Kind = "operation"
+					frames[len(frames)-1].Digest = projected.Observation.ResponseDigest
+				}
+			}
+		}
+		if searchRoute != nil {
+			if projected, ok := searchRoute.projected[event.ID]; ok {
+				if _, crossed := route.projected[event.ID]; crossed {
+					return nil, ErrCanonical
+				}
+				if event.Kind == domain.SessionEventToolCall || event.Kind == domain.SessionEventToolResult {
+					key, err := OperationSourceKeyV1(projected.Reservation, projected.Observation)
+					if err != nil {
 						return nil, ErrCanonical
 					}
 					row.SourceID = key
@@ -412,6 +486,18 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 			}
 		}
 	}
+	if searchRoute != nil {
+		for _, old := range searchRoute.history {
+			for _, item := range old.Operations {
+				if item.Reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
+					response, err := configuredinference.DecodeRetainedNormalizedDataV1(profile, item.Reservation, item.Observation, item.Normalized)
+					if err != nil || !matchCompaction(item.Reservation, item.Observation, response.Text) {
+						return nil, ErrCanonical
+					}
+				}
+			}
+		}
+	}
 	var pending *configuredinference.FunctionCallV1
 	var pendingObservation domain.AttemptOperationObservationV1
 	pendingStart := -1
@@ -434,6 +520,34 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 		requestHash, responseHash := sha256.Sum256(op.Request), sha256.Sum256(op.Response)
 		if hex.EncodeToString(requestHash[:]) != r.Operation.RequestDigest || hex.EncodeToString(responseHash[:]) != o.ResponseDigest {
 			return nil, ErrCanonical
+		}
+		if r.Operation.Kind == domain.AttemptOperationWebSearchV1 {
+			if searchRoute == nil || pending == nil || i == 0 || r.Operation.ToolGrantDigest != policy.WebSearchGrantDigest {
+				return nil, ErrCanonical
+			}
+			witness := searchRoute.currentSearch(r, o, op.Response, policy)
+			if witness == nil {
+				return nil, ErrCanonical
+			}
+			pair, err := searchCanonicalPairV3(profile, pending, pendingObservation, r, witness.Search.Result)
+			if err != nil {
+				return nil, ErrCanonical
+			}
+			frames[pendingStart].Payload = string(pair[0].Payload)
+			key, err := OperationSourceKeyV1(r, o)
+			if err != nil {
+				clear(pair[0].Payload)
+				clear(pair[1].Payload)
+				return nil, err
+			}
+			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "tool_result", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: string(pair[1].Payload), Digest: o.ResponseDigest})
+			clear(pair[0].Payload)
+			clear(pair[1].Payload)
+			sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
+			units = append(units, UnitV1{Start: pendingStart, End: len(frames)})
+			clear(pending.Arguments)
+			pending = nil
+			continue
 		}
 		if r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
 			var conservative *MCPConservativeDataV2
@@ -500,6 +614,12 @@ func buildGenerationSource(profile domain.ConfiguredInferenceProfileV1, limits d
 			return nil, ErrCanonical
 		}
 		version = 2
+	}
+	if searchRoute != nil {
+		if len(searchRoute.used) != len(searchRoute.search) {
+			return nil, ErrCanonical
+		}
+		version = 3
 	}
 	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
 		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest(), closure: uint32(len(parentPlans) + 1), version: version}

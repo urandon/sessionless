@@ -1,0 +1,48 @@
+//go:build sessionless_search_offline
+
+package providerloopsession
+
+import (
+	"context"
+	"crypto/x509"
+	"net"
+	"net/netip"
+)
+
+// Present only in the additive test binary, before the original session starts.
+// No Source/Store/keeper/issuer is replaced and no invocation gate is reset.
+func (v *LocalV1) ConfigureSearchOfflineNetwork(lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool) error {
+	if v == nil || v.state == nil {
+		return ErrSession
+	}
+	s := v.state
+	select {
+	case s.gate <- struct{}{}:
+	default:
+		return ErrBusy
+	}
+	defer func() { <-s.gate }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.credentialed || s.closed || s.started || s.attempted || s.runtimeStarted || s.entry != nil || s.keeper == nil || s.searchCredentials == nil || s.ctx == nil || s.ctx.Err() != nil {
+		return ErrSession
+	}
+	return s.keeper.ConfigureSearchOfflineNetwork(lookup, dial, roots)
+}
+
+// Do not reenter the engine gate while its synchronous borrow is active, or
+// hold the state mutex through socket cleanup. This can only stop its keeper.
+func (v *LocalV1) StopActiveSearchOffline() error {
+	if v == nil || v.state == nil {
+		return ErrSession
+	}
+	s := v.state
+	s.mu.Lock()
+	keeper := s.keeper
+	valid := !s.closed && s.runtimeStarted && s.entry != nil && keeper != nil && s.ctx != nil && s.ctx.Err() == nil
+	s.mu.Unlock()
+	if !valid {
+		return ErrSession
+	}
+	return keeper.StopActiveSearchOffline()
+}

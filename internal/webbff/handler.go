@@ -527,7 +527,13 @@ func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.R
 	}
 	items := make([]webcontract.SessionEvent, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, projectEvent(item))
+		projected, err := projectEvent(item)
+		if err != nil {
+			handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
+			handler.writeError(w, request, err)
+			return
+		}
+		items = append(items, projected)
 	}
 	handler.writeJSONConditional(w, request, webcontract.Page[webcontract.SessionEvent]{
 		Items: items, NextCursor: page.NextCursor,
@@ -1477,7 +1483,7 @@ func projectRun(run domain.Run, provider string) webcontract.Run {
 	}
 }
 
-func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
+func projectEvent(item sessionapi.Event) (webcontract.SessionEvent, error) {
 	content := webcontract.EventContent{Data: append(json.RawMessage(nil), item.Payload...)}
 	switch item.Event.Kind {
 	case domain.SessionEventUserMessage:
@@ -1498,6 +1504,29 @@ func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
 			}
 		}
 	case domain.SessionEventAssistantMessage:
+		var tag struct {
+			Schema string `json:"schema"`
+		}
+		// Unmarshal may set a later v2 tag AND return an earlier field-type
+		// error. Never treat that ambiguous partial decode as legacy content.
+		if json.Unmarshal(item.Payload, &tag) != nil {
+			return webcontract.SessionEvent{}, errors.New("invalid canonical assistant material")
+		}
+		if strings.HasPrefix(tag.Schema, "sessionless.assistant-message.") && tag.Schema != "sessionless.assistant-message.v1" && tag.Schema != domain.CitedAssistantMessageSchemaV2 {
+			return webcontract.SessionEvent{}, errors.New("unsupported canonical assistant material")
+		}
+		if tag.Schema == domain.CitedAssistantMessageSchemaV2 {
+			value, err := domain.DecodeCitedAssistantMessageV2(item.Payload, domain.CitedAnswerBytesV1, uint64(len(item.Payload)))
+			if err != nil || item.Event.RunID == nil || item.Event.RunID.Validate() != nil || value.Citations.RunID != *item.Event.RunID {
+				// An invalid explicit v2 cannot become an ordinary uncited answer
+				// or a generic raw-data response. The endpoint emits a safe error.
+				return webcontract.SessionEvent{}, errors.New("invalid canonical cited assistant material")
+			}
+			manifest := value.Citations.Clone()
+			content.Text, content.Data, content.Citations = value.Summary, nil, &manifest
+			content.ArtifactManifest = &webcontract.AssistantArtifactManifest{RunID: *item.Event.RunID, ManifestID: value.ArtifactManifestID}
+			break
+		}
 		var envelope struct {
 			Summary            string                    `json:"summary"`
 			ArtifactManifestID domain.ArtifactManifestID `json:"artifact_manifest_id"`
@@ -1514,7 +1543,7 @@ func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
 	return webcontract.SessionEvent{
 		EventID: item.Event.ID, Sequence: item.Event.Sequence, Kind: item.Event.Kind,
 		RunID: cloneEventRunID(item.Event.RunID), Content: content, CreatedAt: item.Event.CreatedAt,
-	}
+	}, nil
 }
 
 // Copy only canonical correlation from the already participant-authorized

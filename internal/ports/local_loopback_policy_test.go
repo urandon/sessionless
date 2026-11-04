@@ -223,3 +223,44 @@ func TestLocalLoopbackAttestationAndCanonicalBodiesDenyMismatch(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnedProxyUnionSearchIsExclusiveAcrossEveryOldArm(t *testing.T) {
+	searchPolicy, searchAttestation := localSearchPolicyData(t)
+	search := &ports.OwnedLocalSearchHTTPSBodiesV1{Policy: searchPolicy, Attestation: searchAttestation}
+	pinned, err := taggedProxyPublicationFixture(t).Bodies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := localProxyPublication(t).Bodies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := localMCPPolicyFixture()
+	pd, _ := p.Digest()
+	at := searchAttestation.ObservedAt
+	a := ports.LocalPublicMCPHTTPSProxyAttestationV1{Version: 1, PolicyDigest: pd, Observation: domain.RegisteredLocalPublicMCPHTTPSProxyV1{ConfiguredProfileDigest: p.ConfiguredProfileDigest, EndpointPolicy: p.EndpointPolicy, ConnectorArtifactDigest: p.ConnectorArtifactDigest, InstallationID: "synthetic-installation", InstallationRevision: 1, HostIdentityDigest: p.HostIdentityDigest, NetworkNamespaceIdentityDigest: p.NetworkNamespaceIdentityDigest, ResolutionSetDigest: strings.Repeat("8", 64), MCPProfileDigest: p.MCPProfileDigest, GrantDigest: p.GrantDigest, DescriptorDigest: p.DescriptorDigest}, ConnectionAddressPinned: true, DNSRebindingDenied: true, PublicUnicastOnly: true, RedirectsDenied: true, AmbientProxyDenied: true, CertificateValidationRequired: true, TLSHandshakeVerified: true, VerifiedSNI: "developers.openai.com", ResolvedHost: "developers.openai.com", ResolvedPort: 443, ObservedAt: at, ExpiresAt: at.Add(20 * time.Second)}
+	mcp := ports.OwnedProxyBodiesV2{TransportKind: domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1, LocalPublicMCPHTTPS: &ports.OwnedLocalPublicMCPHTTPSBodiesV1{Policy: p, Attestation: a}}
+	for _, old := range []ports.OwnedProxyBodiesV2{pinned, loopback, mcp} {
+		if old.Validate() != nil {
+			t.Fatal("valid original old-arm baseline")
+		}
+		old.LocalSearchHTTPS = search
+		if old.Validate() == nil || !old.ExpiresAt().IsZero() {
+			t.Fatal("old arm ignored crossed SEARCH field")
+		}
+		if _, err := old.PolicyDigest(); err == nil {
+			t.Fatal("crossed union produced a policy commitment")
+		}
+	}
+	base := ports.OwnedProxyBodiesV2{TransportKind: domain.RegisteredProxyTransportLocalSearchHTTPSV1, LocalSearchHTTPS: search}
+	if base.Validate() != nil || !base.ExpiresAt().Equal(searchAttestation.ExpiresAt) {
+		t.Fatal("canonical SEARCH arm")
+	}
+	for _, foreign := range []ports.OwnedProxyBodiesV2{{PinnedHTTPS: pinned.PinnedHTTPS}, {LocalLoopback: loopback.LocalLoopback}, {LocalPublicMCPHTTPS: mcp.LocalPublicMCPHTTPS}} {
+		bad := base
+		bad.PinnedHTTPS, bad.LocalLoopback, bad.LocalPublicMCPHTTPS = foreign.PinnedHTTPS, foreign.LocalLoopback, foreign.LocalPublicMCPHTTPS
+		if bad.Validate() == nil {
+			t.Fatal("SEARCH arm ignored crossed old field")
+		}
+	}
+}

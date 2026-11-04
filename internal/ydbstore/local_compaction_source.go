@@ -78,6 +78,7 @@ type localCompactionSnapshot struct {
 	Accounting   ownedAttemptAccounting
 	Operations   []ownedOperationRow
 	ProxyDigests []domain.RegisteredProxyAttestationDigestV2
+	Consents     *ownedConsentStates
 }
 
 type localCompactionSourceState struct {
@@ -263,7 +264,7 @@ func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context
 			pendingCall := decoded.Call != nil
 			allowPendingCall := pendingCall && decoded.Stop == configuredinference.StopToolV1 &&
 				((purpose == localSourceMCPPreparation && i == len(snapshot.Operations)-1) ||
-					(i+1 < len(snapshot.Operations) && snapshot.Operations[i+1].reservation.Operation.Kind == domain.AttemptOperationMCPToolV1))
+					(i+1 < len(snapshot.Operations) && (snapshot.Operations[i+1].reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 || snapshot.Operations[i+1].reservation.Operation.Kind == domain.AttemptOperationWebSearchV1 && entry.originalSearchObservationAllowsSuccessor(snapshot.Operations[i+1].reservation, *snapshot.Operations[i+1].observation))))
 			if decoded.Call != nil {
 				clear(decoded.Call.Arguments)
 			}
@@ -291,6 +292,13 @@ func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context
 			clear(model.Call.Arguments)
 			if e != nil || tool.CallID() != callID || tool.Name() != name || tool.ArgumentsDigest() != args || tool.ModelResponseDigest() != modelDigest ||
 				op.ModelResponseDigest != modelDigest || op.CallID != callID || op.ArgumentsDigest != args || op.ToolGrantDigest != tool.GrantDigest() {
+				return nil, domain.ErrMembershipDenied
+			}
+		case domain.AttemptOperationWebSearchV1:
+			if i == 0 || snapshot.Operations[i-1].reservation.Operation.Kind != domain.AttemptOperationModelV1 || !entry.originalSearchObservationAllowsSuccessor(row.reservation, o) {
+				return nil, domain.ErrMembershipDenied
+			}
+			if err := entry.validateOriginalSearchMaterial(state.operations[i-1], state.operations[i]); err != nil {
 				return nil, domain.ErrMembershipDenied
 			}
 		default:
@@ -337,7 +345,7 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Conte
 
 func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotWithBurn(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, time.Time, error) {
 	if phase == localCompactionCapture {
-		if owner.generation != nil || owner.model != nil || owner.mcp != nil {
+		if owner.generation != nil || owner.model != nil || owner.mcp != nil || owner.search != nil {
 			return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 		}
 	} else if !owner.original(entry, phase) {
@@ -433,7 +441,13 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotBody(ctx context.C
 		return deny()
 	}
 	v.Accounting = *accounting
-	v.Operations, err = entry.readLocalPreparedOperations(ctx, q, *accounting, owner, phase)
+	if tuple := entry.owner.ready.Load(); tuple != nil && tuple.search != nil {
+		v.Consents, err = readOwnedConsentStates(ctx, q, entry.parent)
+		if err != nil {
+			return deny()
+		}
+	}
+	v.Operations, err = entry.readLocalPreparedOperations(ctx, q, *accounting, owner, phase, v.Consents)
 	if err != nil {
 		return deny()
 	}
@@ -444,7 +458,7 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotBody(ctx context.C
 	return v, nil
 }
 
-func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting, owner localSnapshotOwner, phase localCompactionGenerationPhase) ([]ownedOperationRow, error) {
+func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting, owner localSnapshotOwner, phase localCompactionGenerationPhase, consents *ownedConsentStates) ([]ownedOperationRow, error) {
 	scope := ownedOperationScope(entry.parent)
 	rows, err := q.QueryContext(ctx, localCompactionOperationsSQL, scope.TenantID, scope.AttemptID)
 	if err != nil {
@@ -460,6 +474,7 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Con
 		}
 	}
 	var predecessor domain.AttemptOperationObservationDigestV1
+	var chargedConsents uint8
 	for rows.Next() {
 		var columns ownedOperationColumns
 		var sequence, indexedSequence uint64
@@ -471,7 +486,13 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Con
 			return nil, q.budget.deny()
 		}
 		row, e := columns.decode(q, scope, sequence)
-		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || indexedSequence != sequence || indexedDigest != columns.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) {
+		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || indexedSequence != sequence || indexedDigest != columns.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor {
+			return nil, q.budget.deny()
+		}
+		if len(result) > 0 && chargeLocalConsentFrontier(&baseline, consents, result[len(result)-1], row.reservation.ReservedAt, &chargedConsents) != nil {
+			return nil, q.budget.deny()
+		}
+		if row.reservation.ReservedAt.Before(baseline.UpdatedAt) {
 			return nil, q.budget.deny()
 		}
 		pending := owner.present() && phase == localCompactionBeforeSend && sequence == owner.operation().Sequence
@@ -501,10 +522,53 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Con
 		}
 		result = append(result, *row)
 	}
+	if consents != nil {
+		if len(result) == 0 || chargeLocalConsentFrontier(&baseline, consents, result[len(result)-1], q.at, &chargedConsents) != nil || chargedConsents != uint8((1<<len(consents.States))-1) || accounting.UpdatedAt.Before(baseline.UpdatedAt) {
+			return nil, q.budget.deny()
+		}
+		// The append charged at its actual transaction time, which may be later
+		// than Request.CreatedAt and after the final MODEL reservation. Preserve
+		// the authenticated accounting row's timestamp, not a fabricated row.
+		baseline.UpdatedAt = accounting.UpdatedAt
+	}
 	if rows.Err() != nil || rows.Close() != nil || uint64(len(result)) != accounting.Aggregate.Operations || !reflect.DeepEqual(baseline, accounting) {
 		return nil, q.budget.deny()
 	}
 	return result, nil
+}
+
+// Reconstruct existing BODY-only consent charges at their actual MODEL
+// frontiers, including an unreserved tail. No SEARCH row/refund/new ledger is
+// invented. The exact current consent record and accounting row are read in
+// the SAME callback; old nil-consent reconstruction/bytes remain unchanged.
+func chargeLocalConsentFrontier(accounting *ownedAttemptAccounting, states *ownedConsentStates, previous ownedOperationRow, upper time.Time, charged *uint8) error {
+	if states == nil {
+		return nil
+	}
+	if accounting == nil || charged == nil || len(states.States) == 0 || len(states.States) > 2 {
+		return domain.ErrMembershipDenied
+	}
+	if previous.reservation.Operation.Kind != domain.AttemptOperationModelV1 || previous.observation == nil {
+		return nil
+	}
+	for i, state := range states.States {
+		request := state.Request
+		if request.ModelResponseDigest != previous.observation.ResponseDigest {
+			continue
+		}
+		bit := uint8(1 << i)
+		if *charged&bit != 0 || request.CreatedAt.Before(previous.observation.ObservedAt) || request.CreatedAt.Before(accounting.UpdatedAt) || request.CreatedAt.After(upper) {
+			return domain.ErrMembershipDenied
+		}
+		var err error
+		accounting.Aggregate, err = accounting.Aggregate.Add(domain.AttemptOperationDebitV1{BodyBytes: ownedConsentMetadataReservationBytes + uint64(request.Arguments.Size)})
+		if err != nil {
+			return domain.ErrMembershipDenied
+		}
+		accounting.UpdatedAt = request.CreatedAt
+		*charged |= bit
+	}
+	return nil
 }
 
 func (entry *LocalInvocationEntryV1) readLocalPreparedProxies(ctx context.Context, q *ownedAuthorityQuery, operations []ownedOperationRow, owner localSnapshotOwner, phase localCompactionGenerationPhase) ([]domain.RegisteredProxyAttestationDigestV2, error) {
@@ -672,7 +736,8 @@ func (entry *LocalInvocationEntryV1) compactionSourceDigest(snapshot localCompac
 		Proxies      []domain.RegisteredProxyAttestationDigestV2
 		Canonical    string
 		History      localTerminalHistoryCommitmentV1
-	}{Version: 1, Scope: ownedOperationScope(entry.parent), Policy: entry.parent.Authority.HarnessBinding.AgentLoopPolicy, Profile: entry.owner.configuration, Job: snapshot.Job, Input: snapshot.Input, Accounting: snapshot.Accounting, Reservations: compactionReservations(snapshot.Operations), Observations: compactionObservations(snapshot.Operations), Proxies: snapshot.ProxyDigests, Canonical: canonical, History: history})
+		Consents     *ownedConsentStates `json:"Consents,omitempty"`
+	}{Version: 1, Scope: ownedOperationScope(entry.parent), Policy: entry.parent.Authority.HarnessBinding.AgentLoopPolicy, Profile: entry.owner.configuration, Job: snapshot.Job, Input: snapshot.Input, Accounting: snapshot.Accounting, Reservations: compactionReservations(snapshot.Operations), Observations: compactionObservations(snapshot.Operations), Proxies: snapshot.ProxyDigests, Canonical: canonical, History: history, Consents: snapshot.Consents})
 	if err != nil || uint64(len(raw)) > ownedAuthorityMaxBytes {
 		return "", domain.ErrMembershipDenied
 	}
@@ -713,17 +778,32 @@ func (s *LocalCompactionSourceV1) rejoinRunLocked(ctx context.Context, q *ownedA
 }
 
 func (s *LocalCompactionSourceV1) rejoinRunWithBurnLocked(ctx context.Context, q *ownedAuthorityQuery, appended *domain.AttemptOperationReservationV1, observed *domain.AttemptOperationObservationV1) (domain.Run, time.Time, error) {
+	current, burn, err := s.rejoinSnapshotWithBurnLocked(ctx, q, appended, observed)
+	return current.Job.Run.Clone(), burn, err
+}
+
+// The returned DATA was read and compared in this exact transaction. SEARCH
+// consumes its shared facts before this callback ends, not as a reusable grant.
+func (s *LocalCompactionSourceV1) rejoinSnapshotWithBurnLocked(ctx context.Context, q *ownedAuthorityQuery, appended *domain.AttemptOperationReservationV1, observed *domain.AttemptOperationObservationV1) (localCompactionSnapshot, time.Time, error) {
 	if s == nil || s.self != s || s.entry == nil || !s.entry.original() || s.state == nil || s.state.cleared {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+		return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 	}
 	current, burn, err := s.entry.readLocalPreparedSnapshotWithBurn(ctx, q, localSnapshotOwner{}, localCompactionCapture)
 	if err != nil {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+		return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 	}
+	current, err = s.matchCurrentSnapshotLocked(ctx, q, current, appended, observed)
+	if err != nil {
+		return localCompactionSnapshot{}, time.Time{}, err
+	}
+	return current, burn, nil
+}
+
+func (s *LocalCompactionSourceV1) matchCurrentSnapshotLocked(ctx context.Context, q *ownedAuthorityQuery, current localCompactionSnapshot, appended *domain.AttemptOperationReservationV1, observed *domain.AttemptOperationObservationV1) (localCompactionSnapshot, error) {
 	expected := s.state.snapshot
 	if appended != nil {
 		if observed == nil || appended.Operation.Kind != domain.AttemptOperationCompactionV1 || appended.Operation.Sequence != expected.Accounting.Aggregate.Operations+1 || len(current.Operations) != len(expected.Operations)+1 || !reflect.DeepEqual(current.Operations[len(current.Operations)-1].reservation, *appended) || !reflect.DeepEqual(*current.Operations[len(current.Operations)-1].observation, *observed) {
-			return domain.Run{}, time.Time{}, q.budget.deny()
+			return localCompactionSnapshot{}, q.budget.deny()
 		}
 		current.Operations = current.Operations[:len(current.Operations)-1]
 		current.ProxyDigests = current.ProxyDigests[:len(current.ProxyDigests)-1]
@@ -735,17 +815,17 @@ func (s *LocalCompactionSourceV1) rejoinRunWithBurnLocked(ctx context.Context, q
 		// independently checked against ALL durable operations above.
 		next, e := debitOwnedOperation(expected.Accounting, appended.Operation, s.entry.parent, s.entry.source, appended.ReservedAt)
 		if e != nil || !reflect.DeepEqual(next, current.Accounting) {
-			return domain.Run{}, time.Time{}, q.budget.deny()
+			return localCompactionSnapshot{}, q.budget.deny()
 		}
 		current.Accounting = expected.Accounting
 	}
 	if !reflect.DeepEqual(current, expected) {
-		return domain.Run{}, time.Time{}, q.budget.deny()
+		return localCompactionSnapshot{}, q.budget.deny()
 	}
 	if err := s.rejoinHistoryLocked(ctx, q); err != nil {
-		return domain.Run{}, time.Time{}, err
+		return localCompactionSnapshot{}, err
 	}
-	return current.Job.Run.Clone(), burn, nil
+	return current, nil
 }
 
 func (s *LocalCompactionSourceV1) PrepareRetainedCompaction(ctx context.Context, op domain.AttemptOperationV1, generation uint64) (*LocalRetainedCompactionV1, error) {

@@ -50,16 +50,18 @@ func providerDigest(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func validProviderEpoch(epoch string) bool {
+// ValidateProviderCredentialKeyEpoch is the canonical nonsecret epoch grammar,
+// shared by explicit startup intake and the encrypted object's constructor/wire.
+func ValidateProviderCredentialKeyEpoch(epoch string) error {
 	if len(epoch) == 0 || len(epoch) > 32 {
-		return false
+		return errProviderCredentialObject
 	}
 	for _, c := range epoch {
 		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-			return false
+			return errProviderCredentialObject
 		}
 	}
-	return true
+	return nil
 }
 
 func validProviderScope(scope ports.ProviderCredentialCandidateScopeV1) bool {
@@ -68,7 +70,7 @@ func validProviderScope(scope ports.ProviderCredentialCandidateScopeV1) bool {
 
 func parseProviderRef(ref domain.CredentialSecretRef) (providerObjectRef, error) {
 	parts := strings.Split(ref.StorageValue(), ".")
-	if ref.Validate() != nil || len(parts) != 5 || parts[0] != "pcs1" || !validProviderEpoch(parts[1]) {
+	if ref.Validate() != nil || len(parts) != 5 || parts[0] != "pcs1" || ValidateProviderCredentialKeyEpoch(parts[1]) != nil {
 		return providerObjectRef{}, errProviderCredentialObject
 	}
 	r := providerObjectRef{epoch: parts[1], stamp: parts[2], scope: parts[3], id: parts[4]}

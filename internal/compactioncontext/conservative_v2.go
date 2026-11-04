@@ -101,7 +101,7 @@ func BuildOrdinaryV2(profile domain.ConfiguredInferenceProfileV1, limits domain.
 	if err != nil {
 		return nil, err
 	}
-	source, err := buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, data.LegacyHistory, route)
+	source, err := buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, data.LegacyHistory, route, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func BuildGenerationV2(profile domain.ConfiguredInferenceProfileV1, limits domai
 	if err != nil {
 		return nil, err
 	}
-	source, err := buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, data.LegacyHistory, route)
+	source, err := buildGenerationSource(profile, limits, policy, sourceDigest, records, operations, parent, tools, data.LegacyHistory, route, nil)
 	if err != nil {
 		return nil, err
 	}

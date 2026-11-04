@@ -59,7 +59,7 @@ func newOriginalMCPTerminalV2Owners(t *testing.T, seed *ydbstore.LocalTerminalPu
 			t.Error(err)
 		}
 	})
-	if err := bootstrap.Complete(bridge); err != nil {
+	if err := bootstrap.Complete(bridge, nil); err != nil {
 		t.Fatal("original tuple completion", err)
 	}
 	entry, err := bootstrap.StartLocalInvocation(t.Context(), seed.Request, blobs)

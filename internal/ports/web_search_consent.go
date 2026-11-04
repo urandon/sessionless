@@ -76,9 +76,12 @@ func (value ReadPrivateWebSearchConsentRequestV1) Validate() error {
 // not a browser DTO or dispatch authority. The transport must strip private
 // state metadata. Query is the exact decoded UTF-8 value of the immutable
 // arguments, checked before a fresh current-authority transaction confirms it.
+// MaxResults preserves the same body's exact optional argument: nil means
+// omitted, not zero or an inferred default. Neither value is editable authority.
 type WebSearchConsentPrivateViewV1 struct {
-	State domain.WebSearchConsentStateV1
-	Query string
+	State      domain.WebSearchConsentStateV1
+	Query      string
+	MaxResults *uint8
 }
 
 // Discovery is a private current-Run lookup, not query disclosure. The current

@@ -14,6 +14,19 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+func TestProviderCredentialKeyEpochCanonicalValidation(t *testing.T) {
+	for _, epoch := range []string{"epoch-1", "a", "0", strings.Repeat("a", 32)} {
+		if err := ValidateProviderCredentialKeyEpoch(epoch); err != nil {
+			t.Fatal("original valid epoch grammar rejected", err)
+		}
+	}
+	for _, epoch := range []string{"", strings.Repeat("a", 33), "EPOCH", "epoch_1", "a.b", "a/b", "a b", "a\n", "a\x00", "ключ"} {
+		if err := ValidateProviderCredentialKeyEpoch(epoch); err != errProviderCredentialObject {
+			t.Fatal("invalid epoch accepted or unredacted error returned", err)
+		}
+	}
+}
+
 func remacProviderWire(t *testing.T, root []byte, ref domain.CredentialSecretRef, wire []byte) {
 	t.Helper()
 	r, err := parseProviderRef(ref)

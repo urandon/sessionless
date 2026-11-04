@@ -33,7 +33,8 @@ type SearchConsentSummaryV1 struct {
 
 type SearchConsentViewV1 struct {
 	SearchConsentSummaryV1
-	Query string `json:"query"`
+	Query      string `json:"query"`
+	MaxResults *uint8 `json:"max_results,omitempty"`
 }
 
 // Locator comes from the route; all identity/tenant/CSRF authority is resolved

@@ -174,6 +174,9 @@ func (store *Store) ReserveAttemptOperation(ctx context.Context, request ports.R
 	if evidence.mcp != nil {
 		return store.reservePreparedLocalMCP(ctx, op, evidence)
 	}
+	if evidence.search != nil {
+		return store.reservePreparedLocalSearch(ctx, op, evidence)
+	}
 	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
 	if err != nil {
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
@@ -327,6 +330,9 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 	if evidence.mcp != nil {
 		return store.authorizePreparedLocalMCP(ctx, capability, evidence)
 	}
+	if evidence.search != nil {
+		return store.authorizePreparedLocalSearch(ctx, capability, evidence)
+	}
 	localUnlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
 	if err != nil {
 		return domain.ErrMembershipDenied
@@ -392,7 +398,11 @@ func (store *Store) RecordAttemptOperationObservation(ctx context.Context, reque
 	r := request.Observation.Reservation.Clone()
 	o := request.Observation.Observation.Clone()
 	if o.Outcome == domain.AttemptOperationCompletedV1 {
-		if store.localNormalizedMCPSuccess(r.Operation, o) {
+		if store.localNormalizedSearch(r.Operation, o) {
+			if store.validateLocalNormalizedSearch(ctx, r.Operation, o) != nil {
+				return domain.ErrMembershipDenied
+			}
+		} else if store.localNormalizedMCPSuccess(r.Operation, o) {
 			if store.validateLocalNormalizedMCP(ctx, r.Operation, o) != nil {
 				return domain.ErrMembershipDenied
 			}
@@ -474,7 +484,11 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 	if err != nil || ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 	}
-	if store.localNormalizedMCPSuccess(grant.Reservation.Operation, observation) {
+	if store.localNormalizedSearch(grant.Reservation.Operation, observation) {
+		if store.validateLocalNormalizedSearch(ctx, grant.Reservation.Operation, observation) != nil {
+			return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
+		}
+	} else if store.localNormalizedMCPSuccess(grant.Reservation.Operation, observation) {
 		if store.validateLocalNormalizedMCP(ctx, grant.Reservation.Operation, observation) != nil {
 			return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 		}
@@ -489,6 +503,7 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 		store.rememberLocalCompactionObservation(ctx, authenticated)
 		store.rememberLocalModelObservation(ctx, authenticated)
 		store.rememberLocalMCPObservation(ctx, authenticated)
+		store.rememberLocalSearchObservation(ctx, authenticated)
 	}
 	if ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied

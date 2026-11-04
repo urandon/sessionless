@@ -21,7 +21,7 @@ func (localInvoiceRejectStandardCustody) ReadOwnedProviderPrice(context.Context,
 func localInvoicePriceFixture(t *testing.T) (localBootstrapFixture, *ownedProviderPriceEvidence, domain.AttemptOperationV1, context.Context) {
 	t.Helper()
 	f := newLocalBootstrapFixtureWithPrebuild(t, localRuntimeActualPrebuild{laterPriceObservation: true})
-	if err := f.bootstrap.Complete(f.bridge); err != nil {
+	if err := f.bootstrap.Complete(f.bridge, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.store.ownedProviderPriceCustody = localInvoiceRejectStandardCustody{}

@@ -153,10 +153,12 @@ func debitOwnedOperation(value ownedAttemptAccounting, operation domain.AttemptO
 	}
 	// MODEL/COMPACTION's exact upward quote has already been authenticated from
 	// original rate custody and current profile/head BEFORE this debit. External
-	// tools still reserve their complete admitted component ceiling: no authentic
-	// per-call tool rate producer is installed. SAME component/aggregate ledger.
+	// legacy tool arms still reserve their complete admitted component. Only the
+	// original closed SEARCH-wire producer authenticates the fixed10000/call
+	// tariff inside the admitted20000 component; no refund or second ledger.
 	ceiling := source.Spending[index].MaxAmountMicrounits
-	if ceiling == nil || operation.Debit.AmountMicrounits > *ceiling || (index != 0 && operation.Debit.AmountMicrounits != *ceiling) || operation.Sequence != value.Aggregate.Operations+1 || value.Amounts[index] > math.MaxUint64-operation.Debit.AmountMicrounits {
+	searchCall := index == 3 && operation.SearchWire != nil && parent.Authority.HarnessBinding.AgentLoopPolicy != nil && parent.Authority.HarnessBinding.AgentLoopPolicy.Profile == domain.AgentLoopOwnedPublicV1 && ceiling != nil && *ceiling == 20000 && operation.Debit.AmountMicrounits == 10000 && parent.Authority.AdmissionCostCeiling.WebSearchCost != nil && parent.Authority.AdmissionCostCeiling.WebSearchCost.MaxAmountMicrounits != nil && *parent.Authority.AdmissionCostCeiling.WebSearchCost.MaxAmountMicrounits == 20000 && operation.ToolGrantDigest == source.Spending[3].ScopedGrantDigest && operation.ExternalChargeEvidenceDigest == source.Spending[3].PriceEvidenceDigest
+	if ceiling == nil || operation.SearchWire != nil && !searchCall || operation.Debit.AmountMicrounits > *ceiling || (index != 0 && !searchCall && operation.Debit.AmountMicrounits != *ceiling) || operation.Sequence != value.Aggregate.Operations+1 || value.Amounts[index] > math.MaxUint64-operation.Debit.AmountMicrounits {
 		return ownedAttemptAccounting{}, domain.ErrMembershipDenied
 	}
 	aggregate, err := value.Aggregate.Add(operation.Debit)

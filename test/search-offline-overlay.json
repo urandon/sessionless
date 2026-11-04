@@ -1,0 +1,7 @@
+{
+  "Replace": {
+    "internal/localloopback/search_offline_fixture.go": "internal/localloopback/testdata/search_offline_fixture.go.txt",
+    "internal/providerloopsession/search_offline_fixture.go": "internal/providerloopsession/testdata/search_offline_fixture.go.txt",
+    "internal/worker/search_offline_fixture.go": "internal/worker/testdata/search_offline_fixture.go.txt"
+  }
+}

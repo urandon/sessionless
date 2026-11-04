@@ -1,6 +1,7 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.12, explicit local worker credential-backend assembly. The startup
+Version: 0.2.13, terminal consent-stop scheduling within the original cleanup
+deadline. The 0.2.12 explicit local worker credential-backend assembly startup
 contract below supplies the existing encrypted backend without discovering keys
 or changing its wire. The 0.2.11 wait limits below
 clarify per-call SQL limits and aggregate waiting costs without extending the
@@ -805,6 +806,18 @@ original holder retains immutable argument and grant evidence; each poll
 authenticates the existing current parent, canonical actor, Source, claim,
 fence and consent in its transaction, with current Web-session authority
 required for a recorded decision. It does not reload argument or grant bodies.
+
+The terminal negative-only Stop is not another healthy pending poll. Once the
+sealed request expires, it may start immediately within the original holder's
+existing fixed cleanup deadline, including when that window is shorter than
+the five-second polling interval. It consumes one remaining call from the same
+24-call allowance and the same four-MiB metadata budget. It neither updates the
+positive poll's last-start time nor reopens failed positive waiting. Exhausted
+allowances still deny it; there is no extra call, retry, refund, renewed window,
+body/key I/O or dispatch. The transaction authenticates the original holder and
+stored request and preserves an already recorded immutable stop decision;
+expiry must not replace an authenticated denial committed before the cutoff.
+An arbitrary authority, Source or storage error cannot select this stop path.
 
 Poll again only after a successful authenticated pending result. An authority,
 Source or storage error fails closed and is not retried as healthy pending.

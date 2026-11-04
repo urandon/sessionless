@@ -269,6 +269,23 @@ func (c *maintenanceConnTest) QueryContext(ctx context.Context, s string, args [
 	if len(selected) > limit {
 		selected = selected[:limit]
 	}
+	// Match the pinned table SDK's RawValue.Any -> xtable.valuer output.
+	// database/sql passes these native unsigned widths to sql.Scanner unchanged;
+	// its ordinary int64 fixture representation must not hide that boundary.
+	if width == len(table.cols) {
+		for _, cells := range selected {
+			for i, column := range table.cols {
+				switch value := cells[i].(type) {
+				case int64:
+					if value >= 0 && column.kind == "Uint32" && uint64(value) <= uint64(^uint32(0)) {
+						cells[i] = uint32(value)
+					} else if value >= 0 && column.kind == "Uint64" {
+						cells[i] = uint64(value)
+					}
+				}
+			}
+		}
+	}
 	return &maintenanceRowsTest{data: selected, width: width}, nil
 }
 func (c *maintenanceConnTest) ExecContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Result, error) {
@@ -358,6 +375,53 @@ func maintenanceReportTest(t *testing.T, r IdentityMaintenanceResultV1) identity
 		t.Fatal("invalid redacted report")
 	}
 	return v
+}
+
+func TestIdentityMaintenanceV1NativeUnsignedCells(t *testing.T) {
+	for _, test := range []struct {
+		name, kind string
+		value      any
+		want       uint64
+		bad        bool
+	}{
+		{"native_bucket", "Uint32", uint32(15), 15, false},
+		{"native_revision", "Uint64", ^uint64(0), ^uint64(0), false},
+		{"negative", "Uint32", int64(-1), 0, true},
+		{"overflow", "Uint32", uint64(1) << 32, 0, true},
+		{"text", "Uint32", "15", 0, true},
+		{"float", "Uint32", float64(15), 0, true},
+		{"wrong_integer_width", "Uint32", uint16(15), 0, true},
+		{"wrong_declared_width", "Uint64", uint32(15), 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cell := identityMaintenanceCell{column: identityMaintenanceColumn{kind: test.kind}}
+			if err := cell.Scan(test.value); err != nil || cell.bad != test.bad {
+				t.Fatalf("physical %s value %T: bad=%t want=%t err=%v", test.kind, test.value, cell.bad, test.bad, err)
+			}
+			if !test.bad && cell.value != test.want {
+				t.Fatalf("native unsigned normalization: got=%v want=%d", cell.value, test.want)
+			}
+		})
+	}
+}
+
+func TestIdentityMaintenanceV1NativeUnsignedInventoryAndPrepare(t *testing.T) {
+	ctx, db, f := maintenanceFixtureTest(t)
+	maintenanceLegacyIdentityTest(f, domain.IdentityProviderYandex, "maintenance-subject", "maintenance-owner")
+	maintenanceLegacyIdentityTest(f, domain.IdentityProviderTelegram, "maintenance-telegram", "maintenance-owner")
+	maintenanceLegacyCookieTest(f)
+	maintenanceLegacyChallengeTest(f)
+	original := maintenanceCloneTest(f.data)
+	request := maintenanceRequestTest("prepare")
+	request.Kind, request.Selector = "identity", "maintenance-owner"
+	prepared, err := maintenanceRunTest(t, ctx, db, request)
+	report := maintenanceReportTest(t, prepared)
+	if err != nil || !report.Complete || report.Rows != 6 || len(prepared.Candidate) == 0 {
+		t.Fatalf("four-table native-width inventory/prepare: rows=%d complete=%t candidate=%t err=%v", report.Rows, report.Complete, len(prepared.Candidate) != 0, err)
+	}
+	if f.writes != 0 || !reflect.DeepEqual(f.data, original) {
+		t.Fatal("native-width prepare changed persisted fixture rows")
+	}
 }
 
 func TestIdentityMaintenanceV1ConvertAtomicGroupThenExactV2Join(t *testing.T) {
@@ -1019,7 +1083,7 @@ func maintenanceNativeConflict(t *testing.T, ctx context.Context, db, wrapped *s
 	request.Selector = "native-maintenance-owner"
 	prepared, err := maintainIdentityV1(ctx, db, client.Table(), base, request)
 	if err != nil {
-		t.Fatal("valid native candidate before conflict", kind, err)
+		t.Fatalf("valid native candidate before conflict %s: err=%v redacted_report=%s", kind, err, prepared.Report)
 	}
 	identityBucket, _ := webBucket("yandex:native-subject")
 	userBucket, _ := webBucket("native-maintenance-owner")

@@ -98,12 +98,12 @@ for mode in missing-origin missing-provider cloud zero-port leading-zero-port ov
 	esac
 	if PATH="$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$test_root/web-$mode" \
 		SESSIONLESS_ENVIRONMENT="$web_environment" WEB_BASE_URL="$web_origin" \
-		WEB_LOGIN_PROVIDER="$web_provider" WEB_PORT="$web_port" \
+		WEB_LOGIN_PROVIDERS="$web_provider" WEB_PORT="$web_port" \
 		"$runner" start web-bff >"$test_root/web-$mode.out" 2>&1; then
 		fail "native Web accepted invalid explicit configuration: $mode"
 	fi
 	case "$mode" in
-		missing-*) expected='requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER' ;;
+		missing-*) expected='requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDERS' ;;
 		cloud) expected='requires SESSIONLESS_ENVIRONMENT=local' ;;
 		*) expected='WEB_PORT must be a decimal port between 1 and 65535' ;;
 	esac
@@ -154,7 +154,7 @@ STUB
 chmod +x "$web_fixture/.build/bin/web-bff" "$web_fixture/fake-bin/nohup" \
 	"$web_fixture/fake-bin/ps" "$web_fixture/fake-bin/lsof" "$web_fixture/fake-bin/curl"
 PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/runtime" \
-	SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+	SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDERS=yandex \
 	PORT=18080 WEB_PORT=18083 DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
 	DOCKERLESS_POLICY_RUNTIME="$web_fixture/runtime" \
 	DOCKERLESS_POLICY_TRACE="$web_fixture/launch" DOCKERLESS_POLICY_READY="$web_fixture/ready" \
@@ -171,7 +171,7 @@ test ! -e "$docker_calls" || fail 'Docker was invoked by native Web launch'
 
 for mode in foreign-ready child-exit changed-listener; do
 	if PATH="$web_fixture/fake-bin:$fake_bin:$PATH" SESSIONLESS_DOCKERLESS_ROOT="$web_fixture/$mode" \
-		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDER=yandex \
+		SESSIONLESS_ENVIRONMENT=local WEB_BASE_URL=https://web.localhost WEB_LOGIN_PROVIDERS=yandex \
 		WEB_PORT=18083 DOCKERLESS_POLICY_MODE="$mode" DOCKERLESS_POLICY_MARKER="$web_fixture/.build/bin/web-bff" \
 		DOCKERLESS_POLICY_RUNTIME="$web_fixture/$mode" DOCKERLESS_POLICY_TRACE="$web_fixture/$mode-launch" \
 		DOCKERLESS_POLICY_READY="$web_fixture/$mode-ready" \

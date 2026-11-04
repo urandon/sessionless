@@ -876,7 +876,15 @@ func newLocalRuntimeLogin(t *testing.T, ctx context.Context, store *localRuntime
 	// API construction always requires an exact browser capability origin,
 	// including this text-only proof. The reserved synthetic origin is policy
 	// DATA, not a contacted object service or qualification of uploads/media.
-	l.handler, err = webbff.New(webbff.Config{BaseURL: localRuntimeWebOrigin, RedirectURI: localRuntimeWebOrigin + webcontract.RouteLoginCallback, ObjectStorageOrigin: "https://runtime-objects.example.invalid", OAuthProvider: provider, OAuthClientID: "runtime-client", Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: clock, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	l.handler, err = webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:provider,OAuthClientID:"runtime-client"}},
+BaseURL: localRuntimeWebOrigin,
+ObjectStorageOrigin: "https://runtime-objects.example.invalid",
+Store: store,
+Sessions: sessions,
+API: api,
+IDs: idgen.New(),
+Clock: clock,
+Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +920,7 @@ func (l *localRuntimeLogin) signIn(t *testing.T, subject string) (*http.Cookie, 
 	l.mu.Lock()
 	l.subject = subject
 	l.mu.Unlock()
-	start := localRuntimeRequest(l.ctx, l.handler, http.MethodGet, webcontract.RouteLoginStart+"?return_to=/sessions", "", nil, nil)
+	start := localRuntimeRequest(l.ctx, l.handler, http.MethodPost, webcontract.RouteYandexLoginStart, "return_to=%2Fsessions", nil, nil)
 	if start.Code != http.StatusSeeOther {
 		t.Fatal("actual Yandex login start", start.Code, start.Body.String())
 	}
@@ -942,6 +950,7 @@ func localRuntimeCookie(t *testing.T, response *httptest.ResponseRecorder, name 
 func localRuntimeRequest(ctx context.Context, h http.Handler, method, path, body string, cookie, csrf *http.Cookie) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, localRuntimeWebOrigin+path, strings.NewReader(body)).WithContext(ctx)
 	r.Header.Set("Content-Type", "application/json")
+	if method==http.MethodPost && path==webcontract.RouteYandexLoginStart { r.Header.Set("Content-Type","application/x-www-form-urlencoded");r.Header.Set("Origin",localRuntimeWebOrigin) }
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}

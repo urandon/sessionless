@@ -194,7 +194,15 @@ func newTextWebHandler(t *testing.T, seed *ydbstore.LocalTextWebSeed, blobs port
 	if e != nil {
 		t.Fatal(e)
 	}
-	h, e := webbff.New(webbff.Config{BaseURL: localTextWebOrigin, RedirectURI: localTextWebOrigin + webcontract.RouteLoginCallback, ObjectStorageOrigin: "https://objects.fixture.invalid", OAuthProvider: &localTextWebIdentity{subject: "owner-subject", auth: auth}, OAuthClientID: localTextWebOAuthClient, Store: auth, Sessions: sessions, API: api, IDs: localTextWebIDs{}, Clock: localManagerClock{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	h, e := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:&localTextWebIdentity{subject: "owner-subject", auth: auth},OAuthClientID:localTextWebOAuthClient}},
+BaseURL: localTextWebOrigin,
+ObjectStorageOrigin: "https://objects.fixture.invalid",
+Store: auth,
+Sessions: sessions,
+API: api,
+IDs: localTextWebIDs{},
+Clock: localManagerClock{},
+Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -214,7 +222,7 @@ func localTextWebCookie(t *testing.T, r *http.Response, name string) *http.Cooki
 func localTextWebLogin(t *testing.T, h http.Handler) (*http.Cookie, *http.Cookie) {
 	t.Helper()
 	start := httptest.NewRecorder()
-	h.ServeHTTP(start, httptest.NewRequest(http.MethodGet, localTextWebOrigin+webcontract.RouteLoginStart+"?return_to=/sessions", nil))
+	h.ServeHTTP(start, func() *http.Request { u,_:=url.Parse(localTextWebOrigin+webcontract.RouteYandexLoginStart+"?return_to=/sessions");body:=u.Query().Encode();u.RawQuery="";r:=httptest.NewRequest(http.MethodPost,u.String(),strings.NewReader(body));r.Header.Set("Origin",u.Scheme+"://"+u.Host);r.Header.Set("Content-Type","application/x-www-form-urlencoded");return r }())
 	if start.Code != http.StatusSeeOther {
 		t.Fatal("login start", start.Code, start.Body.String())
 	}

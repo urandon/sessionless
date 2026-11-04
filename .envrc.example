@@ -16,7 +16,8 @@ export YDB_LOCAL_LAUNCHER_PATH=${YDB_LOCAL_LAUNCHER_PATH:-$workspace_root/artifa
 # export WEB_LOCAL_INSTALLATION_ROOT=/absolute/workspace/private-installation
 # export WEB_LOCAL_WORKER_EXECUTABLE=/absolute/workspace/sessionless/.build/bin/worker-runtime
 # export WEB_LOCAL_PROFILE_RECEIPT_FILE=/absolute/workspace/private-receipts/local-profile.json
-# Configure WEB_BASE_URL, WEB_LOGIN_PROVIDER=yandex, WEB_PORT and the existing
-# login/session/storage settings separately; never commit real secrets here.
+# Configure WEB_BASE_URL, WEB_LOGIN_PROVIDERS=yandex, WEB_PORT and the existing
+# login/session/storage settings separately; use yandex,telegram for both methods.
+# Unset the retired singular variable; never commit real secrets here.
 
 unset repo_root workspace_root

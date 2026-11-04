@@ -1,9 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError, CanonicalApiClient } from './client';
+import { ApiError, CanonicalApiClient, parseLoginMethods } from './client';
 import { barrier, explanation } from '../run-explanation/test-fixtures';
 
 describe('CanonicalApiClient', () => {
+  it('reads bounded closed login metadata without effects or CSRF', async () => {
+    const methods = [{ provider: 'yandex', label: 'Yandex', start_path: '/auth/login/yandex/start' }, { provider: 'telegram', label: 'Telegram', start_path: '/auth/login/telegram/start' }];
+    const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ methods }));
+    const csrf = vi.fn();
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: csrf });
+    expect(await client.getLoginMethods()).toEqual({ methods });
+    expect(request).toHaveBeenCalledWith('/auth/login/methods', expect.objectContaining({ method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error' }));
+    expect(csrf).not.toHaveBeenCalled();
+  });
+  it('denies malformed/foreign/duplicate methods without a default provider', () => {
+    const valid = '{"methods":[{"provider":"telegram","label":"Telegram","start_path":"/auth/login/telegram/start"}]}';
+    expect(parseLoginMethods(valid).methods).toHaveLength(1);
+    for (const raw of [valid.replace('"methods":', '"methods":[],"methods":'), valid.replace('"label":', '"label":"Telegram","label":'), valid.replace('"telegram"', '"foreign"'), valid.replace('/auth/login/telegram/start', 'https://outside.example'), valid.replace('"Telegram"', '"Yandex"'), valid.replace('"methods"', '"Methods"'), '{"methods":[]}', '{"methods":[null]}']) expect(() => parseLoginMethods(raw)).toThrow();
+  });
+  it('rejects metadata errors, wrong MIME and oversized bytes without parsing private error text', async () => {
+    for (const response of [new Response('private-error', { status: 503 }), new Response('{}', { headers: { 'Content-Type': 'text/html' } }), new Response('x'.repeat(4097), { headers: { 'Content-Type': 'application/json' } })]) {
+      const client = new CanonicalApiClient({ fetch: vi.fn<typeof fetch>().mockResolvedValue(response) });
+      await expect(client.getLoginMethods()).rejects.toMatchObject({ code: 'temporarily_unavailable', message: 'Sign-in methods are unavailable. Please try again.' });
+    }
+  });
   it('forwards one captured signal to message/archive/upload/commit/capability requests and rejects already discarded scope before fetch', async () => {
     const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({}));
     const readCSRFToken = vi.fn().mockReturnValue('csrf');

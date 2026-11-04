@@ -22,7 +22,7 @@ test.describe('accessible states', () => {
 
     await page.goto('/login');
     await expect(page.getByRole('heading', { name: 'Sign in to Sessionless' })).toBeVisible();
-    const signIn = page.getByRole('link', { name: 'Continue to sign in' });
+    const signIn = page.getByRole('button', { name: 'Continue with Yandex' });
     for (let step = 0; step < 8; step += 1) {
       await page.keyboard.press('Tab');
       if (await signIn.evaluate((element) => element === element.ownerDocument.activeElement)) {

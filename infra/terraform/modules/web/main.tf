@@ -1,10 +1,13 @@
 locals {
-  login_client_environment = var.login_provider == "yandex" ? {
-    YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id
-    } : {
-    TELEGRAM_OIDC_CLIENT_ID = var.telegram_oidc_client_id
-  }
-  login_secret_environment = var.login_provider == "yandex" ? "YANDEX_LOGIN_CLIENT_SECRET" : "TELEGRAM_OIDC_CLIENT_SECRET"
+  enabled_login_providers = split(",", var.login_providers)
+  login_client_environment = merge(
+    contains(local.enabled_login_providers, "yandex") ? { YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id } : {},
+    contains(local.enabled_login_providers, "telegram") ? { TELEGRAM_OIDC_CLIENT_ID = var.telegram_oidc_client_id } : {},
+  )
+  login_secret_environment = merge(
+    contains(local.enabled_login_providers, "yandex") ? { YANDEX_LOGIN_CLIENT_SECRET = "yandex-login-client-secret" } : {},
+    contains(local.enabled_login_providers, "telegram") ? { TELEGRAM_OIDC_CLIENT_SECRET = "telegram-oidc-client-secret" } : {},
+  )
 }
 
 locals {
@@ -28,9 +31,10 @@ locals {
     "/healthz"                  = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/readyz"                   = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/version"                  = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/start"         = { get = { operationId = "webLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/methods" = { get = { operationId = "webLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/yandex/start" = { post = { operationId = "webYandexLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/telegram/start" = { post = { operationId = "webTelegramLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/login/callback"      = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/telegram/start"      = { get = { operationId = "webOIDCStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/telegram/callback"   = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/logout"              = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/api/web/v1/me"            = { get = { operationId = "webMe", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
@@ -100,7 +104,7 @@ resource "yandex_serverless_container" "web" {
       WEB_OBJECT_STORAGE_ORIGIN   = local.object_storage_origin
       WEB_MAX_UPLOAD_BYTES        = tostring(var.max_upload_bytes)
       WEB_ALLOWED_MCP_SERVERS     = join(",", var.allowed_mcp_servers)
-      WEB_LOGIN_PROVIDER          = var.login_provider
+      WEB_LOGIN_PROVIDERS          = var.login_providers
       YDB_CONNECTION_STRING       = var.ydb_connection_string
       YDB_METADATA_CREDENTIALS    = "1"
       S3_ENDPOINT                 = "https://storage.yandexcloud.net"
@@ -118,11 +122,14 @@ resource "yandex_serverless_container" "web" {
     aws_v1_http_endpoint = 1
     gce_http_endpoint    = 1
   }
-  secrets {
-    id                   = var.web_secret_id
-    version_id           = var.web_secret_version_id
-    key                  = "oidc-client-secret"
-    environment_variable = local.login_secret_environment
+  dynamic "secrets" {
+    for_each = local.login_secret_environment
+    content {
+      id                   = var.web_secret_id
+      version_id           = var.web_secret_version_id
+      key                  = secrets.value
+      environment_variable = secrets.key
+    }
   }
   secrets {
     id                   = var.web_secret_id

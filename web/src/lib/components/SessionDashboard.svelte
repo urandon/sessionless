@@ -185,7 +185,7 @@
       </p>
     </div>
     <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- Go BFF auth route -->
-    <a class="button primary" href="/auth/login/start?return_to=%2F">Continue to sign in</a>
+    <a class="button primary" href="/login">Continue to sign in</a>
   </section>
 {:else if view === 'access-denied'}
   <section class="narrow panel" aria-labelledby="access-title">

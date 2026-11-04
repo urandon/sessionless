@@ -489,8 +489,9 @@ start_web_bff() {
 	# An explicit leaf command: ordinary stand/E2E startup stays unchanged.
 	# Login configuration, membership and operator profiles are never invented.
 	test "$SESSIONLESS_ENVIRONMENT" = local || fail 'native Web startup requires SESSIONLESS_ENVIRONMENT=local'
-	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDER:-}" || \
-		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER'
+	test "${WEB_LOGIN_PROVIDER+x}" != x || fail 'remove WEB_LOGIN_PROVIDER; configure WEB_LOGIN_PROVIDERS explicitly'
+	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDERS:-}" || \
+		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDERS'
 	web_port=${WEB_PORT:-8083}
 	case "$web_port" in
 		''|0*|*[!0-9]*) fail 'WEB_PORT must be a decimal port between 1 and 65535' ;;

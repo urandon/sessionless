@@ -159,8 +159,12 @@ func searchConsentHTTPFixture(t *testing.T, enabled bool) (http.Handler, *search
 		t.Fatalf("invalid private-query fixture: %v", err)
 	}
 	store := &searchConsentHTTPStore{view: ports.WebSearchConsentPrivateViewV1{State: domain.WebSearchConsentStateV1{Request: r, Revision: 1, Status: domain.WebSearchConsentPendingV1, UpdatedAt: bffTestTime}, Query: query}}
-	config := webbff.Config{BaseURL: "https://web.dev.sessionless.triborg.dev", RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
-		OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}, Provider: fakeProvider{subject: subject.Subject}, Store: auth, IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	config := webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: subject.Subject},OIDCPolicy:domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
+BaseURL: "https://web.dev.sessionless.triborg.dev",
+Store: auth,
+IDs: fixedIDs{},
+Clock: fixedClock{now: bffTestTime},
+Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),}
 	if enabled {
 		config.SearchConsents = store
 	}

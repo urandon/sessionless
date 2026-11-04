@@ -1,28 +1,13 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
+  import LoginMethods from '$lib/components/LoginMethods.svelte';
 
   const accessDenied = $derived(page.url.searchParams.get('auth_error') === 'access_denied');
   const temporarilyUnavailable = $derived(
     page.url.searchParams.get('auth_error') === 'temporarily_unavailable',
   );
-  const returnTo = $derived(safeReturnTo(page.url.searchParams.get('return_to')));
-  const authStart = $derived(`/auth/login/start?return_to=${encodeURIComponent(returnTo)}`);
-
-  function safeReturnTo(candidate: string | null): string {
-    if (
-      candidate?.startsWith('/') &&
-      !candidate.startsWith('//') &&
-      !candidate.includes('\\') &&
-      !Array.from(candidate).some((character) => {
-        const code = character.charCodeAt(0);
-        return code <= 31 || code === 127;
-      })
-    ) {
-      return candidate;
-    }
-    return '/';
-  }
+  const returnTo = $derived(page.url.searchParams.get('return_to') ?? '/');
 </script>
 
 <svelte:head>
@@ -52,8 +37,7 @@
     </p>
   {/if}
   <div class="actions">
-    <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- Go BFF auth route -->
-    <a class="button primary" href={authStart}>Continue to sign in</a>
+    <LoginMethods {returnTo} />
     <a class="button" href={resolve('/')}>Back to sessions</a>
   </div>
 </section>

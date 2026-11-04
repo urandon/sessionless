@@ -26,8 +26,10 @@ const (
 var ErrInvalidFrame = errors.New("canonical prompt frame invalid")
 
 // RenderFrameV1 returns caller-owned private bytes, without retaining or
-// modifying payload. It preserves the original encoding/json decoder's field,
-// duplicate-key, null and string-replacement semantics. Callers must separately
+// modifying payload. Legacy payloads preserve the original encoding/json
+// field, duplicate-key, null and string-replacement semantics. Explicit
+// assistant-message v2 uses its shared strict codec, never a v1 fallback.
+// Callers must separately
 // verify immutable source/trigger coverage, cumulative header/frame bounds and
 // all execution authority. The frame contains no token/cost estimate.
 func RenderFrameV1(kind domain.SessionEventKind, payload []byte) ([]byte, error) {
@@ -49,6 +51,20 @@ func RenderFrameV1(kind domain.SessionEventKind, payload []byte) ([]byte, error)
 		}
 		role, text = "user", value.Text
 	case domain.SessionEventAssistantMessage:
+		var tag struct {
+			Schema string `json:"schema"`
+		}
+		if json.Unmarshal(payload, &tag) != nil {
+			return nil, ErrInvalidFrame
+		}
+		if tag.Schema == domain.CitedAssistantMessageSchemaV2 {
+			value, err := domain.DecodeCitedAssistantMessageV2(payload, domain.CitedAnswerBytesV1, MaxPayloadBytesV1)
+			if err != nil {
+				return nil, ErrInvalidFrame
+			}
+			role, text = "assistant", value.Summary
+			break
+		}
 		var value struct {
 			Schema             string `json:"schema"`
 			Summary            string `json:"summary"`

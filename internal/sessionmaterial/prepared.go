@@ -57,7 +57,7 @@ type preparedState struct {
 
 // PrepareV1 seals stable identity, not provisional Sequence/CreatedAt. Uploads
 // must be the authorized ordered ingress artifacts EXCLUDING message.json.
-// Recognized sources are user-envelope v1, assistant-message v1, tool-event v1
+// Recognized sources are user-envelope v1, assistant-message v1/v2, tool-event v1
 // and run-terminal-notice v1. Actual codec round-trip is checked later, after
 // final allocation, by sessioncontext. No I/O, caller classifier or clock runs.
 func PrepareV1(event domain.SessionEvent, payload []byte, uploads []domain.Artifact) (*PreparedV1, error) {
@@ -258,6 +258,19 @@ func inspectEnvelope(event domain.SessionEvent, body []byte, uploads []domain.Ar
 			m.ReferencedAttachmentBytes += uint64(ref.Blob.Size)
 		}
 	case domain.SessionEventAssistantMessage:
+		var tag struct {
+			Schema string `json:"schema"`
+		}
+		if json.Unmarshal(body, &tag) != nil {
+			return MeasuresV1{}, ErrNotPrepared
+		}
+		if tag.Schema == domain.CitedAssistantMessageSchemaV2 {
+			value, err := domain.DecodeCitedAssistantMessageV2(body, domain.CitedAnswerBytesV1, MaxPayloadBytesV1)
+			if err != nil || event.RunID == nil || value.Citations.RunID != *event.RunID {
+				return MeasuresV1{}, ErrNotPrepared
+			}
+			break
+		}
 		var value struct {
 			Schema             string `json:"schema"`
 			Summary            string `json:"summary"`

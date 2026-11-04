@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -200,22 +201,52 @@ func TestRunExplanationIdentityV2RetryRechecksAndSharesBudget(t *testing.T) {
 func TestRunExplanationIdentityV2StaleCookieAcrossTenants(t *testing.T) {
 	for _, tenant := range []domain.TenantID{"tenant-test", "another-tenant"} {
 		for _, rated := range []bool{false, true} {
-			name := string(tenant) + "/direct"
-			if rated {
-				name = string(tenant) + "/rated"
-			}
-			t.Run(name, func(t *testing.T) {
-				store, f, auth, run, session, identity := explanationIdentityV2Fixture(t, domain.IdentityProviderYandex, 9, false)
-				session.Session.ActiveTenantID, auth.TenantID = tenant, tenant
-				member := ratedFixtureRecord[domain.TenantMembership](t, f, "tenant_memberships")
-				member.TenantID = tenant
-				ratedFixturePut(t, f, "tenant_memberships", member)
-				identity.Revision++
-				putExplanationIdentityV2(t, f, session, identity)
-				if err := readExplanationIdentityV2(t, store, auth, run, rated); err == nil || f.writes != 0 {
-					t.Error("identity revision change did not revoke old cookie across tenants")
+			for _, stale := range []bool{false, true} {
+				name := string(tenant) + "/direct/current"
+				if rated {
+					name = string(tenant) + "/rated/current"
 				}
-			})
+				if stale {
+					name = strings.TrimSuffix(name, "current") + "stale"
+				}
+				t.Run(name, func(t *testing.T) {
+					store, f, auth, run, session, identity := explanationIdentityV2Fixture(t, domain.IdentityProviderYandex, 9, false)
+					session.Session.ActiveTenantID, auth.TenantID = tenant, tenant
+					member := ratedFixtureRecord[domain.TenantMembership](t, f, "tenant_memberships")
+					member.TenantID = tenant
+					ratedFixturePut(t, f, "tenant_memberships", member)
+					// Both tenants have a coherent resource and participant baseline.
+					// A missing foreign resource must not impersonate cookie revocation.
+					run.TenantID = tenant
+					ratedFixturePut(t, f, "runs", run)
+					canonical := ratedFixtureRecord[domain.Session](t, f, "sessions")
+					canonical.TenantID = tenant
+					ratedFixturePut(t, f, "sessions", canonical)
+					participant := ratedFixtureRecord[domain.SessionParticipant](t, f, "session_participants")
+					participant.TenantID = tenant
+					ratedFixturePut(t, f, "session_participants", participant)
+					// Every current/stale case owns a fresh fixture, including rate state.
+					if stale {
+						identity.Revision++
+					}
+					putExplanationIdentityV2(t, f, session, identity)
+					err := readExplanationIdentityV2(t, store, auth, run, rated)
+					if !stale {
+						if err != nil {
+							t.Fatalf("current revision lacks valid tenant baseline: %v", err)
+						}
+						return
+					}
+					if !errors.Is(err, domain.ErrWebSessionRevoked) || f.writes != 0 {
+						t.Fatalf("expected identity-revision revocation, not unrelated resource failure: err=%v writes=%d", err, f.writes)
+					}
+					for _, statement := range f.statements {
+						if strings.Contains(statement, "FROM runs ") || strings.Contains(statement, "FROM sessions ") || strings.Contains(statement, "run_explanation_rate_slots_v1") {
+							t.Error("stale cookie reached resource or rate state")
+						}
+					}
+				})
+			}
 		}
 	}
 }

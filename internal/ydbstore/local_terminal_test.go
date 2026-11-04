@@ -226,7 +226,7 @@ func TestLocalTerminalPreparedEffectsDenyWithoutGenericFallback(t *testing.T) {
 
 func TestLocalTerminalRetainedPublicationAndPreparationDeny(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		f, g, engine := compactionPublicationFixture(t)
+		f, g, engine := compactionPublicationFixture(t, localRuntimeActualPrebuild{})
 		ctx, cancel := ownedAuthorityCallContext(t.Context())
 		defer cancel()
 		g.source.state.mu.Lock()

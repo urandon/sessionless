@@ -60,17 +60,19 @@ type identityProofCompletionV2 struct {
 // its original 15s deadline from BEFORE consume and its 10s exchange timeout.
 const identityProofCompletionWindowV2 = 15 * time.Second
 
-const identityProofChildSQLV2 = `SELECT SUBSTRING(CAST(record AS String),0,8193),
+const identityChallengeSQLV2 = `SELECT SUBSTRING(CAST(record AS String),0,8193),
  SUBSTRING(CAST(browser_binding_digest AS String),0,65),
  SUBSTRING(CAST(pkce_verifier AS String),0,129),
  SUBSTRING(CAST(nonce AS String),0,161),
- SUBSTRING(CAST(redirect_path AS String),0,161),
+ SUBSTRING(CAST(redirect_path AS String),0,8193),
  created_at,expires_at,consumed_at,delete_after
  FROM oidc_login_challenges WHERE shard_bucket=$1 AND state_digest=$2`
 
-func readIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, digest domain.SecretDigest) (domain.IdentityChallengeV2, bool, error) {
+// Both closed challenge purposes share one physical representation. Callers
+// must select their exact purpose; neither reader infers it from an old row.
+func readIdentityChallengeV2(ctx context.Context, q *ownedAuthorityQuery, digest domain.SecretDigest, purpose domain.IdentityRecordPurposeV2) (domain.IdentityChallengeV2, bool, error) {
 	var empty domain.IdentityChallengeV2
-	if ctx == nil || ctx.Err() != nil || q == nil || digest.Validate("identity_proof_child_v2.digest") != nil {
+	if ctx == nil || ctx.Err() != nil || q == nil || digest.Validate("identity_challenge_v2.digest") != nil || (purpose != domain.IdentityPurposeLoginV2 && purpose != domain.IdentityPurposeProviderProofV2) {
 		return empty, false, domain.ErrMembershipDenied
 	}
 	bucket, err := webBucket(string(digest))
@@ -82,7 +84,7 @@ func readIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, diges
 	// The original strict time collector rejects NULL/foreign types while still
 	// charging every returned scalar; do not add nullable/coercing fallbacks.
 	var created, expires, consumed, deleteAfter time.Time
-	err = q.scanMetadata(ctx, identityProofChildSQLV2, []any{bucket, digest}, &raw, &browser, &pkce, &nonce, &redirect, &created, &expires, &consumed, &deleteAfter)
+	err = q.scanMetadata(ctx, identityChallengeSQLV2, []any{bucket, digest}, &raw, &browser, &pkce, &nonce, &redirect, &created, &expires, &consumed, &deleteAfter)
 	if errors.Is(err, sql.ErrNoRows) {
 		return empty, false, nil
 	}
@@ -90,8 +92,12 @@ func readIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, diges
 		return empty, false, domain.ErrMembershipDenied
 	}
 	child, err := domain.DecodeIdentityChallengeV2([]byte(raw))
-	if err != nil || child.Purpose != domain.IdentityPurposeProviderProofV2 || child.StateDigest != digest || child.Proof == nil || redirect != "" || browser != string(child.BrowserBindingDigest) || !created.Equal(child.CreatedAt) || !expires.Equal(child.ExpiresAt) || !deleteAfter.Equal(child.DeleteAfter) {
+	if err != nil || child.Purpose != purpose || child.StateDigest != digest || browser != string(child.BrowserBindingDigest) || !created.Equal(child.CreatedAt) || !expires.Equal(child.ExpiresAt) || !deleteAfter.Equal(child.DeleteAfter) {
 		return empty, false, domain.ErrMembershipDenied
+	}
+	expectedRedirect := ""
+	if child.Login != nil {
+		expectedRedirect = child.Login.ReturnPath
 	}
 	expectedConsumed := time.Unix(0, 0).UTC()
 	expectedPKCE, expectedNonce := "", ""
@@ -101,16 +107,13 @@ func readIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, diges
 	if child.Secrets != nil {
 		expectedPKCE, expectedNonce = child.Secrets.PKCEVerifier, child.Secrets.Nonce
 	}
-	if pkce != expectedPKCE || nonce != expectedNonce || !consumed.Equal(expectedConsumed) {
+	if redirect != expectedRedirect || pkce != expectedPKCE || nonce != expectedNonce || !consumed.Equal(expectedConsumed) {
 		return empty, false, domain.ErrMembershipDenied
 	}
 	return child, true, nil
 }
 
-func writeIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, child domain.IdentityChallengeV2) error {
-	if child.Purpose != domain.IdentityPurposeProviderProofV2 {
-		return domain.ErrMembershipDenied
-	}
+func writeIdentityChallengeV2(ctx context.Context, q *ownedAuthorityQuery, child domain.IdentityChallengeV2) error {
 	raw, err := domain.EncodeIdentityChallengeV2(child)
 	if err != nil {
 		return err
@@ -127,11 +130,26 @@ func writeIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, chil
 	if child.ConsumedAt != nil {
 		consumed = *child.ConsumedAt
 	}
+	redirect := ""
+	if child.Login != nil {
+		redirect = child.Login.ReturnPath
+	}
 	_, err = q.ExecContext(ctx, `UPSERT INTO oidc_login_challenges
  (shard_bucket,state_digest,browser_binding_digest,pkce_verifier,nonce,redirect_path,
  created_at,expires_at,consumed_at,record,delete_after)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument),$11)`, bucket, child.StateDigest, child.BrowserBindingDigest, pkce, nonce, "", child.CreatedAt, child.ExpiresAt, consumed, string(raw), child.DeleteAfter)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument),$11)`, bucket, child.StateDigest, child.BrowserBindingDigest, pkce, nonce, redirect, child.CreatedAt, child.ExpiresAt, consumed, string(raw), child.DeleteAfter)
 	return err
+}
+
+func readIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, digest domain.SecretDigest) (domain.IdentityChallengeV2, bool, error) {
+	return readIdentityChallengeV2(ctx, q, digest, domain.IdentityPurposeProviderProofV2)
+}
+
+func writeIdentityProofChildV2(ctx context.Context, q *ownedAuthorityQuery, child domain.IdentityChallengeV2) error {
+	if child.Purpose != domain.IdentityPurposeProviderProofV2 {
+		return domain.ErrMembershipDenied
+	}
+	return writeIdentityChallengeV2(ctx, q, child)
 }
 
 func identityProofBindingsV2(request identityPhaseRequestV2, config identityConfigurationV2) (map[domain.IdentityProvider]domain.IdentityProviderBindingV2, error) {

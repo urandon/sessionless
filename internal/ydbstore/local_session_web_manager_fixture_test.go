@@ -928,7 +928,7 @@ func (s *LocalWebManagerSeed) AdmitManager(t *testing.T) *LocalCanonicalManagerS
 	if e != nil || !found || loaded.Run.Status != domain.RunQueued || loaded.Attempt.Status != domain.AttemptCreated {
 		t.Fatalf("Web queued load: found=%t err=%v SQL=%s", found, e, f.lastError)
 	}
-	seed := &LocalCanonicalSessionSeed{Source: s.Source, DB: s.DB, Options: s.Options, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, WorkerID: sessionPeer.worker}, peer: sessionPeer}
+	seed := &LocalCanonicalSessionSeed{Source: s.Source, DB: s.DB, Options: s.Options, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, WorkerID: sessionPeer.worker}, peer: sessionPeer, owner: t}
 	loopSeed := &LocalCanonicalLoopSeed{LocalCanonicalSessionSeed: seed, Payload: event.Payload, Event: event, loop: loop}
 	source, e := domain.DecodeAttemptExecutionSourceV1([]byte(loaded.Job.OwnedExecutionSourceRecord))
 	if e != nil {

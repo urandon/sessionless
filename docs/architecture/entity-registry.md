@@ -63,6 +63,18 @@ physical TTL from `expires_at` to this column. Original `00053` is unchanged.
 There remain 105 historical CREATEs and 101 effective active tables; these two
 ALTERs add neither an account registry nor a challenge/receipt table.
 
+The operator-only `web_identity_maintenance_v2.go` consumer uses these SAME four
+identity/reverse/challenge/Web-cookie tables plus read-only existing migration
+metadata. `identity-maintenance.v1` inventories all fixed buckets before an
+exact prepared user/row CAS under separately verified writer freeze; it neither
+installs V2 nor records a new global cutover grant. Coherent V1 conversion
+projects only legacy JSON timestamps to their already-persisted physical
+microsecond facts, preserving owner/subject and reverse timestamps. Existing
+V2 rows/tombstones remain strict and unchanged; V1 challenges retire only by
+exact deletion, V1 cookies by exact immutable-time revocation. Progress/candidate
+files are operator artifacts, not new database entities, ownership authority or
+evidence of TTL erasure. Unknown deletion attribution stays unknown.
+
 V1 challenge writes set `delete_after` to their original expiry without changing
 their JSON contract or authorizing a V2 fallback. V2 pending operations and
 proof/login challenges retain their original at-most-ten-minute deadline. Only

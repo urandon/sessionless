@@ -1093,15 +1093,17 @@ Controlled SQL tests remain separate evidence.
 
 ### Identity V2 retention and cutover prerequisites
 
-This is a source-only maintenance contract for #238, not an implemented
-backfill/cutover command or permission to change a retained environment. The
+The operator-only `identity-maintenance.v1` source implements the bounded
+inventory/preparation/CAS contract for #238; it is not permission to change a
+retained environment or evidence that a cutover has occurred. The
 [accepted design](design/dual-provider-account-linking.md) and
 [migration safety protocol](../migrations/ydb/README.md#safety-protocol) remain
 authoritative. No migration, reset, credential/provider operation or deployment
 was executed by authoring these sources. Keep V2 serving and sensitive operations
-disabled until the missing bounded maintenance implementation, all V2 writers
-and transaction-local consumers, genuine disposable-YDB cases and exact-source
-independent review are complete. A successful primitive gate is not that proof.
+disabled until the bounded maintenance implementation is qualified, all V2
+writers and transaction-local consumers, genuine disposable-YDB cases and
+exact-source independent review are complete. A successful primitive gate is
+not that proof.
 
 The forward source order is deliberately two one-statement files:
 
@@ -1150,9 +1152,10 @@ Before separately authorized application, require this complete ordered plan:
    Re-read each exact `(shard_bucket,state_digest)` row in its serializable
    maintenance transaction; verify its original kind, immutable timestamps,
    full current record and scalar correspondence before changing anything.
-   An earlier inventory is not a CAS. For a valid V1 challenge, retire that exact
-   row, or backfill ONLY the original expiry to its missing retention column
-   under the reviewed plan; never extend it or create V2 authority from it.
+   An earlier inventory is not a CAS. `identity-maintenance.v1` retires a valid
+   V1 challenge by exact-row deletion, including original NULL `delete_after`;
+   it has no retention-backfill mode. Never extend it or create V2 authority
+   from it. Valid V2 records remain unchanged; partial/malformed V2 stops.
    Malformed/mismatched rows stop the pass for explicit classification, not a
    guessed expiry, unbounded `UPDATE`, blind overwrite or broad deletion.
    Reconcile exact outcomes after an ambiguous commit before advancing progress.
@@ -1160,9 +1163,8 @@ Before separately authorized application, require this complete ordered plan:
    stopped; per-page success or an operational TTL delay is not full coverage.
 5. Separately validate forward/reverse identity correspondence, unique immutable
    ownership, maximum two active methods/one per provider, common positive
-   revision and no tombstone reactivation. Any V1-to-V2 identity conversion needs
-   its separately accepted bounded executor and anomaly report; this runbook
-   supplies neither a backfill implementation nor a new account grant. Retire
+   revision and no tombstone reactivation. The versioned executor below reports
+   anomalies rather than repairing them; its candidates are not account grants. Retire
    outstanding V1 challenges and V1 Web cookies by bounded exact-key work under
    the same freeze. Do not change canonical conversation Sessions, history,
    memberships, actors or resource ownership; deterministic Telegram-user
@@ -1189,6 +1191,71 @@ This limitation must not be disguised as automatic idempotence. Rollback keeps
 revision-aware V2 readers and tombstones, disables new operations, and retains
 forward schema/receipts. It never restores V1 readers, TTL on `expires_at`, old
 writers that omit retention, a destructive Down, or provider-token replay.
+
+#### Bounded identity maintenance command
+
+Follow the normative `identity-maintenance.v1` appendix in the accepted design.
+This command is separate from `partition-backfill`, which handles lifecycle
+indexes and cannot establish identity correspondence or writer retirement.
+Before any separately authorized database use, retain the exact environment,
+source/migration/configuration pins and ALL-ingress freeze/drain/exclusive-old-
+writer evidence described above. No `--freeze-verified` flag exists: neither
+the program nor a digest can prove that operational prerequisite.
+
+Use the existing YDB credential chain, never a credential in ARGS or a DSN.
+The three pin arguments are required in every mode; the following schematic
+values are placeholders, not a runnable environment authorization:
+
+```text
+make identity-maintenance ARGS='inventory --environment-digest <64hex> --manifest-digest <64hex> --source-commit <40hex>'
+make identity-maintenance ARGS='prepare --environment-digest <64hex> --manifest-digest <64hex> --source-commit <40hex> --kind identity --selector <private-owner-id> --candidate /private/operator/new-candidate.json'
+make identity-maintenance ARGS='apply --environment-digest <64hex> --manifest-digest <64hex> --source-commit <40hex> --candidate /private/operator/new-candidate.json'
+make identity-maintenance ARGS='reconcile --environment-digest <64hex> --manifest-digest <64hex> --source-commit <40hex> --candidate /private/operator/new-candidate.json'
+```
+
+Prepare accepts only `identity` plus original UserID, or `cookie`/`challenge`
+plus exact stored digest. It never accepts a subject reassignment, account
+merge, table name or arbitrary SQL. It creates one new private regular file,
+mode 0600, without overwriting/following a symlink; protect its parent directory.
+Apply/reconcile reject public, oversized, symlinked or hard-linked candidates.
+Selectors stay private; stdout/logs contain only redacted counts, closed status
+codes and hashes, never raw records, subjects, cookie/CSRF/state digests,
+PKCE/nonce, credentials or driver errors. Keep private candidates out of public
+issue evidence, shell history exports and report archives.
+
+Every invocation verifies actual four-table schema/TTL and exact applied
+130/131 checksum/Goose state without bootstrap/DDL. Every apply/reconcile then
+restarts a COMPLETE four-table, sixteen-bucket inventory; an older report or
+cursor is never coverage permission. Bounds are 128 pages (16 accepted rows
+plus a seventeenth sentinel), 2048 accepted rows, 134 transactions/160 SQL
+statements, 128 MiB logical material, five seconds per transaction and one
+original ten-minute whole-command deadline. These are refusal caps, not server
+RU/native-memory guarantees. Over-cap/incomplete input stops; do not raise caps,
+skip buckets, use a cursor to bypass coverage or launch a background sweep.
+
+For a coherent all-V1 user group only, conversion atomically writes active V2
+revision 1, using already-persisted microsecond creation/update instants; it
+does not preserve original JSON nanosecond representation. It keeps exact
+owner/subject and reverse-created time, and reports only a `precisionProjected`
+count. Existing V2/tombstone timestamps are never normalized. V1 cookie revoke
+uses the candidate's immutable SQL-sampled intent time without renewing any
+expiry; V1 challenge retirement is exact deletion, never a purpose conversion.
+
+Do not infer rollback from an error or absent report. On `possiblyCommitted`,
+preserve the original candidate and explicitly reconcile; do not repeat provider
+work, prepare a replacement or auto-retry apply. An exact postimage is an
+observation, not attribution. A missing challenge after uncertain DELETE is
+`desiredAbsentObservedActorUnknown`, not proof our transaction committed. A
+partial candidate/report write is likewise not rollback. Final fresh inventory
+under the continuing external freeze must show ZERO V1 forward identities, no
+unrevoked V1 cookie, no V1 challenge, no NULL challenge retention and no
+correspondence anomaly. Only the separately accepted rollout may then unfreeze.
+
+`make identity-maintenance-test` runs only offline CLI/controlled SQL tests.
+The existing guarded `web-identity-v2-ydb-gate` additionally selects the native
+maintenance scenario, using its own unique schema namespace and original
+disposable-CI guard/deadline. That source is not permission to run native YDB
+locally, not proof of shared-environment freeze, and not a public V2 installer.
 
 ### Yandex ID login
 

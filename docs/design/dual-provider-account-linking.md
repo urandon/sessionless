@@ -401,3 +401,322 @@ Each child retains parent/design/dependencies/acceptance and scoped authority,
 independent exact-artifact review, proportionate checks and all exact-head CI.
 Research/design delivery does not close #172, claim both providers work live,
 or authorize registrations, shared migrations, real credentials or deployment.
+
+## Normative identity-maintenance.v1 engineering appendix
+
+This independently versioned operator contract refines the 0.1.0 upgrade and
+retention requirements without changing the feature, immutable ownership or
+serving V2 contracts above. It specifies a bounded implementation; it does not
+claim that command, native proof, writer retirement or rollout already exists.
+Existing migrations 00130/00131 and serving codecs remain unchanged. No
+credential, migration application, backfill, cutover or deployment is authorized
+by accepting this appendix.
+
+### Purpose and authority
+
+Maintain ONLY external_identities, external_identities_by_user,
+oidc_login_challenges and web_sessions. No tenant discovery/product migration
+framework, reassignment, account merge, new table, lease, cryptographic key,
+background worker, provider request or enrollment authority is introduced.
+
+An operator must FIRST establish and separately retain evidence that ALL auth
+starts/callbacks/continuations/confirms and identity/session writers are frozen,
+old invocations drained, and old directly addressable revisions/private callers,
+bootstrap and Telegram writers retired. Keep that boundary through final
+verification and separately accepted unfreeze. A CLI flag, source/config hash,
+schema lease, inventory file or this tool CANNOT prove or establish retirement.
+If that external condition cannot be maintained, do not mutate or enable V2.
+
+Pin environment/database identity, tool source, provider/client/callback/proof
+manifest, migration checksums/history and actual table schema/TTL observations.
+Require the original 00130 nullable Timestamp column and final 00131 zero-delay
+delete_after TTL before apply. Do not apply DDL or advance migration metadata.
+An ambiguous ADD COLUMN incident remains STOP/manual reviewed recovery, not a
+maintenance retry or an already-exists exception.
+
+Read migration metadata without calling Migrator.Status, Goose provider
+initialization or any bootstrap. In the initial SQL-clock transaction, execute
+EXACTLY these two additional bounded read-only queries against existing tables:
+
+```sql
+SELECT version,
+ SUBSTRING(CAST(filename AS String),0,257),
+ SUBSTRING(CAST(sha256 AS String),0,65),
+ SUBSTRING(CAST(state AS String),0,17), recorded_at, applied_at
+FROM schema_migration_checksums
+WHERE version IN (130,131) ORDER BY version LIMIT 3;
+
+SELECT version_id,is_applied,tstamp
+FROM sessionless_goose_versions
+WHERE version_id IN (130,131) ORDER BY version_id LIMIT 3;
+```
+
+Both require exactly versions130 and131, non-NULL correctly typed fields, no
+extra row, applied checksum state and Goose is_applied=true; timestamps must
+be nonzero/nonfuture at the initial SQL clock. Checksum recorded_at cannot
+exceed its applied_at. Do not invent equality between runner wall-clock
+checksum timestamps and Goose's independently SQL-assigned tstamp. Require
+the exact committed filenames and SHA-256 of their FULL embedded file bytes,
+as LoadMigrations already defines (not SQL-text normalization):
+
+* 00130_add_identity_challenge_delete_after.sql:
+  1417c1e749d489d77d47ebebb773cfb13d4be747abbc4b11b1be2b71f6907859
+* 00131_set_identity_challenge_delete_after_ttl.sql:
+  20bd275a6389db46ba4378957a0e07a50ec23a1f5b6611f0991da501cf216632
+
+The source-derived tables/columns are those of internal/ydbmigrate/migrator.go
+and the pinned Goose3.27.1 YDB dialect (version_id is its unique PK). Missing,
+pending, malformed, mismatching or unreadable metadata stops before inventory
+or DML. These queries inspect exactly130/131, not all migration history; the
+separate pinned-environment schema/checksum preflight remains mandatory. Charge
+all six possible returned rows including excess sentinels and bounded copies to
+an 8 KiB metadata allowance inside the SAME whole-run material cap. Missing
+tables deny; no CREATE, status bootstrap, recovery or metadata write is allowed.
+
+### Exact modes and outputs
+
+One canonical CLI command has exactly four modes; unknown/duplicate flags or
+mode/field combinations deny before connection. No implicit/default apply mode.
+
+* inventory: complete bounded four-table inventory and anomaly report; no DML.
+* prepare: the SAME complete inventory, then one immutable candidate for exactly
+  one user conversion, V1 cookie revocation or V1 challenge retirement; no DML.
+* apply: load exactly one prepared candidate; freshly re-establish COMPLETE
+  inventory from the beginning, then one serializable exact-candidate mutation.
+* reconcile: load exactly one candidate; fresh complete inventory plus exact
+  target observation only; no DML, refresh, auto-apply or automatic retry.
+
+There is no separately supplied positive coverage/retirement Boolean, current
+V2 installer, table selector, arbitrary SQL, service/public route or permission
+from candidate contents. Candidate IDs/keys select work for an already
+authorized operator; they do not authenticate ownership or freeze.
+
+Public stdout/report contains contract/environment/source/manifest digests,
+counts, bucket/page ordinals, bounded anomaly codes, completion/outcome and
+candidate/report digests ONLY. No subject, UserID, session/state/CSRF/browser
+digest, raw record, PKCE, nonce, redirect, cookie, credential, DSN or SQL error
+chain is printed. Logs use closed codes, not original driver errors.
+
+Private execution artifacts are DISTINCT from redacted reports: exact PK
+selectors (including subject where required), bounded exclusive cursor tuples,
+validated semantic preimage fingerprints, physical-column fingerprints and
+prepared postimage fingerprints. Files are created exclusively with mode 0600,
+no symlink following/overwrite, bounded strict JSON and no secret/raw-record
+copies. Original selected row bodies are re-read, not embedded in an artifact.
+Local artifact hashes provide integrity/correlation, not authenticity, writer
+retirement, account ownership, permission or proof that a mutation committed.
+
+### Coverage and finite budgets
+
+Coverage comprises ALL four tables, ALL buckets 0..15, in fixed table/bucket
+order, then full declared PK order. Each query is bucket-bounded with an
+exclusive last-PK cursor and LIMIT 17: at most 16 accepted rows plus one excess
+sentinel. A sentinel forces another page; an exact 16-row final page without
+sentinel is complete. Charge and validate the sentinel, never silently drop it.
+Advance the exclusive cursor ONLY to the last ACCEPTED (at most sixteenth)
+row, never to the seventeenth sentinel: that row must be read/accepted on the
+next page. A sentinel's read still consumes its original charge.
+Also run exactly one bounded NULL/out-of-range-PK probe per table; any hit stops.
+Wrong in-range bucket is detected by recomputing BucketV1 from every row's PK.
+
+The finite run limits are independent refusal caps, NOT throughput/RU promises:
+
+| Resource | identity-maintenance.v1 limit |
+| --- | --- |
+| Whole invocation, including open/close | 10 minutes, one original context |
+| Each transaction | 5 seconds intersected with original invocation deadline |
+| SDK/application retries | ZERO; one callback/attempt per transaction |
+| Inventory pages, across all four tables | 128 including empty/final pages |
+| Accepted inventory rows | 2048 total |
+| Inventory row materializations including sentinels | 2176 maximum |
+| Serialized record | 8192 bytes; read 8193-byte excess sentinel |
+| All returned variable-width cells per row | at most 24 KiB, prospectively reserved |
+| Page material/copies | 1 MiB; no refund on absent/error/malformed result |
+| Whole invocation material/copies | 128 MiB; no reset by page/transaction |
+| SQL statements | 160 total; at most 16 in any transaction |
+| Transactions | 134 total, including all read-only and final target work |
+| Private candidate, cursor and public report | 16 KiB each, separately capped |
+
+Math: a complete empty inventory needs 4*16=64 pages. With at most 128 pages,
+128*16=2048 is the independent accepted-row ceiling; 128*17=2176 bounds returned
+rows including sentinels. Each row reserves 24 KiB returned strings plus at most
+three 8 KiB record/normalized-encoding copies: 48 KiB; 17*48 KiB=816 KiB/page,
+below 1 MiB. 128 pages use at most 102 MiB under that row reservation. Four
+invalid-key probes reserve at most 192 KiB, metadata at most 8 KiB, and final
+exact work <=1 MiB, leaving margin under 128 MiB. Native allocation overhead,
+server scans, buffers, RU and
+latency are NOT certified by this logical material bound. Fixed-width nullable
+cells and decoded structure cardinalities are separately closed/bounded.
+
+One initial SQL-clock/metadata transaction (one clock read plus the two exact
+metadata queries), four invalid-key probe transactions, 128 page transactions
+and one final prepare/apply/reconcile target transaction total 134. Those inventory
+reads use at most 135 statements; final work <=16 gives151, within160. Metadata
+rows are additional to the 2176 inventory-materialization cap and have their
+own six-row cap, but share whole-run material/time/statement counters. Schema
+preflight uses at most four bounded scheme observations under
+the SAME command deadline, not DDL or extra unbounded SQL. A transaction/read
+failure, extra page/row, material excess or deadline yields INCOMPLETE/STOP.
+Neither elapsed bounds nor reaching cursor end in one bucket proves coverage.
+
+No cross-page database snapshot is claimed: the maintained external writer
+freeze is indispensable. Asynchronous TTL can remove rows; it cannot create or
+change ownership. Every candidate is rechecked in its final serializable
+transaction. Every apply/reconcile STARTS a fresh complete inventory; a resume
+cursor never skips that proof or certifies complete prior coverage.
+
+### Strict format and physical correspondence
+
+Use explicit closed V1 versus V2 dispatch, not try-V2-then-V1 fallback. An exact
+V2 discriminator selects ONLY its existing strict V2 decoder. Unknown, duplicate,
+case-aliased, incomplete, numeric-revision, invalid UTF-8/surrogate or mixed-shape
+JSON is an anomaly. Legacy identity/challenge/cookie parsers have closed exact
+contextual key sets and existing domain validation; historical documented V1
+optional fields remain optional, but no new alias/coercion is introduced.
+
+Compare every physical nullable scalar, key, bucket and timestamp with its
+validated record; NULL is not epoch/empty. Preserve the existing writers' exact
+Unix-epoch sentinel for nil consumed_at/revoked_at; this is one explicit scalar
+representation, not permission to accept NULL or alternate sentinels. Legacy
+V1 ONLY permits physical Timestamp == originalJSON.UTC().Truncate(microsecond).
+There is no epsilon, rounding up, fresh replacement or caller-selected tolerance.
+For V1 identity conversion the explicit one-time postimage projection below is
+mandatory; do not claim exact original JSON instants survive that conversion.
+Existing V2 identities/tombstones/challenges/sessions must instead have EXACT
+JSON-instant/physical-timestamp equality (and the explicit nil sentinel where
+defined); no legacy projection or normalization is available for ANY V2 row.
+SQL CurrentUtcTimestamp is the authority for new prepared revocation time;
+reject nonrepresentable/future-inconsistent input. JsonDocument member order
+is not stable wire authority: fingerprints use the one validated canonical semantic
+encoding plus separately canonicalized physical cells, never hash-equality in
+place of decoding/full correspondence. Cap all copies before materialization.
+
+### Identity correspondence and conversion
+
+Complete in-memory inventory joins both directions by exact subject/owner and
+creation time, within the row/material caps: for V1 only, reverse physical
+created_at must equal the canonical forward's already-persisted physical
+created_at and exact UTC-truncated original JSON CreatedAt. For V2 this is the
+existing EXACT CreatedAt join, with no normalization. Detect orphan forward or
+reverse rows, wrong buckets, >2 active methods, duplicate provider slots,
+ownership disagreement and inconsistent common positive revisions. Absence of
+a reverse row is NOT permission to create one. A malformed row anywhere stops
+prepare/apply; do not select only favorable rows or continue past anomalies.
+
+The sole conversion candidate is ONE complete user group with one or two valid
+V1 forward identities and exactly corresponding reverse rows, distinct supported
+providers and no V2/tombstone/mixed-version conflict. Require original V1 JSON
+CreatedAt/UpdatedAt nonfuture at the SQL observation and all original physical
+timestamps EXACTLY their UTC-truncated original JSON values. Convert all its
+forwards atomically to explicit active V2, revision decimal-string "1",
+preserving exact Subject/UserID; set V2 CreatedAt/UpdatedAt to the ALREADY
+persisted physical microsecond instants, never round up or use a fresh time.
+Leave reverse physical CreatedAt and every other reverse fact unchanged.
+This is an explicit versioned representation projection from historical V1 JSON
+nanoseconds, NOT preservation of those original submicrosecond JSON instants,
+an ordinary-login repair, a relaxed V2 reader or a selectable tolerance. The
+conversion postimage must pass the existing V2 active-set reader's EXACT
+canonical-identity CreatedAt == reverse-created_at join.
+
+The immutable candidate fingerprints original JSON semantic instants AND all
+physical preimage cells, the identity-maintenance.v1 projection policy and exact
+V2 postimages. The redacted report's precisionProjected count is the number of
+converted forward rows whose CreatedAt OR UpdatedAt changed representation;
+zero means no projection was necessary, not skipped validation. No subject or
+original timestamp values are emitted in that counter. This appendix makes
+that one-time representation conversion explicit; it does not relax any
+existing V2 reader or install a serving compatibility path.
+In the final serializable transaction re-read the complete reverse prefix LIMIT3,
+all canonical group rows and exact physical facts, then compare to the prepared
+preimage before any write. No partial per-row group conversion is accepted.
+
+Valid all-V2 active groups and unlinked ownership tombstones are observed and
+retained unchanged; their existing revisions cannot be reset to1. A mixed V1/V2
+user group, incomplete/partial V2, tombstone reverse, or inconsistent revision
+reports STOP, not automatic reconstruction, reactivation or guessed common
+revision. No membership, actor, canonical Session/history, resource or tenant
+record is changed. Deterministic Telegram ownership mismatch remains denial.
+
+### V1 challenge and cookie policy
+
+V1 challenges are RETIRE ONLY: exact validated row DELETE, including an original
+NULL delete_after. Never backfill retention, extend deadline, scrub by guessing,
+convert purpose, exchange a code or manufacture a V2 record. A non-NULL V1
+delete_after must already equal original ExpiresAt under the single precision
+rule. Valid V2 login/proof/operation records are retained unchanged and must have
+complete current physical/JSON correspondence, including non-NULL retention;
+NULL/partial/malformed V2 stops, never repair. Logical expiry does not justify
+accepting malformed material, and TTL absence is not a receipt of our deletion.
+
+V1 cookies are REVOKE ONLY: preserve all record/scalar facts and original idle
+and absolute expiry, change only nil RevokedAt to the candidate's prepared_at
+and physical revoked_at to the SAME instant. Already coherently revoked V1 is
+unchanged. Prepare samples prepared_at from SQL in its final read transaction,
+requires it >= original IssuedAt, and persists that immutable intent in the
+private candidate before apply. Apply requires current SQL time >=prepared_at
+and exact unchanged preimage; it NEVER selects a new revocation timestamp on
+retry/reconcile. prepared_at is explicitly intent time, not claimed commit time.
+Valid V2 cookies remain unchanged; never infer a V2 snapshot from V1 identity.
+
+### Atomicity, uncertain outcomes and progress
+
+No write occurs before complete fresh anomaly-free inventory and strict
+candidate/target validation. Final serializable read+compare+write is one exact
+group/row transaction, not an unchecked UPDATE or inventory-time CAS. Unrelated
+row appearance/change invalidates coverage on the next invocation; external
+freeze violations are operational STOP, not automatically repairable drift.
+
+apply returns applied ONLY after acknowledged commit, alreadyDesiredObserved
+for an exact prepared identity/cookie postimage without claiming who wrote it,
+and possiblyCommitted for any ambiguous commit/close/output failure after write
+attempt. It resets speculative output on every failure. No application/SDK
+automatic retry or post-error positive fallback is permitted.
+
+reconcile returns exactPreimageObserved, exactPostimageObserved,
+desiredAbsentObservedActorUnknown, diverged or unavailable/incomplete. In
+particular lost DELETE commit plus absence NEVER means applied/ourCommit. A
+missing pre-apply V1 target cannot be blindly retried or credited to us; absence
+may be TTL/another actor. The original private candidate provenance remains
+separate from final fresh coverage, and neither absence nor a report allows
+ownership reassignment. An operator may explicitly reapply only after a fresh
+complete inventory and exact original preimage, never from absence alone.
+
+Checkpoint/report progress is emitted only after acknowledged observation and
+contains counts, ordinals, hashes and closed outcomes, not raw selectors or
+secret material. One invocation creates at most one private candidate/cursor
+artifact and one final report, each <=16 KiB; there is no growing append journal
+or automatic cross-invocation artifact accumulation. A partial invocation can
+emit its bounded incomplete report but cannot certify coverage. Failure to
+persist/output progress is not rollback; retain the prepared candidate and
+return possiblyCommitted where appropriate. A cursor
+can assist diagnostics but cannot resume mutation past fresh full coverage.
+Final verification is a fresh complete inventory under the continuing freeze:
+ZERO V1 forward identities, no unrevoked V1 cookie, no V1 challenge, no NULL
+challenge retention, valid V2 correspondence/tombstones and no anomaly.
+It certifies ONLY observed data, never
+old-writer retirement, physical TTL erasure, provider availability or unfreeze.
+
+### Verification and implementation boundary
+
+Tests must independently prove complete buckets/pages/excess sentinel, strict
+legacy/V2 dispatch, exact V1-nanosecond/physical-microsecond preimages, projected
+V2 postimages and precisionProjected counts, rejection rather than normalization
+of V2 timestamp mismatch, exact two-row conversion followed by the GENUINE
+existing V2 active-set reader/reverse CreatedAt join, both metadata query
+results/oversize/missing/applied state/hash/time/scalar bounds, zero-V1-forward
+final readiness, sentinel-as-next-page-first-row/no cursor skip, all anomalies,
+no favorable subset, genuine two-row atomic conversion, preserved
+tombstones, original V1 expiry, NULL challenge retirement, cookie exact prepared
+time, stale preimages, concurrent change conflict, rollback/lost commit, TTL
+absence actor-unknown, no automatic retry, partial artifact write, repeated
+invocation idempotence and sticky whole-run counters. Genuine disposable-YDB
+cases exercise actual serializable range/point-write conflict and physical
+scalars under an existing explicitly authorized CI gate; local controlled tests
+are not that proof. Design acceptance is not implementation, native evidence,
+external freeze/drain proof or authorization for an environment operation.
+
+Tradeoff: full inventory on EVERY single-target invocation deliberately limits
+deployment size and repeats bounded initialization. Over-cap environments STOP
+and need a separately versioned executor; do not raise limits or claim a cursor
+is coverage. This avoids a new global fence/table, signed permission artifact,
+cross-invocation cached grant or an unverifiable coverage Boolean.

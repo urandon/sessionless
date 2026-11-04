@@ -110,6 +110,7 @@ func (f *canonicalLoopSQL) ExecContext(ctx context.Context, s string, args []dri
 
 func (s *LocalCanonicalLoopSeed) MaxCallbackSQL() int { return s.loop.maxCallbackSQL }
 func (s *LocalCanonicalLoopSeed) ModelEffectsAbsent() bool {
+	defer s.holdObserverConnection()()
 	f := s.loop.operations
 	return f.row == nil && f.operation == nil && f.call == nil && f.operationWrites == 0 && f.callWrites == 0 && f.observationWrites == 0 && f.writes == 0
 }

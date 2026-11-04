@@ -657,6 +657,18 @@ partition-status: prepare
 partition-backfill: prepare
 	go run ./cmd/schema-backfill
 
+.PHONY: identity-maintenance identity-maintenance-test
+# Operator-only fixed identity inventory/CAS. No implicit apply or serving install.
+identity-maintenance: prepare
+	@go run ./cmd/identity-maintenance $(ARGS)
+
+identity-maintenance-test: prepare fmt-check
+	env -u YDB_CONNECTION_STRING \
+		SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE=0 SESSIONLESS_WEB_IDENTITY_V2_YDB_DISPOSABLE=0 \
+		SESSIONLESS_OWNED_CURRENT_YDB_GATE=0 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=0 \
+		GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GONOPROXY=none GOVCS='*:off' \
+		go test -race -count=1 -shuffle=on -timeout=90s -run '^TestIdentityMaintenance' ./cmd/identity-maintenance ./internal/ydbstore
+
 ready-expiry-repair: prepare
 	go run ./cmd/ready-expiry-repair $(ARGS)
 

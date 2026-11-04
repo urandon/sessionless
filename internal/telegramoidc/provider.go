@@ -32,6 +32,7 @@ const (
 	DefaultJWKSURL               = "https://oauth.telegram.org/.well-known/jwks.json"
 	defaultJWKSCacheTTL          = 10 * time.Minute
 	maxProviderResponseBytes     = 1 << 20
+	callbackTimeout              = 10 * time.Second
 )
 
 var ErrProviderResponse = errors.New("Telegram OIDC provider response is invalid")
@@ -85,13 +86,19 @@ func New(config Config) (*Provider, error) {
 	if config.JWKSCacheTTL <= 0 || config.JWKSCacheTTL > defaultJWKSCacheTTL {
 		config.JWKSCacheTTL = defaultJWKSCacheTTL
 	}
-	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{}
+	if config.HTTPClient != nil {
+		*client = *config.HTTPClient
 	}
+	if client.Timeout <= 0 || client.Timeout > callbackTimeout {
+		client.Timeout = callbackTimeout
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	config.AllowedAlgorithms = append([]string(nil), config.AllowedAlgorithms...)
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	return &Provider{config: config, client: config.HTTPClient}, nil
+	return &Provider{config: config, client: client}, nil
 }
 
 func (provider *Provider) AuthorizationURL(
@@ -134,6 +141,66 @@ func (provider *Provider) ExchangeAndVerify(
 	if request.Provider != domain.IdentityProviderTelegram || request.RedirectURI != provider.config.RedirectURI {
 		return domain.OIDCIdentityClaims{}, ErrProviderResponse
 	}
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, callbackTimeout)
+	defer cancel()
+	claims, _, err := provider.exchangeAndVerify(ctx, request, started)
+	return claims, err
+}
+
+func (provider *Provider) ProofAuthorizationURL(ctx context.Context, request ports.IdentityProviderProofAuthorizationRequestV1) (string, error) {
+	if request.Validate() != nil || !provider.matchesProofBinding(request.Binding) || ctx.Err() != nil {
+		return "", ErrProviderResponse
+	}
+	raw, err := provider.AuthorizationURL(ctx, ports.OIDCAuthorizationRequest{Provider: domain.IdentityProviderTelegram, RedirectURI: request.Binding.CallbackURI, State: request.State, Nonce: request.Nonce, CodeChallenge: request.CodeChallenge, Scopes: []string{"openid", "profile"}})
+	if err != nil {
+		return "", err
+	}
+	u, _ := url.Parse(raw)
+	q := u.Query()
+	q.Set("max_age", "0")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func (provider *Provider) ExchangeAndVerifyProof(ctx context.Context, request ports.IdentityProviderProofTokenRequestV1) (ports.IdentityProviderProofResultV1, error) {
+	started := time.Now()
+	if request.Validate() != nil || !provider.matchesProofBinding(request.Binding) || ctx.Err() != nil {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderResponse
+	}
+	ctx, cancel := context.WithDeadline(ctx, started.Add(min(callbackTimeout, request.ChallengeExpiresAt.Sub(request.Now))))
+	defer cancel()
+	ordinary := ports.OIDCTokenRequest{Provider: domain.IdentityProviderTelegram, Code: request.Code, RedirectURI: request.Binding.CallbackURI, PKCEVerifier: request.PKCEVerifier, ExpectedNonce: request.ExpectedNonce, Now: request.Now, Policy: domain.OIDCVerificationPolicy{Issuer: provider.config.Issuer, Audience: provider.config.ClientID, AllowedAlgorithms: []string{"RS256"}, MaxClockSkew: domain.IdentityProofClockSkewV2}}
+	claims, signed, err := provider.exchangeAndVerify(ctx, ordinary, started)
+	if err != nil {
+		return ports.IdentityProviderProofResultV1{}, err
+	}
+	authTime, err := proofAuthTime(signed.AuthTime)
+	completed := request.Now.Add(time.Since(started))
+	if ctx.Err() != nil {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderUnavailable
+	}
+	if err != nil || !completed.Before(request.ChallengeExpiresAt) || authTime.Before(request.ChallengeCreatedAt.Add(-domain.IdentityProofClockSkewV2)) || authTime.After(completed.Add(domain.IdentityProofClockSkewV2)) {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderResponse
+	}
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}
+	if subject.Validate() != nil {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderResponse
+	}
+	return ports.IdentityProviderProofResultV1{Subject: subject, Kind: domain.IdentityProofTelegramAuthTimeV2, SignedAuthTime: &authTime}, nil
+}
+
+func (provider *Provider) matchesProofBinding(binding domain.IdentityProviderBindingV2) bool {
+	return binding == (domain.IdentityProviderBindingV2{Provider: domain.IdentityProviderTelegram, Issuer: provider.config.Issuer, ClientID: provider.config.ClientID, CallbackURI: provider.config.RedirectURI})
+}
+
+func (provider *Provider) exchangeAndVerify(ctx context.Context, request ports.OIDCTokenRequest, started time.Time) (domain.OIDCIdentityClaims, *telegramClaims, error) {
+	deny := func(err error) (domain.OIDCIdentityClaims, *telegramClaims, error) {
+		return domain.OIDCIdentityClaims{}, nil, err
+	}
+	if ctx.Err() != nil {
+		return deny(ErrProviderUnavailable)
+	}
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {request.Code},
@@ -145,48 +212,67 @@ func (provider *Provider) ExchangeAndVerify(
 		ctx, http.MethodPost, provider.config.TokenEndpoint, strings.NewReader(form.Encode()),
 	)
 	if err != nil {
-		return domain.OIDCIdentityClaims{}, ErrProviderResponse
+		return deny(ErrProviderResponse)
 	}
 	httpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	httpRequest.SetBasicAuth(provider.config.ClientID, provider.config.ClientSecret)
 	response, err := provider.client.Do(httpRequest)
 	if err != nil {
-		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
+		return deny(ErrProviderUnavailable)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if expectedOAuthRejection(response.StatusCode, response.Body) {
-			return domain.OIDCIdentityClaims{}, ErrProviderResponse
+		if expectedOAuthRejection(response.StatusCode, response.Body) && ctx.Err() == nil {
+			return deny(ErrProviderResponse)
 		}
-		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
+		return deny(ErrProviderUnavailable)
 	}
-	var tokens struct {
-		IDToken string `json:"id_token"`
+	tokens, err := readProviderObject(response.Body)
+	var idToken string
+	if err != nil || json.Unmarshal(tokens["id_token"], &idToken) != nil || idToken == "" || ctx.Err() != nil {
+		return deny(ErrProviderUnavailable)
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxProviderResponseBytes))
-	if err := decoder.Decode(&tokens); err != nil || tokens.IDToken == "" {
-		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
-	}
-	claims, err := provider.verifyIDToken(ctx, tokens.IDToken, request.Now)
+	claims, signed, err := provider.verifyIDToken(ctx, idToken, request.Now.Add(time.Since(started)))
 	if err != nil {
-		return domain.OIDCIdentityClaims{}, err
+		return deny(err)
 	}
-	if err := claims.Verify(request.Policy, request.ExpectedNonce, request.Now); err != nil {
-		return domain.OIDCIdentityClaims{}, err
+	if ctx.Err() != nil {
+		return deny(ErrProviderUnavailable)
 	}
-	return claims, nil
+	if err := claims.Verify(request.Policy, request.ExpectedNonce, request.Now.Add(time.Since(started))); err != nil {
+		return deny(ErrProviderResponse)
+	}
+	if ctx.Err() != nil {
+		return deny(ErrProviderUnavailable)
+	}
+	return claims, signed, nil
 }
 
 type telegramClaims struct {
 	jwt.RegisteredClaims
-	Nonce string `json:"nonce"`
+	Nonce    string          `json:"nonce"`
+	AuthTime json.RawMessage `json:"auth_time"`
 }
 
 func (provider *Provider) verifyIDToken(
 	ctx context.Context,
 	rawToken string,
 	now time.Time,
-) (domain.OIDCIdentityClaims, error) {
+) (domain.OIDCIdentityClaims, *telegramClaims, error) {
+	// Reject ambiguous duplicate claim fields before parsing. Values remain
+	// untrusted until the SAME token's signature has been verified below.
+	parts := strings.SplitN(rawToken, ".", 4)
+	if len(parts) != 3 {
+		return domain.OIDCIdentityClaims{}, nil, ErrProviderResponse
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return domain.OIDCIdentityClaims{}, nil, ErrProviderResponse
+	}
+	values, err := readProviderObject(strings.NewReader(string(payload)))
+	if err != nil {
+		return domain.OIDCIdentityClaims{}, nil, ErrProviderResponse
+	}
 	parser := &jwt.Parser{
 		ValidMethods:         append([]string(nil), provider.config.AllowedAlgorithms...),
 		SkipClaimsValidation: true,
@@ -201,80 +287,165 @@ func (provider *Provider) verifyIDToken(
 	})
 	if err != nil || token == nil || !token.Valid {
 		if errors.Is(err, ErrProviderUnavailable) {
-			return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
+			return domain.OIDCIdentityClaims{}, nil, ErrProviderUnavailable
 		}
-		return domain.OIDCIdentityClaims{}, fmt.Errorf("%w: ID token verification failed", ErrProviderResponse)
+		return domain.OIDCIdentityClaims{}, nil, fmt.Errorf("%w: ID token verification failed", ErrProviderResponse)
 	}
 	if claims.IssuedAt == nil || claims.ExpiresAt == nil {
-		return domain.OIDCIdentityClaims{}, ErrProviderResponse
+		return domain.OIDCIdentityClaims{}, nil, ErrProviderResponse
 	}
+	// encoding/json's case-insensitive struct matching is not proof-field
+	// authority. Only the exact signed auth_time member can provide freshness.
+	claims.AuthTime = values["auth_time"]
 	return domain.OIDCIdentityClaims{
 		Issuer: claims.Issuer, Audience: []string(claims.Audience), Subject: claims.Subject,
 		Nonce: claims.Nonce, IssuedAt: claims.IssuedAt.Time.UTC(), ExpiresAt: claims.ExpiresAt.Time.UTC(),
-	}, nil
+	}, claims, nil
 }
 
 func (provider *Provider) signingKey(ctx context.Context, kid string, now time.Time) (any, error) {
 	provider.keys.mu.Lock()
-	defer provider.keys.mu.Unlock()
 	if now.Before(provider.keys.expiresAt) {
 		if key, found := provider.keys.keys[kid]; found {
+			provider.keys.mu.Unlock()
 			return key, nil
 		}
 	}
-	if err := provider.refreshKeys(ctx, now); err != nil {
+	provider.keys.mu.Unlock()
+	// No network I/O while holding the cache mutex: another bounded exchange
+	// must not inherit this exchange's stalled fetch. At most one fetch here.
+	keys, err := provider.fetchKeys(ctx)
+	if err != nil {
 		return nil, err
 	}
-	key, found := provider.keys.keys[kid]
+	if ctx.Err() != nil {
+		return nil, ErrProviderUnavailable
+	}
+	provider.keys.mu.Lock()
+	provider.keys.keys, provider.keys.expiresAt = keys, now.Add(provider.config.JWKSCacheTTL)
+	provider.keys.mu.Unlock()
+	key, found := keys[kid]
 	if !found {
 		return nil, ErrProviderResponse
 	}
 	return key, nil
 }
 
-func (provider *Provider) refreshKeys(ctx context.Context, now time.Time) error {
+func (provider *Provider) fetchKeys(ctx context.Context) (map[string]any, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, provider.config.JWKSURL, nil)
 	if err != nil {
-		return ErrProviderResponse
+		return nil, ErrProviderResponse
 	}
 	response, err := provider.client.Do(request)
 	if err != nil {
-		return ErrProviderUnavailable
+		return nil, ErrProviderUnavailable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return ErrProviderUnavailable
+		return nil, ErrProviderUnavailable
 	}
-	var document struct {
-		Keys []struct {
-			KID string `json:"kid"`
-			KTY string `json:"kty"`
-			Use string `json:"use"`
-			Alg string `json:"alg"`
-			N   string `json:"n"`
-			E   string `json:"e"`
-		} `json:"keys"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxProviderResponseBytes)).Decode(&document); err != nil {
-		return ErrProviderUnavailable
+	var encodedKeys []json.RawMessage
+	values, err := readProviderObject(response.Body)
+	if err != nil || json.Unmarshal(values["keys"], &encodedKeys) != nil || ctx.Err() != nil {
+		return nil, ErrProviderUnavailable
 	}
 	keys := make(map[string]any)
-	for _, encoded := range document.Keys {
-		if encoded.KID == "" || encoded.KTY != "RSA" || encoded.Alg != "RS256" || (encoded.Use != "" && encoded.Use != "sig") {
+	for _, encoded := range encodedKeys {
+		fields, err := readProviderObject(strings.NewReader(string(encoded)))
+		if err != nil {
+			return nil, ErrProviderUnavailable
+		}
+		var kid, kind, algorithm, use, modulus, exponent string
+		if json.Unmarshal(fields["kid"], &kid) != nil || json.Unmarshal(fields["kty"], &kind) != nil || json.Unmarshal(fields["alg"], &algorithm) != nil || json.Unmarshal(fields["n"], &modulus) != nil || json.Unmarshal(fields["e"], &exponent) != nil {
 			continue
 		}
-		key, err := decodeRSAKey(encoded.N, encoded.E)
+		if raw, present := fields["use"]; present && json.Unmarshal(raw, &use) != nil {
+			continue
+		}
+		if kid == "" || kind != "RSA" || algorithm != "RS256" || (use != "" && use != "sig") {
+			continue
+		}
+		key, err := decodeRSAKey(modulus, exponent)
 		if err != nil {
 			continue
 		}
-		keys[encoded.KID] = key
+		if _, duplicate := keys[kid]; duplicate {
+			return nil, ErrProviderUnavailable
+		}
+		keys[kid] = key
 	}
 	if len(keys) == 0 {
-		return ErrProviderUnavailable
+		return nil, ErrProviderUnavailable
 	}
-	provider.keys.keys = keys
-	provider.keys.expiresAt = now.Add(provider.config.JWKSCacheTTL)
-	return nil
+	return keys, nil
+}
+
+func readProviderObject(reader io.Reader) (map[string]json.RawMessage, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxProviderResponseBytes+1))
+	if err != nil || len(body) > maxProviderResponseBytes {
+		return nil, ErrProviderUnavailable
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	first, err := decoder.Token()
+	if err != nil || first != json.Delim('{') {
+		return nil, ErrProviderUnavailable
+	}
+	values := make(map[string]json.RawMessage)
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil, ErrProviderUnavailable
+		}
+		name, ok := key.(string)
+		if !ok {
+			return nil, ErrProviderUnavailable
+		}
+		if _, duplicate := values[name]; duplicate {
+			return nil, ErrProviderUnavailable
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return nil, ErrProviderUnavailable
+		}
+		values[name] = value
+	}
+	if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
+		return nil, ErrProviderUnavailable
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return nil, ErrProviderUnavailable
+	}
+	return values, nil
+}
+
+// Preserve signed fractional NumericDate values exactly through nanoseconds.
+// jwt.NumericDate uses process-global second precision and must not be used
+// for this proof boundary (nor may that global setting be mutated).
+func proofAuthTime(raw json.RawMessage) (time.Time, error) {
+	value := strings.TrimSpace(string(raw))
+	if len(value) == 0 || len(value) > 64 || value[0] < '0' || value[0] > '9' {
+		return time.Time{}, ErrProviderResponse
+	}
+	var number json.Number
+	if json.Unmarshal([]byte(value), &number) != nil {
+		return time.Time{}, ErrProviderResponse
+	}
+	// This coarse representation bound is NOT a freshness decision. Check it
+	// before Rat.SetString so enormous exponents cannot allocate huge integers.
+	approximate, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil || approximate < 1e-9 || approximate > 1e10 {
+		return time.Time{}, ErrProviderResponse
+	}
+	seconds, ok := new(big.Rat).SetString(number.String())
+	if !ok || seconds.Sign() <= 0 {
+		return time.Time{}, ErrProviderResponse
+	}
+	nanos := new(big.Rat).Mul(seconds, big.NewRat(int64(time.Second), 1))
+	if !nanos.IsInt() || !nanos.Num().IsInt64() {
+		return time.Time{}, ErrProviderResponse
+	}
+	return time.Unix(0, nanos.Num().Int64()).UTC(), nil
 }
 
 func decodeRSAKey(modulus, exponent string) (*rsa.PublicKey, error) {
@@ -377,3 +548,4 @@ func expectedOAuthRejection(status int, reader io.Reader) bool {
 }
 
 var _ ports.OIDCProvider = (*Provider)(nil)
+var _ ports.IdentityProviderProverV1 = (*Provider)(nil)

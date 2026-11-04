@@ -114,7 +114,7 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 			})
 			server.Start()
 			blobs := &cleanupSessionBlobs{terminalSessionBlobs: &terminalSessionBlobs{sessionCompactionBlobs: newSessionCompactionBlobs()}}
-			old := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", blobs, ydbstore.LocalCompactionConnectedLimits{InputTokens: 8192, NetworkOperation: 20 * time.Second})
+			old := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", blobs, nonExpiryCompactionConnectedLimits(8192))
 			completeSQL := old.InstallTerminalCompletionSQL(t)
 			blobs.seed = old
 			a, err := providerloopsession.NewLocalV1(t.Context(), providerloopsession.LocalConfigV1{Source: old.Source, DB: old.DB, StoreOptions: old.Options, Prepare: old.Prepare, Operate: old.Operate, Backend: old.Backend, Substrate: old.Substrate, Blobs: blobs})
@@ -154,7 +154,11 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 				}
 				observed = append(observed, result.Model.Observation)
 			}
-			assertOriginalCompactionActiveBudget(t, old.LocalSessionConnectedSeed, observed, steps)
+			wantKinds := []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1}
+			if steps == 3 {
+				wantKinds = []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1}
+			}
+			assertOriginalCompactionActiveBudget(t, old.LocalSessionConnectedSeed, observed, wantKinds)
 			h, p := prepareTerminalPublication(t, a, blobs.terminalSessionBlobs)
 			if err = h.PublishOutput(t.Context()); err != nil {
 				t.Fatal("A retained publication", err)

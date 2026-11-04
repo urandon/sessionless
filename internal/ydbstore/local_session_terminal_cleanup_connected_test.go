@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -100,15 +101,24 @@ func TestLocalSessionTerminalCleanupConnected(t *testing.T) {
 			var limits []ydbstore.LocalCompactionConnectedLimits
 			if mode == "two_compactions" {
 				text, steps = strings.Repeat("x", 4096), 3
-				limits = []ydbstore.LocalCompactionConnectedLimits{{InputTokens: 8192, NetworkOperation: 5 * time.Second}}
+				limits = []ydbstore.LocalCompactionConnectedLimits{nonExpiryCompactionConnectedLimits(8192)}
 			}
 			session, seed, peer, blobs := newCleanupSession(t, "", text, limits...)
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
-				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
+				result, err := session.RunModelStep(t.Context())
+				if err != nil || !result.Model.SendAttempted {
 					t.Logf("original step%d err=%v attempted=%t", i, err, result.Model.SendAttempted)
 					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original step%d err=%v attempted=%t stats=%+v", i, err, result.Model.SendAttempted, seed.Stats())
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
+			}
+			if steps == 3 {
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, p := prepareTerminalPublication(t, session, blobs.terminalSessionBlobs)
 			if err := h.PublishOutput(t.Context()); err != nil {
@@ -207,13 +217,22 @@ func TestLocalSessionTerminalCleanupStorageFaultsConnected(t *testing.T) {
 			var limits []ydbstore.LocalCompactionConnectedLimits
 			if mode == "missing_derived" {
 				text, steps = strings.Repeat("x", 4096), 3
-				limits = []ydbstore.LocalCompactionConnectedLimits{{InputTokens: 8192, NetworkOperation: 5 * time.Second}}
+				limits = []ydbstore.LocalCompactionConnectedLimits{nonExpiryCompactionConnectedLimits(8192)}
 			}
 			session, seed, _, blobs := newCleanupSession(t, mode, text, limits...)
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
-				if _, err := session.RunModelStep(t.Context()); err != nil {
+				result, err := session.RunModelStep(t.Context())
+				if err != nil || !result.Model.SendAttempted {
 					t.Fatal(err)
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
+			}
+			if steps == 3 {
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, p := prepareTerminalPublication(t, session, blobs.terminalSessionBlobs)
 			if err := h.PublishOutput(t.Context()); err != nil {

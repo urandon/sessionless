@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -228,7 +229,8 @@ func TestLocalSessionPreparedStepFittingFullViewNoCompaction(t *testing.T) {
 }
 
 func TestLocalSessionPreparedStepTwoActualCompactions(t *testing.T) {
-	session, seed, peer, blobs := newCompactionFactorySession(t, strings.Repeat("x", 4096), ydbstore.LocalCompactionConnectedLimits{InputTokens: 8192, NetworkOperation: 5 * time.Second})
+	session, seed, peer, blobs := newCompactionFactorySession(t, strings.Repeat("x", 4096), nonExpiryCompactionConnectedLimits(8192))
+	var observed []ports.AuthenticatedAttemptOperationObservationV1
 	for step := 0; step < 3; step++ {
 		result, err := session.RunModelStep(t.Context())
 		if err != nil || !result.Model.SendAttempted || result.Model.Observation.Observation.Outcome != domain.AttemptOperationCompletedV1 {
@@ -243,7 +245,12 @@ func TestLocalSessionPreparedStepTwoActualCompactions(t *testing.T) {
 		if result.Compaction != nil && (result.Compaction.Observation.Observation.Outcome != domain.AttemptOperationCompletedV1 || !result.Compaction.SendAttempted) {
 			t.Fatal("compaction lacks its own actual durable result")
 		}
+		if result.Compaction != nil {
+			observed = append(observed, result.Compaction.Observation)
+		}
+		observed = append(observed, result.Model.Observation)
 	}
+	assertOriginalCompactionActiveBudget(t, seed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 	before := seed.Stats()
 	blobs.mu.Lock()
 	objects := len(blobs.objects)

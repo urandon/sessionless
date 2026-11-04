@@ -424,6 +424,49 @@ an authentic model/search producer or permission to activate a profile.
 
 ## Verification
 
+### Account settings browser boundary
+
+`Account` opens `/account/login-methods`. The page reads the optional account
+service, displays exactly the server's two provider rows and advisory actions,
+and keeps identity revisions as decimal strings, including values above 2^53.
+An unconfigured service displays an unavailable state; ordinary login remains
+independent. The page does not enable the service or bypass its V2 cutover.
+
+Start, each provider continuation, final confirmation and cancellation are
+separate explicit actions. Reload and **Refresh status** issue GETs only. The
+sole optional local query is one opaque `operation_id`; malformed, duplicate
+or additional selectors are rejected before account requests. Provider codes,
+state, nonce, cookies and authorization URLs are not stored in local URLs,
+browser storage or rendered errors. Provider navigation uses only the pinned
+server continuation after an explicit click, with no-referrer policy. The
+browser validates response shapes and bounds for presentation, not authority.
+
+An unknown mutation response never implies failure or permission to replay.
+Read the retained same-user outcome; if a replacement cookie was lost, sign in
+again through a remaining method, return to the exact operation, then read.
+The fixed ordinary sign-in link carries only this allowlisted local settings
+path and opaque selector in `return_to`, so the exact receipt read survives
+sign-in navigation without retaining any provider protocol payload.
+An `outcome_unavailable` 410 is neither a success receipt nor proof of failure.
+Unlink names the server-selected remaining method and warns that other Web
+sessions must sign in again. No account merge or Telegram messaging enrollment
+is part of this flow.
+
+With the optional service configured, successful logout or tenant rotation
+clears the old operation's browser binding using its original cookie
+attributes. Rotation clears it even if a subsequent response projection read
+fails. Authorization/CSRF failures, unknown Store replies and an ordinary new
+login do not clear it speculatively. This is not operation cancellation,
+retention erasure or a guarantee that a lost HTTP response reached a browser.
+The nil-service profile retains its previous cookie behavior.
+
+Component and controlled-route Playwright checks cover rendering, keyboard
+focus, 320-pixel/200-percent-text accessibility, explicit navigation, request
+ordering and GET-only recovery. These are presentation evidence, **not** the
+genuine browser/BFF/disposable-YDB continuity acceptance required by #240.
+Actual provider registration/compatibility, joined data/resource readback and
+the separately admitted deployment/cutover remain distinct rollout gates.
+
 Credential-free unit tests cover the complete local authorization-code flow,
 PKCE, one-time code use, Telegram RS256 verification, Yandex account/client
 verification, membership denial, secure cookie

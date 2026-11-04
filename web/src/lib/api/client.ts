@@ -1,6 +1,20 @@
 import type { components } from './generated';
 import { parseRunExplanationText } from '../run-explanation/validate';
 import {
+  identityBodyBytes,
+  identityContinuationBytes,
+  isIdentityOperationID,
+  isIdentityRevision,
+  parseAccountLoginMethods,
+  parseIdentityContinuation,
+  parseIdentityOperation,
+  validateIdentityStart,
+  type AccountLoginMethods,
+  type IdentityOperationStart,
+  type IdentityOperationView,
+  type IdentityOperationContinuation,
+} from '../account-identity/contract';
+import {
   validateConsentDiscovery,
   validateConsentSummary,
   type SearchConsentDiscovery,
@@ -179,6 +193,9 @@ export interface ListAttachedWorkersQuery {
 
 interface RequestOptions extends RequestInit {
   mutation?: boolean;
+  // ONLY the read-only identity outcome endpoint returns a legitimate minimal
+  // view at 410. Every other non-success still uses the canonical error path.
+  identityOutcomeGone?: boolean;
 }
 
 export class CanonicalApiClient {
@@ -194,6 +211,146 @@ export class CanonicalApiClient {
 
   getIdentity(signal?: AbortSignal): Promise<Identity> {
     return this.#json<Identity>('/api/web/v1/me', { signal });
+  }
+
+  getAccountLoginMethods(signal?: AbortSignal): Promise<AccountLoginMethods> {
+    return this.#identityAccount(
+      '/api/web/v1/account/login-methods',
+      {},
+      (text) => parseAccountLoginMethods(text),
+      signal,
+    );
+  }
+
+  startIdentityOperation(
+    input: IdentityOperationStart,
+    signal?: AbortSignal,
+  ): Promise<IdentityOperationView> {
+    validateIdentityStart(input);
+    return this.#identityAccount(
+      '/api/web/v1/account/identity-operations',
+      { method: 'POST', mutation: true, body: JSON.stringify(input) },
+      (text) => {
+        const view = parseIdentityOperation(text);
+        if (
+          view.kind !== input.kind ||
+          view.phase !== 'source_proof' ||
+          view.outcome !== undefined ||
+          view.before_revision !== input.expected_revision ||
+          (input.kind === 'link' && view.target_provider !== input.target_provider)
+        )
+          throw new TypeError('Invalid started operation.');
+        return view;
+      },
+      signal,
+    );
+  }
+
+  getIdentityOperationOutcome(
+    operationId: string,
+    signal?: AbortSignal,
+  ): Promise<IdentityOperationView> {
+    return this.#identityAccount(
+      identityOperationPath(operationId),
+      { identityOutcomeGone: true },
+      (text, status) => parseIdentityOperation(text, operationId, status === 410),
+      signal,
+    );
+  }
+
+  continueIdentityOperation(
+    operationId: string,
+    revision: string,
+    signal?: AbortSignal,
+  ): Promise<IdentityOperationContinuation> {
+    return this.#identityAccount(
+      identityOperationPath(operationId, 'continue'),
+      identityRevisionBody(revision),
+      (text) => parseIdentityContinuation(text, globalThis.location.origin),
+      signal,
+      identityContinuationBytes,
+    );
+  }
+
+  confirmIdentityOperation(
+    operationId: string,
+    revision: string,
+    signal?: AbortSignal,
+  ): Promise<IdentityOperationView> {
+    return this.#identityAccount(
+      identityOperationPath(operationId, 'confirm'),
+      identityRevisionBody(revision),
+      (text) => identityTerminalResponse(text, operationId),
+      signal,
+    );
+  }
+
+  cancelIdentityOperation(
+    operationId: string,
+    revision: string,
+    signal?: AbortSignal,
+  ): Promise<IdentityOperationView> {
+    return this.#identityAccount(
+      identityOperationPath(operationId, 'cancel'),
+      identityRevisionBody(revision),
+      (text) => identityTerminalResponse(text, operationId),
+      signal,
+    );
+  }
+
+  // Reuse the existing canonical transport/CSRF machinery. Private settings
+  // responses have a small bound, one finite request, no caching or redirects,
+  // no stored URLs, and no raw server error message exposed to this consumer.
+  async #identityAccount<T>(
+    path: string,
+    options: RequestOptions,
+    parse: (text: string, status: number) => T,
+    signal?: AbortSignal,
+    limit = identityBodyBytes,
+  ): Promise<T> {
+    if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(cancel, 15000);
+    try {
+      const response = await this.#request(path, {
+        ...options,
+        method: options.method ?? 'GET',
+        cache: 'no-store',
+        redirect: 'error',
+        signal: abort.signal,
+      });
+      if (abort.signal.aborted) throw new Error('Account request deadline.');
+      if (response.status !== 200 && !(options.identityOutcomeGone && response.status === 410)) {
+        await response.body?.cancel();
+        throw new TypeError('Invalid account status.');
+      }
+      if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) {
+        await response.body?.cancel();
+        throw new TypeError('Invalid account response.');
+      }
+      const text = await readBoundedText(response, limit, abort.signal);
+      if (abort.signal.aborted) throw new Error('Account request deadline.');
+      if (response.status === 410) {
+        const value: unknown = JSON.parse(text);
+        if (isRecord(value) && Object.hasOwn(value, 'error'))
+          throw await parsePublicError(response, text);
+      }
+      return parse(text, response.status);
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
+      if (error instanceof ApiError)
+        throw new ApiError(
+          error.code,
+          'Login methods are unavailable.',
+          error.code === 'temporarily_unavailable' ? 503 : error.status,
+        );
+      throw new ApiError('temporarily_unavailable', 'Login methods are unavailable.', 503);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    }
   }
 
   async getLoginMethods(signal?: AbortSignal): Promise<LoginMethods> {
@@ -572,7 +729,7 @@ export class CanonicalApiClient {
     if (!path.startsWith('/')) throw new TypeError('API path must be same-origin.');
     if (options.signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
 
-    const { mutation, ...requestOptions } = options;
+    const { mutation, identityOutcomeGone, ...requestOptions } = options;
     const headers = new Headers(requestOptions.headers);
     headers.set('Accept', 'application/json');
     if (requestOptions.body !== undefined) headers.set('Content-Type', 'application/json');
@@ -598,9 +755,30 @@ export class CanonicalApiClient {
         503,
       );
     }
-    if (!response.ok && response.status !== 304) throw await parsePublicError(response);
+    if (
+      !response.ok &&
+      response.status !== 304 &&
+      !(identityOutcomeGone && response.status === 410)
+    )
+      throw await parsePublicError(response, undefined, requestOptions.signal ?? undefined);
     return response;
   }
+}
+
+function identityOperationPath(id: string, action?: 'continue' | 'confirm' | 'cancel'): string {
+  if (!isIdentityOperationID(id)) throw new TypeError('Invalid identity operation reference.');
+  return `/api/web/v1/account/identity-operations/${encodeURIComponent(id)}${action ? `/${action}` : ''}`;
+}
+
+function identityRevisionBody(revision: string): RequestOptions {
+  if (!isIdentityRevision(revision)) throw new TypeError('Invalid identity revision.');
+  return { method: 'POST', mutation: true, body: JSON.stringify({ expected_revision: revision }) };
+}
+
+function identityTerminalResponse(text: string, id: string): IdentityOperationView {
+  const view = parseIdentityOperation(text, id);
+  if (view.phase !== 'terminal') throw new TypeError('No stored terminal outcome.');
+  return view;
 }
 
 function consentPath(locator: SearchConsentLocator): string {
@@ -636,7 +814,11 @@ async function parseSuccess<T>(response: Response): Promise<T> {
   }
 }
 
-async function parsePublicError(response: Response): Promise<ApiError> {
+async function parsePublicError(
+  response: Response,
+  boundedBody?: string,
+  signal?: AbortSignal,
+): Promise<ApiError> {
   const generic = new ApiError(
     'temporarily_unavailable',
     'Sessionless is temporarily unavailable. Please try again.',
@@ -644,7 +826,7 @@ async function parsePublicError(response: Response): Promise<ApiError> {
   );
   let body: string;
   try {
-    body = await readBoundedText(response, maxErrorBodyBytes);
+    body = boundedBody ?? (await readBoundedText(response, maxErrorBodyBytes, signal));
   } catch {
     return generic;
   }

@@ -87,6 +87,8 @@ input:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
+  padding-block: 0.5rem;
   border-bottom: 1px solid rgb(20 33 61 / 14%);
 }
 
@@ -120,6 +122,17 @@ nav a {
   padding-block: 0.5rem;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.3rem;
+}
+
+.site-header nav a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.site-header nav {
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 main {

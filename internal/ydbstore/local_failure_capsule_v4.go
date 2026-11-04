@@ -23,7 +23,7 @@ import (
 )
 
 // The new arm is deliberately not projected into the old accounting/capsule
-// type. None of the original serving encoders, claims or finalizers select it.
+// type. Only the original private SEARCH failure owner may produce it.
 type localFailureCapsuleV4 struct {
 	Schema         string                                  `json:"schema"`
 	Version        uint32                                  `json:"version"`
@@ -136,13 +136,108 @@ func decodeLocalFailureReadCapsule(body []byte) (localFailureReadCapsule, error)
 	if tag.Version != 4 || d.Decode(&c) != nil {
 		return localFailureReadCapsule{}, domain.ErrMembershipDenied
 	}
-	raw, err := json.Marshal(c)
+	raw, err := encodeLocalFailureCapsuleV4(c, operationbody.LocalTerminalCapsuleBytesV1)
 	defer clear(raw)
 	if err != nil || !bytes.Equal(raw, body) || !localFailureV4BodyLanguage(c) {
 		clearFailureOperations(c.Operations)
 		return localFailureReadCapsule{}, domain.ErrMembershipDenied
 	}
 	return localFailureReadCapsule{search: &c}, nil
+}
+
+func encodeLocalFailureCapsuleV4(c localFailureCapsuleV4, limit uint64) ([]byte, error) {
+	if limit == 0 || limit > operationbody.LocalTerminalCapsuleBytesV1 || !localFailureV4BodyLanguage(c) {
+		return nil, domain.ErrMembershipDenied
+	}
+	sink := &localCapsuleSink{limit: limit, emit: true}
+	if err := encodeLocalFailureCapsuleV4To(sink, c, -1, 0); err != nil {
+		clear(sink.body)
+		return nil, err
+	}
+	return sink.body, nil
+}
+
+// All metadata keeps the exact existing json.Marshal field order/escaping.
+// Only a normalized body is inserted raw: its original bytes are committed by
+// the observation, and the SEARCH codec intentionally does not HTML-escape.
+// The actual encoder above and strict reader validate those raw identities.
+// A non-emitting sink may count one private future scalar instead of "null";
+// no hypothetical bytes/observation are returned, signed or persisted.
+func encodeLocalFailureCapsuleV4To(sink *localCapsuleSink, c localFailureCapsuleV4, futureIndex int, futureBytes uint64) error {
+	if sink == nil || sink.limit == 0 || sink.limit > operationbody.LocalTerminalCapsuleBytesV1 || c.Schema != "sessionless.terminal-failure-custody.v4" || c.Version != 4 || len(c.Operations) < 1 || len(c.Operations) > 12 || futureIndex < -1 || futureIndex >= len(c.Operations) || futureIndex == -1 && futureBytes != 0 || futureIndex >= 0 && (sink.emit || futureBytes < 4 || futureBytes > 64<<10) {
+		return domain.ErrMembershipDenied
+	}
+	add, value := sink.add, sink.value
+	add([]byte(`{"schema":`))
+	value(c.Schema)
+	add([]byte(`,"version":`))
+	value(c.Version)
+	add([]byte(`,"parent":`))
+	value(c.Parent)
+	add([]byte(`,"source":`))
+	value(c.Source)
+	add([]byte(`,"profile_digest":`))
+	value(c.ProfileDigest)
+	add([]byte(`,"frontier_digest":`))
+	value(c.FrontierDigest)
+	add([]byte(`,"stop":`))
+	value(c.Stop)
+	add([]byte(`,"cleanup":`))
+	value(c.Cleanup)
+	add([]byte(`,"captured_at":`))
+	value(c.CapturedAt)
+	add([]byte(`,"accounting":`))
+	value(c.Accounting)
+	add([]byte(`,"operations":[`))
+	var normalized uint64
+	for i, item := range c.Operations {
+		n := uint64(len(item.Normalized))
+		if i == futureIndex {
+			if !bytes.Equal(item.Normalized, []byte("null")) {
+				return domain.ErrMembershipDenied
+			}
+			n = futureBytes
+		}
+		var compact bytes.Buffer
+		compactErr := json.Compact(&compact, item.Normalized)
+		canonicalRaw := compactErr == nil && bytes.Equal(compact.Bytes(), item.Normalized)
+		clear(compact.Bytes())
+		if n == 0 || n > 64<<10 || n > (384<<10)-normalized || !canonicalRaw {
+			return domain.ErrMembershipDenied
+		}
+		normalized += n
+		if i > 0 {
+			add([]byte(","))
+		}
+		add([]byte(`{"reservation":`))
+		value(item.Reservation)
+		add([]byte(`,"observation":`))
+		value(item.Observation)
+		add([]byte(`,"normalized":`))
+		if i == futureIndex {
+			sink.count(n)
+		} else {
+			add(item.Normalized)
+		}
+		add([]byte("}"))
+	}
+	add([]byte(`],"events":`))
+	value(c.Events)
+	add([]byte(`,"retained_bodies":`))
+	value(c.Bodies)
+	if c.Derived != nil {
+		add([]byte(`,"derived_context":`))
+		value(c.Derived)
+	}
+	add([]byte(`,"consents":`))
+	value(c.Consents)
+	add([]byte(`,"model_catalogs":`))
+	value(c.ModelCatalogs)
+	add([]byte("}"))
+	if sink.failed {
+		return ErrTerminalCapacity
+	}
+	return nil
 }
 
 func clearFailureOperations(ops []localFailureOperationV1) {
@@ -681,7 +776,7 @@ func validateFailureV4RetainedBodies(ctx context.Context, c localFailureCapsuleV
 	return nil
 }
 
-func localFailureV4Plan(run domain.Run, c localFailureCapsuleV4) (*canonicaloutput.FailurePlanV1, error) {
+func localFailureV4Plan(run domain.Run, c localFailureCapsuleV4, limits domain.ProductLimits) (*canonicaloutput.FailurePlanV1, error) {
 	deny := func() (*canonicaloutput.FailurePlanV1, error) { return nil, domain.ErrMembershipDenied }
 	if !localFailureV4BodyLanguage(c) || c.Parent.Validate() != nil || c.Accounting.ValidateForStop(c.Parent, c.Source, c.Stop) != nil || len(c.Accounting.Operations) != len(c.Operations) || c.ProfileDigest != c.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest || c.CapturedAt != c.CapturedAt.UTC().Truncate(time.Microsecond) || c.CapturedAt.IsZero() || c.Parent.Scope.TenantID != run.TenantID || c.Parent.Scope.SessionID != run.SessionID || c.Parent.Scope.RunID != run.ID || !domain.EqualRunDerivedContextV1(c.Derived, run.DerivedContext) || localFailureV4Catalogs(c) != nil {
 		return deny()
@@ -830,7 +925,7 @@ func localFailureV4Plan(run domain.Run, c localFailureCapsuleV4) (*canonicaloutp
 		}
 	}
 	last := c.Operations[len(c.Operations)-1]
-	return canonicaloutput.EncodeSearchFailureV4(run.ID, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1}, events, c.Stop, last.Reservation, last.Observation)
+	return canonicaloutput.EncodeSearchFailureV4(run.ID, limits, events, c.Stop, last.Reservation, last.Observation)
 }
 
 func validateFailureReadHistoryData(v localFailureHistoryV1, c localFailureReadCapsule, records []sessioncontext.EventPayload) error {
@@ -860,7 +955,7 @@ func validateFailureHistoryDataV4(v localFailureHistoryV1, c localFailureCapsule
 	if err != nil || validateFailureV4Frontiers(c, v.Accounting, frontiers) != nil {
 		return deny()
 	}
-	p, err := localFailureV4Plan(run, c)
+	p, err := localFailureV4Plan(run, c, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1})
 	if err != nil {
 		return deny()
 	}

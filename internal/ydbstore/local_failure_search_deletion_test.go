@@ -257,7 +257,7 @@ func TestLocalFailureSearchV4AuthenticatesEveryOriginalModelCatalog(t *testing.T
 			// This is independently valid capsule/catalog language. Only its
 			// missing correspondence to the actual owned MODEL request is false.
 			c.FrontierDigest, _ = localFailureV4Frontier(c)
-			plan, err := localFailureV4Plan(f.history.Run, c)
+			plan, err := localFailureV4Plan(f.history.Run, c, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1})
 			if err != nil {
 				t.Fatal("original-body join must be the causal guard", mode, err)
 			}

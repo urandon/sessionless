@@ -267,7 +267,7 @@ func failureSearchV4Data(t *testing.T, stop string, outcome domain.AttemptOperat
 	}
 	finish := c.CapturedAt.Add(time.Microsecond)
 	run := domain.Run{ID: scope.RunID, TenantID: scope.TenantID, SessionID: scope.SessionID, TriggerEventID: "task-failure-v4", LocalCapacityAssociation: &domain.LocalCapacityAssociationV1{Version: 1, Kind: domain.ProviderResourceLocalEndpointV1, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, ResourceID: p.Resource.ResourceID}, Status: domain.RunFailed, IdempotencyKey: "run-failure-v4", CreatedAt: at, UpdatedAt: finish, StartedAt: &at, FinishedAt: &finish}
-	plan, err := localFailureV4Plan(run, c)
+	plan, err := localFailureV4Plan(run, c, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1})
 	if err != nil {
 		t.Fatal("bounded V4 plan DATA", stop, err)
 	}
@@ -409,5 +409,142 @@ func TestLocalFailureSearchV4StrictWireFromValidData(t *testing.T) {
 		if err == nil {
 			t.Fatal("ambiguous/crossed V4 capsule parsed")
 		}
+	}
+}
+
+func TestLocalFailureSearchV4PlanUsesAdmittedToolBudgets(t *testing.T) {
+	// This is a canonical DATA codec budget control, not an original producer.
+	f := failureSearchV4Data(t, domain.SearchServiceErrorV4, domain.AttemptOperationCompletedV1)
+	limits := domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1}
+	p, err := localFailureV4Plan(f.history.Run, f.capsule, limits)
+	if err != nil {
+		t.Fatal("valid bounded baseline", err)
+	}
+	defer p.Release()
+	events := p.Events()
+	var raw, encoded uint64
+	for _, event := range events[:len(events)-1] {
+		var envelope struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(event.Payload, &envelope) != nil || len(envelope.Content) == 0 {
+			t.Fatal("valid canonical tool envelope missing content")
+		}
+		raw += uint64(len(envelope.Content))
+		encoded += uint64(len(event.Payload))
+	}
+	if raw == 0 || encoded <= raw || len(events) != 3 {
+		t.Fatalf("non-vacuous pair bounds raw=%d encoded=%d events=%d", raw, encoded, len(events))
+	}
+	for _, tc := range []struct {
+		name  string
+		bytes uint64
+	}{
+		{"raw_first_over", raw - 1},
+		{"encoded_first_over", encoded - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bounded := limits
+			bounded.MaxToolEventBytes = tc.bytes
+			bad, err := localFailureV4Plan(f.history.Run, f.capsule, bounded)
+			if bad != nil {
+				bad.Release()
+			}
+			if err == nil {
+				t.Fatalf("admitted tool-byte ceiling ignored: bound=%d raw=%d encoded=%d", tc.bytes, raw, encoded)
+			}
+		})
+	}
+	limits.MaxToolEventBytes = encoded
+	exact, err := localFailureV4Plan(f.history.Run, f.capsule, limits)
+	if err != nil {
+		t.Fatal("exact encoded pair bound denied", err)
+	}
+	exact.Release()
+	limits.MaxToolEvents = 1
+	bad, err := localFailureV4Plan(f.history.Run, f.capsule, limits)
+	if bad != nil {
+		bad.Release()
+	}
+	if err == nil {
+		t.Fatal("admitted tool-event count ignored")
+	}
+}
+
+func TestLocalFailureSearchV4PreservesNormalizedHTMLBytes(t *testing.T) {
+	// Legitimate codec DATA only: rebinding a controlled graph does not mint an
+	// original issuer, cleanup or finalization authority.
+	f := failureSearchV4Data(t, domain.ModelAfterSearchFailureV4, domain.AttemptOperationAcceptedOutcomeUnknownV1)
+	baseline, err := encodeLocalFailureCapsuleV4(f.capsule, operationbody.LocalTerminalCapsuleBytesV1)
+	if err != nil {
+		t.Fatal("valid baseline encode", err)
+	}
+	decoded, err := decodeLocalFailureReadCapsule(baseline)
+	decoded.release()
+	clear(baseline)
+	if err != nil {
+		t.Fatal("valid baseline decode", err)
+	}
+	c := f.capsule
+	c.Operations = append([]localFailureOperationV1(nil), c.Operations...)
+	result, err := domain.DecodeWebSearchResultV1(c.Operations[1].Normalized)
+	if err != nil {
+		t.Fatal("original known SEARCH result", err)
+	}
+	url := "https://example.org/search-result"
+	result.Outcome = "known_results"
+	result.Sources = []domain.WebSearchSourceV1{{SourceID: domain.WebSearchSourceIDV1(result.OperationDigest, 1, url), Rank: 1, URL: url, Title: "Compiler <reference> & examples", Excerpt: "<>& literal public excerpt"}}
+	body, err := domain.EncodeWebSearchResultV1(result)
+	if err != nil || result.ValidateForOperation(c.Operations[1].Reservation.Operation) != nil || !bytes.Contains(body, []byte("<>&")) || bytes.Equal(body, c.Operations[1].Normalized) {
+		t.Fatal("HTML control must be valid and change exact committed raw bytes", err)
+	}
+	defer clear(body)
+	item := &c.Operations[1]
+	item.Normalized = body
+	item.Observation.ResponseRef = fmt.Sprintf("opbody-v1.%d.%s", len(body), rawLocalFailureHash(body))
+	item.Observation.ResponseDigest, item.Observation.ResponseBytes = rawLocalFailureHash(body), uint64(len(body))
+	c.Accounting.Operations = nil
+	for i := range c.Operations {
+		item := &c.Operations[i]
+		if i > 0 {
+			item.Reservation.Operation.PredecessorObservationDigest, _ = c.Operations[i-1].Observation.Digest()
+		}
+		item.Reservation.OperationDigest, err = item.Reservation.Operation.Digest()
+		if err != nil {
+			t.Fatal("coherent operation", i, err)
+		}
+		item.Observation.OperationDigest = item.Reservation.OperationDigest
+		item.Observation.ReservationDigest, err = item.Reservation.Digest()
+		if err != nil || item.Observation.ValidateForReservation(item.Reservation) != nil {
+			t.Fatal("coherent reservation/observation", i, err)
+		}
+		row, err := ports.BuildOwnedOperationFailureRowV4(item.Reservation, item.Observation, c.Parent, c.Source)
+		if err != nil {
+			t.Fatal("coherent actual failure accounting DATA", i, err)
+		}
+		c.Accounting.Operations = append(c.Accounting.Operations, row)
+	}
+	c.Bodies, err = localFailureV4Bodies(c)
+	if err != nil {
+		t.Fatal("coherent physical body inventory DATA", err)
+	}
+	c.FrontierDigest, err = localFailureV4Frontier(c)
+	if err != nil {
+		t.Fatal("coherent frontier", err)
+	}
+	p, err := localFailureV4Plan(f.history.Run, c, domain.ProductLimits{MaxToolEvents: 8, MaxToolEventBytes: domain.MaxTerminalCapsuleBytesV1})
+	if err != nil {
+		t.Fatal("legitimate HTML graph must pass the existing semantic plan BEFORE serialization", err)
+	}
+	p.Release()
+	wire, err := encodeLocalFailureCapsuleV4(c, operationbody.LocalTerminalCapsuleBytesV1)
+	if err != nil {
+		t.Fatal("legitimate HTML capsule encode", err)
+	}
+	defer clear(wire)
+	parsed, err := decodeLocalFailureReadCapsule(wire)
+	defer parsed.release()
+	if err != nil || parsed.search == nil || !bytes.Equal(parsed.search.Operations[1].Normalized, body) {
+		t.Fatal("V4 capsule must preserve the exact raw normalized body committed by its observation", err)
 	}
 }

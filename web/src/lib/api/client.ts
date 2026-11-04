@@ -57,6 +57,13 @@ const safeErrorCodes = new Set<PublicErrorCode>([
   'payload_too_large',
   'rate_limited',
   'temporarily_unavailable',
+  'stale_revision',
+  'proof_required',
+  'proof_unavailable',
+  'last_method',
+  'provider_unavailable',
+  'expired',
+  'outcome_unavailable',
 ]);
 
 export function parseLoginMethods(text: string): LoginMethods {

@@ -3,6 +3,230 @@
   "info": { "title": "Sessionless canonical Web API", "version": "1.0.0" },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/web/v1/account/login-methods": {
+      "get": {
+        "operationId": "getAccountLoginMethods",
+        "description": "Default-off pure current-session read. Exactly the two known provider rows, opaque own handles and advisory actions; no subject, activity refresh, provider call, query or body.",
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLoginMethods"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/web/v1/account/identity-operations": {
+      "post": {
+        "operationId": "startIdentityOperation",
+        "description": "Default-off explicit link/unlink. Current authority, exact Origin/CSRF and revision required. Closed flat body <=2048 bytes; no caller identity ownership. New independent Lax HttpOnly operation cookie, no automatic OAuth.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityOperationStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/web/v1/account/identity-operations/{operation_id}": {
+      "get": {
+        "operationId": "getIdentityOperationOutcome",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        ],
+        "description": "Pure same-user read, including legitimate relogin. Original browser/CSRF not required; optional operation cookie only controls hints. No activity touch, pruning, replay or cookies. Missing retained row is HTTP410 outcome_unavailable with unknown facts omitted.",
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationView"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/web/v1/account/identity-operations/{operation_id}/continue": {
+      "post": {
+        "operationId": "continueIdentityOperation",
+        "description": "Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline.",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityOperationRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationContinuation"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/web/v1/account/identity-operations/{operation_id}/confirm": {
+      "post": {
+        "operationId": "confirmIdentityOperation",
+        "description": "Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline.",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityOperationRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/web/v1/account/identity-operations/{operation_id}/cancel": {
+      "post": {
+        "operationId": "cancelIdentityOperation",
+        "description": "Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline.",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityOperationRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated account operation data, not reusable authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityOperationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/auth/login/methods": {
       "get": {
         "operationId": "getLoginMethods",
@@ -647,6 +871,200 @@
       }
     },
     "schemas": {
+      "AuthRevisionV2": {
+        "type": "string",
+        "pattern": "^[1-9][0-9]{0,19}$",
+        "maxLength": 20,
+        "description": "Canonical positive uint64 decimal string through18446744073709551615, never JavaScript number. Server rejects overflow/aliases."
+      },
+      "AccountLoginMethod": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "linked", "current", "enabled", "allowed_actions"],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["yandex", "telegram"]
+          },
+          "method_handle": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "linked": {
+            "type": "boolean"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "allowed_actions": {
+            "type": "array",
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": ["link", "unlink"]
+            }
+          },
+          "remaining_provider": {
+            "type": "string",
+            "enum": ["yandex", "telegram"]
+          }
+        }
+      },
+      "AccountLoginMethods": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["revision", "methods"],
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/AuthRevisionV2"
+          },
+          "methods": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/AccountLoginMethod"
+            }
+          }
+        }
+      },
+      "IdentityOperationStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "expected_revision"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["link", "unlink"]
+          },
+          "target_provider": {
+            "type": "string",
+            "enum": ["yandex", "telegram"]
+          },
+          "method_handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "expected_revision": {
+            "$ref": "#/components/schemas/AuthRevisionV2"
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "link"
+              }
+            },
+            "required": ["target_provider"],
+            "not": {
+              "required": ["method_handle"]
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "unlink"
+              }
+            },
+            "required": ["method_handle"],
+            "not": {
+              "required": ["target_provider"]
+            }
+          }
+        ]
+      },
+      "IdentityOperationRevisionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_revision"],
+        "properties": {
+          "expected_revision": {
+            "$ref": "#/components/schemas/AuthRevisionV2"
+          }
+        }
+      },
+      "IdentityOperationView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "allowed_actions"],
+        "description": "Only owned stored facts. Terminal receipts omit target provider after privacy pruning; absent outcomes omit unknown kind/phase/revisions/times. Advisory actions never grant authority.",
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["link", "unlink"]
+          },
+          "phase": {
+            "type": "string",
+            "enum": ["source_proof", "target_proof", "confirm", "terminal"]
+          },
+          "target_provider": {
+            "type": "string",
+            "enum": ["yandex", "telegram"]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "linked",
+              "unlinked",
+              "cancelled",
+              "conflict",
+              "stale_revision",
+              "proof_required",
+              "proof_unavailable",
+              "last_method",
+              "provider_unavailable",
+              "expired",
+              "outcome_unavailable",
+              "access_denied"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "before_revision": {
+            "$ref": "#/components/schemas/AuthRevisionV2"
+          },
+          "after_revision": {
+            "$ref": "#/components/schemas/AuthRevisionV2"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "allowed_actions": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "enum": ["continue", "confirm", "cancel"]
+            }
+          }
+        }
+      },
+      "IdentityOperationContinuation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["authorization_url"],
+        "properties": {
+          "authorization_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 8192
+          }
+        }
+      },
       "LoginMethod": {
         "type": "object",
         "additionalProperties": false,
@@ -1257,7 +1675,14 @@
               "conflict",
               "payload_too_large",
               "rate_limited",
-              "temporarily_unavailable"
+              "temporarily_unavailable",
+              "stale_revision",
+              "proof_required",
+              "proof_unavailable",
+              "last_method",
+              "provider_unavailable",
+              "expired",
+              "outcome_unavailable"
             ]
           },
           "message": { "type": "string" },

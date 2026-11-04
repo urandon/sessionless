@@ -18,6 +18,10 @@ import (
 // pruning or replay. Mutations and Callback inherit one original 15s request
 // context; their existing <=5s SQL and <=10s provider children cannot renew it.
 type IdentityAccountServiceV2 interface {
+	// Pure construction-time pairing only: no I/O, install, mutation or
+	// permission claim. The BFF's ordered provider/client/callback tuple must
+	// equal the service's immutable Store manifest.
+	ValidateLoginBindings([]domain.IdentityProviderBindingV2) error
 	Methods(context.Context, IdentityAccountMethodsRequestV2) (IdentityAccountMethodsViewV2, error)
 	Start(context.Context, IdentityAccountStartRequestV2) (IdentityAccountStartResultV2, error)
 	Continue(context.Context, IdentityAccountContinueRequestV2) (IdentityAccountContinueResultV2, error)
@@ -79,8 +83,8 @@ const (
 )
 
 type IdentityAccountCallbackAuthV2 struct {
-	SessionCookie      string
-	OperationCookie    string
+	SessionCookie   string
+	OperationCookie string
 }
 
 // Code and ProviderDenied are exclusive. ProviderDenied is only the closed
@@ -134,14 +138,14 @@ const (
 // those private identifiers. AllowedActions contains only link/unlink here and
 // is a projection, never reusable permission or provider availability proof.
 type IdentityAccountMethodViewV2 struct {
-	Provider       domain.IdentityProvider
-	MethodHandle   string
-	Linked         bool
-	Current        bool
-	Enabled        bool
+	Provider     domain.IdentityProvider
+	MethodHandle string
+	Linked       bool
+	Current      bool
+	Enabled      bool
 	// Set only when the server allows unlink; no browser eligibility guess.
 	RemainingProvider domain.IdentityProvider
-	AllowedActions []IdentityAccountActionV2
+	AllowedActions    []IdentityAccountActionV2
 }
 
 type IdentityAccountMethodsViewV2 struct {
@@ -154,19 +158,20 @@ type IdentityAccountMethodsViewV2 struct {
 // AllowedActions is restricted to continue/confirm/cancel and contributes no
 // mutation authority. Pending hints are empty unless the current ORIGINAL
 // session/browser/revision/manifest and sensitivity match in this SAME read
-// transaction. Hint failure never denies an otherwise authorized same-user
-// view. TargetProvider may be omitted when no owned row exists.
+// transaction. Hint comparison failure never denies an otherwise authorized
+// same-user view; SQL/budget failures still return unavailable, not a partial
+// successful response. TargetProvider is omitted after terminal pruning.
 type IdentityAccountOperationViewV2 struct {
-	OperationID      string
-	Kind             domain.IdentityOperationKindV2
-	Phase            domain.IdentityOperationPhaseV2
-	TargetProvider   domain.IdentityProvider
-	Outcome          domain.IdentityOperationOutcomeV2
-	ExpiresAt        time.Time
-	BeforeRevision   domain.AuthRevisionV2
-	AfterRevision    *domain.AuthRevisionV2
-	CompletedAt      *time.Time
-	AllowedActions   []IdentityAccountActionV2
+	OperationID    string
+	Kind           domain.IdentityOperationKindV2
+	Phase          domain.IdentityOperationPhaseV2
+	TargetProvider domain.IdentityProvider
+	Outcome        domain.IdentityOperationOutcomeV2
+	ExpiresAt      time.Time
+	BeforeRevision domain.AuthRevisionV2
+	AfterRevision  *domain.AuthRevisionV2
+	CompletedAt    *time.Time
+	AllowedActions []IdentityAccountActionV2
 }
 
 // OperationCookie encodes opaque operation ID + independent 256-bit browser
@@ -221,25 +226,52 @@ const (
 
 func (failure IdentityAccountErrorV2) Error() string {
 	switch failure {
-	case IdentityAccountAccessDeniedV2: return "access_denied"
-	case IdentityAccountUnauthenticatedV2: return "unauthenticated"
-	case IdentityAccountUnavailableV2: return "temporarily_unavailable"
-	case IdentityAccountConflictV2: return "conflict"
-	case IdentityAccountStaleRevisionV2: return "stale_revision"
-	case IdentityAccountProofRequiredV2: return "proof_required"
-	case IdentityAccountProofUnavailableV2: return "proof_unavailable"
-	case IdentityAccountLastMethodV2: return "last_method"
-	case IdentityAccountProviderUnavailableV2: return "provider_unavailable"
-	case IdentityAccountExpiredV2: return "expired"
-	default: return "temporarily_unavailable"
+	case IdentityAccountAccessDeniedV2:
+		return "access_denied"
+	case IdentityAccountUnauthenticatedV2:
+		return "unauthenticated"
+	case IdentityAccountUnavailableV2:
+		return "temporarily_unavailable"
+	case IdentityAccountConflictV2:
+		return "conflict"
+	case IdentityAccountStaleRevisionV2:
+		return "stale_revision"
+	case IdentityAccountProofRequiredV2:
+		return "proof_required"
+	case IdentityAccountProofUnavailableV2:
+		return "proof_unavailable"
+	case IdentityAccountLastMethodV2:
+		return "last_method"
+	case IdentityAccountProviderUnavailableV2:
+		return "provider_unavailable"
+	case IdentityAccountExpiredV2:
+		return "expired"
+	default:
+		return "temporarily_unavailable"
 	}
 }
 
-func (IdentityAccountReadAuthV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account authentication is ephemeral") }
-func (IdentityAccountMutationAuthV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account authentication is ephemeral") }
-func (IdentityAccountCallbackAuthV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account authentication is ephemeral") }
-func (IdentityAccountCallbackPurposeRequestV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity callback protocol is ephemeral") }
-func (IdentityAccountStartResultV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account cookie result is ephemeral") }
-func (IdentityAccountContinueResultV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account authorization is ephemeral") }
-func (IdentityAccountSessionCookiesV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account replacement cookies are ephemeral") }
-func (IdentityAccountConfirmResultV2) MarshalJSON() ([]byte, error) { return nil, errors.New("identity account confirmation result is ephemeral") }
+func (IdentityAccountReadAuthV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account authentication is ephemeral")
+}
+func (IdentityAccountMutationAuthV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account authentication is ephemeral")
+}
+func (IdentityAccountCallbackAuthV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account authentication is ephemeral")
+}
+func (IdentityAccountCallbackPurposeRequestV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity callback protocol is ephemeral")
+}
+func (IdentityAccountStartResultV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account cookie result is ephemeral")
+}
+func (IdentityAccountContinueResultV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account authorization is ephemeral")
+}
+func (IdentityAccountSessionCookiesV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account replacement cookies are ephemeral")
+}
+func (IdentityAccountConfirmResultV2) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("identity account confirmation result is ephemeral")
+}

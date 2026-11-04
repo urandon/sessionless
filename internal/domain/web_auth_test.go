@@ -33,6 +33,39 @@ func TestWebSecurityIdentityOperationStoppedAction(t *testing.T) {
 	}
 }
 
+func TestWebSecurityIdentityProofFailedAction(t *testing.T) {
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
+		for _, reason := range []string{"proof_unavailable", "provider_unavailable"} {
+			event := domain.WebSecurityAuditEvent{RequestID: "identity-proof-failure-test", Action: domain.WebSecurityIdentityProofFailed, Provider: provider, TenantID: "tenant-test", UserID: "user-test", MembershipSecurityVersion: 1, ReasonCode: reason, OccurredAt: webTestTime}
+			if err := event.Validate(); err != nil {
+				t.Fatalf("valid redacted %s/%s audit: %v", provider, reason, err)
+			}
+			for _, test := range []struct {
+				name   string
+				mutate func(*domain.WebSecurityAuditEvent)
+			}{
+				{"missing_tenant", func(v *domain.WebSecurityAuditEvent) { v.TenantID = "" }},
+				{"missing_user", func(v *domain.WebSecurityAuditEvent) { v.UserID = "" }},
+				{"missing_membership_revision", func(v *domain.WebSecurityAuditEvent) { v.MembershipSecurityVersion = 0 }},
+				{"unknown_provider", func(v *domain.WebSecurityAuditEvent) { v.Provider = "foreign" }},
+				{"private_subject", func(v *domain.WebSecurityAuditEvent) { v.SubjectFingerprint = domain.DigestSecret("must-not-retain") }},
+				{"positive_mutation", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "linked" }},
+				{"cancel_not_proof_failure", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "cancelled" }},
+				{"upstream_detail", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "upstream_detail" }},
+				{"old_action_stays_closed", func(v *domain.WebSecurityAuditEvent) { v.Action = domain.WebSecurityIdentityOperationStopped }},
+			} {
+				t.Run(string(provider)+"/"+reason+"/"+test.name, func(t *testing.T) {
+					changed := event
+					test.mutate(&changed)
+					if changed.Validate() == nil {
+						t.Fatal("invalid proof-failure audit accepted")
+					}
+				})
+			}
+		}
+	}
+}
+
 func externalSubject(id string) domain.ExternalSubject {
 	return domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: id}
 }

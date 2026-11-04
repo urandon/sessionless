@@ -72,6 +72,13 @@ const (
 	ErrorPayloadTooLarge        ErrorCode = "payload_too_large"
 	ErrorRateLimited            ErrorCode = "rate_limited"
 	ErrorTemporarilyUnavailable ErrorCode = "temporarily_unavailable"
+	ErrorStaleRevision          ErrorCode = "stale_revision"
+	ErrorProofRequired          ErrorCode = "proof_required"
+	ErrorProofUnavailable       ErrorCode = "proof_unavailable"
+	ErrorLastMethod             ErrorCode = "last_method"
+	ErrorProviderUnavailable    ErrorCode = "provider_unavailable"
+	ErrorExpired                ErrorCode = "expired"
+	ErrorOutcomeUnavailable     ErrorCode = "outcome_unavailable"
 )
 
 type Error struct {
@@ -96,18 +103,20 @@ func (code ErrorCode) HTTPStatus() int {
 		return http.StatusBadRequest
 	case ErrorUnauthenticated:
 		return http.StatusUnauthorized
-	case ErrorAccessDenied, ErrorCSRFFailed:
+	case ErrorAccessDenied, ErrorCSRFFailed, ErrorProofUnavailable:
 		return http.StatusForbidden
 	case ErrorNotFound:
 		return http.StatusNotFound
-	case ErrorConflict:
+	case ErrorConflict, ErrorStaleRevision, ErrorProofRequired, ErrorLastMethod:
 		return http.StatusConflict
 	case ErrorPayloadTooLarge:
 		return http.StatusRequestEntityTooLarge
 	case ErrorRateLimited:
 		return http.StatusTooManyRequests
-	case ErrorTemporarilyUnavailable:
+	case ErrorTemporarilyUnavailable, ErrorProviderUnavailable:
 		return http.StatusServiceUnavailable
+	case ErrorExpired, ErrorOutcomeUnavailable:
+		return http.StatusGone
 	default:
 		return 0
 	}

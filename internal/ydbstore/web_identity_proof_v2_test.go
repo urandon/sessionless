@@ -333,8 +333,9 @@ func TestIdentityProofStorageV2ChildPhaseReplayAndNoSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := append([]any(nil), f.children[child.StateDigest]...)
+	writes := f.base.writes
 	childReq.PKCEVerifier = strings.Repeat("x", 64)
-	if got, err := s.createIdentityProofV2(ctx, childReq, c); err == nil || !reflect.DeepEqual(got, domain.IdentityChallengeV2{}) || !reflect.DeepEqual(original, f.children[child.StateDigest]) {
+	if got, err := s.createIdentityProofV2(ctx, childReq, c); err != nil || !reflect.DeepEqual(got, child) || !reflect.DeepEqual(original, f.children[child.StateDigest]) || f.base.writes != writes {
 		t.Errorf("existing child reset secrets/deadline: (%+v,%v)", got, err)
 	}
 	f.at = f.at.Add(time.Second)
@@ -342,7 +343,10 @@ func TestIdentityProofStorageV2ChildPhaseReplayAndNoSecretReset(t *testing.T) {
 	if _, err := s.consumeIdentityProofV2(ctx, consume, c); err != nil {
 		t.Fatal(err)
 	}
-	if exchange, err := s.consumeIdentityProofV2(ctx, consume, c); err == nil || !reflect.DeepEqual(exchange, domain.IdentityChallengeExchangeV2{}) {
+	if got, err := s.createIdentityProofV2(ctx, childReq, c); err == nil || !reflect.DeepEqual(got, domain.IdentityChallengeV2{}) {
+		t.Error("consumed child recreated by continuation")
+	}
+	if exchange, err := s.consumeIdentityProofV2(ctx, consume, c); err == nil || !reflect.DeepEqual(exchange, identityConsumedProofV2{}) {
 		t.Errorf("consumed child was exchanged again: (%+v,%v)", exchange, err)
 	}
 }
@@ -361,7 +365,7 @@ func TestIdentityProofStorageV2AmbiguousConsumeReturnsNoExchange(t *testing.T) {
 	f.at = f.at.Add(time.Second)
 	f.commitReplyError = errors.New("controlled lost consume commit reply")
 	exchange, err := s.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: r.Phase, ChallengeDigest: child.StateDigest, BrowserSecret: "proof-browser"}, c)
-	if err == nil || !reflect.DeepEqual(exchange, domain.IdentityChallengeExchangeV2{}) {
+	if err == nil || !reflect.DeepEqual(exchange, identityConsumedProofV2{}) {
 		t.Errorf("ambiguous commit released external-exchange material: (%+v,%v)", exchange, err)
 	}
 	stored, decodeErr := domain.DecodeIdentityChallengeV2([]byte(f.children[child.StateDigest][9].(string)))
@@ -385,7 +389,7 @@ func TestIdentityProofStorageV2ConsumeRollbackPreservesOriginalChild(t *testing.
 	f.childFault = errors.New("controlled consume write failure")
 	f.at = f.at.Add(time.Second)
 	exchange, err := s.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: r.Phase, ChallengeDigest: child.StateDigest, BrowserSecret: "proof-browser"}, c)
-	if err == nil || !reflect.DeepEqual(exchange, domain.IdentityChallengeExchangeV2{}) || !reflect.DeepEqual(original, f.children[child.StateDigest]) || f.base.pending != nil || f.base.rollbacks == 0 {
+	if err == nil || !reflect.DeepEqual(exchange, identityConsumedProofV2{}) || !reflect.DeepEqual(original, f.children[child.StateDigest]) || f.base.pending != nil || f.base.rollbacks == 0 {
 		t.Errorf("failed original transaction leaked exchange/child: exchange=%+v err=%v rollbacks=%d", exchange, err, f.base.rollbacks)
 	}
 }
@@ -450,7 +454,7 @@ func TestIdentityProofStorageV2EveryPhaseRejoinsAuthority(t *testing.T) {
 			writes := f.base.writes
 			f.at = f.at.Add(time.Second)
 			got, err := s.consumeIdentityProofV2(ctx, request, c)
-			if err == nil || !reflect.DeepEqual(got, domain.IdentityChallengeExchangeV2{}) || f.base.writes != writes {
+			if err == nil || !reflect.DeepEqual(got, identityConsumedProofV2{}) || f.base.writes != writes {
 				t.Errorf("changed current authority consumed proof: (%+v,%v), writes=%d before=%d", got, err, f.base.writes, writes)
 			}
 		})
@@ -669,7 +673,7 @@ func TestIdentityProofStorageV2CompletionWindowExclusiveBoundary(t *testing.T) {
 				if err == nil || !reflect.DeepEqual(next, domain.IdentityOperationV2{}) || f.operation != before || f.base.writes != writes || f.base.commits != commits {
 					t.Errorf("late source minted fresh proof/changed original phase: next=%+v err=%v writes=%d want=%d commits=%d want=%d", next, err, f.base.writes, writes, f.base.commits, commits)
 				}
-				if exchange, err := store.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: request.Phase, ChallengeDigest: request.ChallengeDigest, BrowserSecret: "proof-browser"}, config); err == nil || !reflect.DeepEqual(exchange, domain.IdentityChallengeExchangeV2{}) {
+				if exchange, err := store.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: request.Phase, ChallengeDigest: request.ChallengeDigest, BrowserSecret: "proof-browser"}, config); err == nil || !reflect.DeepEqual(exchange, identityConsumedProofV2{}) {
 					t.Errorf("completion rejection allowed re-exchange of consumed child: (%+v,%v)", exchange, err)
 				}
 			}
@@ -703,7 +707,7 @@ func TestIdentityProofStorageV2CompletionRetryCannotCrossConsumedDeadline(t *tes
 	if !reflect.DeepEqual(childrenBefore, f.children) || f.children[request.ChallengeDigest][3] != "" || f.children[request.ChallengeDigest][4] != "" {
 		t.Error("retry reset/unscrubbed canonical consumed child")
 	}
-	if exchange, err := store.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: request.Phase, ChallengeDigest: request.ChallengeDigest, BrowserSecret: "proof-browser"}, config); err == nil || !reflect.DeepEqual(exchange, domain.IdentityChallengeExchangeV2{}) {
+	if exchange, err := store.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: request.Phase, ChallengeDigest: request.ChallengeDigest, BrowserSecret: "proof-browser"}, config); err == nil || !reflect.DeepEqual(exchange, identityConsumedProofV2{}) {
 		t.Errorf("late retry permitted child re-exchange: (%+v,%v)", exchange, err)
 	}
 }

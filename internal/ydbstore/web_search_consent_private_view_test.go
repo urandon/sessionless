@@ -34,11 +34,10 @@ type privateConsentViewFixture struct {
 	query          string
 
 	commits, commitErrorAt int
-	intentBytes            uint64
 	budget                 *ownedAuthorityBudget
 	reads                  []string
 	readCaps               []uint64
-	lastReadBytes          uint64
+	bodyObservations       map[*ownedAuthorityBudget]*privateConsentBodyObservation
 	bodyFault              func(context.Context, string)
 	afterCommit            func()
 	beforeBegin            func()
@@ -64,6 +63,14 @@ type privateConsentViewFixture struct {
 	identityV2Record  *string
 	identityReadError error
 	identityReads     int
+}
+
+// Observer frontiers belong to the original logical-call budget, not the
+// fixture's lifetime. Keep each budget's history so returning to the same
+// budget (including SDK retries) cannot refresh its prospective funding.
+type privateConsentBodyObservation struct {
+	intentBytes, lastReadBytes uint64
+	reads                      int
 }
 
 type privateConsentViewConnector struct{ f *privateConsentViewFixture }
@@ -104,8 +111,11 @@ func (tx privateConsentViewTx) Commit() error {
 	if b, ok := tx.ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget); ok {
 		tx.f.budget = b
 		b.mu.Lock()
-		if tx.f.commits == 1 {
-			tx.f.intentBytes = b.bytes
+		if tx.f.bodyObservations == nil {
+			tx.f.bodyObservations = make(map[*ownedAuthorityBudget]*privateConsentBodyObservation)
+		}
+		if tx.f.bodyObservations[b] == nil {
+			tx.f.bodyObservations[b] = &privateConsentBodyObservation{intentBytes: b.bytes}
 		}
 		tx.f.callbackStatements = append(tx.f.callbackStatements, b.callbackStatements)
 		b.mu.Unlock()
@@ -310,9 +320,13 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	b.mu.Lock()
 	charged, active, callbacks := b.bytes, b.active, b.callbacks
 	b.mu.Unlock()
-	base := f.lastReadBytes
-	if len(f.reads) == 0 {
-		base = f.intentBytes
+	observation := f.bodyObservations[b]
+	if observation == nil {
+		return nil, errors.New("private-view keeper requires the original committed intent frontier")
+	}
+	base := observation.lastReadBytes
+	if observation.reads == 0 {
+		base = observation.intentBytes
 	}
 	if active || callbacks != 1 || !f.legacyGrantOnly && (charged < base || charged-base < cap) {
 		return nil, errors.New("private-view keeper read was not funded prospectively in the original budget")
@@ -320,7 +334,8 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	if f.legacyGrantOnly && ref != f.grantRef {
 		return nil, errors.New("legacy consent state method unexpectedly read query arguments")
 	}
-	f.budget, f.lastReadBytes = b, charged
+	f.budget, observation.lastReadBytes = b, charged
+	observation.reads++
 	f.reads, f.readCaps = append(f.reads, ref), append(f.readCaps, cap)
 	if f.argumentBodies != nil && ref != f.grantRef {
 		return f.argumentBodies.ReadAttemptOperationBody(ctx, scope, ref, cap)

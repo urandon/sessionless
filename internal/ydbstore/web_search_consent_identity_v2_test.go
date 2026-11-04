@@ -76,12 +76,33 @@ func TestPrivateWebSearchConsentIdentityV2BothTenantBaselinesBeforeStale(t *test
 			}
 			a.assertCurrent(t, method)
 			b.assertCurrent(t, method)
-			for _, v := range []*ownedConsentIdentityFixtureV2{a, b} {
+			if method == "private-get" {
+				// Unchanged repeat reads in BOTH tenants must reach their actual
+				// final callback before a stale-cookie denial can be meaningful.
+				a.assertCurrent(t, method)
+				b.assertCurrent(t, method)
+			}
+			fixtures := []struct {
+				name string
+				v    *ownedConsentIdentityFixtureV2
+			}{{"tenant-a", a}, {"tenant-b", b}}
+			for _, fixture := range fixtures {
+				v := fixture.v
 				v.identity.Revision++
 				v.sync(t)
-				if state, err := v.call(t, method); !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(state, domain.WebSearchConsentStateV1{}) {
-					t.Fatal("old shared identity cookie survived in another authorized tenant", err)
-				}
+			}
+			for _, fixture := range fixtures {
+				t.Run(fixture.name, func(t *testing.T) {
+					v := fixture.v
+					reads, caps, writes := len(v.f.reads), len(v.f.readCaps), v.f.decisionWrites
+					grantReads, grantCaps := v.custody.reads, len(v.custody.caps)
+					if state, err := v.call(t, method); !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(state, domain.WebSearchConsentStateV1{}) {
+						t.Fatal("old shared identity cookie survived in another authorized tenant", err)
+					}
+					if len(v.f.reads) != reads || len(v.f.readCaps) != caps || v.custody.reads != grantReads || len(v.custody.caps) != grantCaps || v.f.decisionWrites != writes {
+						t.Fatal("stale cookie reached body I/O or changed the original human decision")
+					}
+				})
 			}
 		})
 	}
@@ -142,6 +163,8 @@ func (v *ownedConsentIdentityFixtureV2) assertCurrent(t *testing.T, method strin
 	ctx, cancel := ownedAuthorityCallContext(t.Context())
 	defer cancel()
 	startIdentity, writes, web := v.f.identityReads, v.f.decisionWrites, v.f.web
+	startReads, startCaps := len(v.f.reads), len(v.f.readCaps)
+	startGrantReads, startGrantCaps := v.custody.reads, len(v.custody.caps)
 	var err error
 	store := v.f.allocation.parent.store
 	switch method {
@@ -184,6 +207,9 @@ func (v *ownedConsentIdentityFixtureV2) assertCurrent(t *testing.T, method strin
 	}
 	if method != "decide" && v.f.decisionWrites != writes {
 		t.Fatal("read minted decision")
+	}
+	if method == "private-get" && (!reflect.DeepEqual(v.f.reads[startReads:], []string{v.f.state.Request.Arguments.Key}) || !reflect.DeepEqual(v.f.readCaps[startCaps:], []uint64{uint64(v.f.state.Request.Arguments.Size)}) || v.custody.reads-startGrantReads != 1 || !reflect.DeepEqual(v.custody.caps[startGrantCaps:], []uint64{uint64(len(v.custody.body))})) {
+		t.Fatal("valid private read missed exact prospectively funded grant/argument materialization")
 	}
 	t.Logf("%s callbacks=%d statements=%d bytes=%d identityReads=%d perCallback=%v", method, b.callbacks, b.statements, b.bytes, wantCallbacks, v.f.callbackStatements[len(v.f.callbackStatements)-wantCallbacks:])
 }

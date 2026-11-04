@@ -118,6 +118,49 @@ func (p *Provider) ExchangeAndVerify(ctx context.Context, request ports.OAuthTok
 	}
 	ctx, cancel := context.WithTimeout(ctx, callbackTimeout)
 	defer cancel()
+	return p.exchangeAndVerify(ctx, request)
+}
+
+func (p *Provider) ProofAuthorizationURL(ctx context.Context, request ports.IdentityProviderProofAuthorizationRequestV1) (string, error) {
+	if request.Validate() != nil || !p.matchesProofBinding(request.Binding) || ctx.Err() != nil {
+		return "", ErrProviderResponse
+	}
+	raw, err := p.AuthorizationURL(ctx, ports.OAuthAuthorizationRequest{RedirectURI: request.Binding.CallbackURI, State: request.State, CodeChallenge: request.CodeChallenge})
+	if err != nil {
+		return "", err
+	}
+	u, _ := url.Parse(raw)
+	q := u.Query()
+	q.Set("force_confirm", "yes")
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func (p *Provider) ExchangeAndVerifyProof(ctx context.Context, request ports.IdentityProviderProofTokenRequestV1) (ports.IdentityProviderProofResultV1, error) {
+	started := time.Now()
+	if request.Validate() != nil || !p.matchesProofBinding(request.Binding) || ctx.Err() != nil {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderResponse
+	}
+	ctx, cancel := context.WithDeadline(ctx, started.Add(min(callbackTimeout, request.ChallengeExpiresAt.Sub(request.Now))))
+	defer cancel()
+	subject, err := p.exchangeAndVerify(ctx, ports.OAuthTokenRequest{Code: request.Code, RedirectURI: request.Binding.CallbackURI, PKCEVerifier: request.PKCEVerifier})
+	if err != nil {
+		return ports.IdentityProviderProofResultV1{}, err
+	}
+	if !request.Now.Add(time.Since(started)).Before(request.ChallengeExpiresAt) {
+		return ports.IdentityProviderProofResultV1{}, ErrProviderResponse
+	}
+	return ports.IdentityProviderProofResultV1{Subject: subject, Kind: domain.IdentityProofYandexAuthorizationV2}, nil
+}
+
+func (p *Provider) matchesProofBinding(binding domain.IdentityProviderBindingV2) bool {
+	return binding == (domain.IdentityProviderBindingV2{Provider: domain.IdentityProviderYandex, Issuer: domain.YandexOAuthIssuer, ClientID: p.config.ClientID, CallbackURI: p.config.RedirectURI})
+}
+
+func (p *Provider) exchangeAndVerify(ctx context.Context, request ports.OAuthTokenRequest) (domain.ExternalSubject, error) {
+	if ctx.Err() != nil {
+		return domain.ExternalSubject{}, ErrProviderUnavailable
+	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {request.Code}, "code_verifier": {request.PKCEVerifier}, "redirect_uri": {p.config.RedirectURI}}
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, p.config.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -158,6 +201,9 @@ func (p *Provider) ExchangeAndVerify(ctx context.Context, request ports.OAuthTok
 	if subject.Validate() != nil {
 		return domain.ExternalSubject{}, ErrProviderResponse
 	}
+	if ctx.Err() != nil {
+		return domain.ExternalSubject{}, ErrProviderUnavailable
+	}
 	return subject, nil
 }
 
@@ -169,13 +215,13 @@ func (p *Provider) jsonResponse(r *http.Request) (map[string]json.RawMessage, er
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if r.Method == http.MethodPost && r.URL.String() == p.config.TokenEndpoint && expectedOAuthRejection(response.StatusCode, response.Body) {
+		if r.Method == http.MethodPost && r.URL.String() == p.config.TokenEndpoint && expectedOAuthRejection(response.StatusCode, response.Body) && r.Context().Err() == nil {
 			return nil, ErrProviderResponse
 		}
 		return nil, ErrProviderUnavailable
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(body) > maxResponseBytes {
+	if err != nil || len(body) > maxResponseBytes || r.Context().Err() != nil {
 		return nil, ErrProviderUnavailable
 	}
 	// Reject duplicate security-bearing fields and trailing documents. Optional
@@ -261,3 +307,4 @@ func expectedOAuthRejection(status int, reader io.Reader) bool {
 }
 
 var _ ports.OAuthIdentityProvider = (*Provider)(nil)
+var _ ports.IdentityProviderProverV1 = (*Provider)(nil)

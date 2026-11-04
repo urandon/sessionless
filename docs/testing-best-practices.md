@@ -294,26 +294,39 @@ the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join all four Go verification jobs, preserving every original predecessor.
 Moving the unchanged Worker command does not increase a binary or job timeout.
-After the unchanged Failure/Source command, `go-runtime` runs
-`make test-search-offline` exactly once. Local/release `make test-connected`
+After the unchanged ordinary local-tail target, `go-local` runs
+`make test-search-offline` exactly once. It no longer follows Failure/Source in
+`go-runtime`; that job's original MCP, Worker and Failure/Source commands remain
+unchanged. Local/release `make test-connected`
 appends that same target after its unchanged normal selections and MCP gate.
 The SEARCH target checks three fixed overlay destinations are absent, including
 dangling symlinks, checks formatting of the three explicitly search-tagged test-support
 sources, and builds the normal loopback/session/worker packages with no overlay
-or tags before one complete `^TestLocalSessionWebSearchOffline` execution.
-That execution retains race detection, count1, shuffle194195, the five-minute
-binary limit and the fixed additive-only overlay. It must not select a RED-only
+or tags before two sequential uncached executions. The first selects the complete
+`^TestLocalSessionWebSearchOfflineFailureTails` family. The second selects the
+complete `^TestLocalSessionWebSearchOffline` prefix, excluding exactly that
+failure family. These are disjoint and together include every current and future
+original-prefix test and subtest exactly once; no scenario or assertion is
+shortened. Both executions retain race detection, count1, shuffle194195, the
+five-minute per-binary limit and the fixed additive-only overlay. Separate
+recipe lines stop before the next execution on failure, including under
+`make -j`. They must not select a RED-only
 production mutation, omit failure families or introduce a real service.
 The policy checks the actual and future prefix corpus, exact target map and
 guard/order/ignored-failure mutations. Source checks are not whole-loop proof.
 
-This adds up to five minutes of test budget plus normal-build, initialization
-and setup costs; it does not preserve the old aggregate resource ceiling.
+The two test-execution ceilings now sum to ten minutes, rather than the old
+single five-minute ceiling, plus normal-build, two binary initializations and
+setup costs. This explicitly adds an initialization and resource allowance;
+it does not preserve the old aggregate resource ceiling or widen either binary
+limit. Package state is not shared across the executions.
 All eleven jobs, their existing prerequisites, cache controls and job timeouts
 remain unchanged. Actual complete target and exact-head eleven-job execution
-must demonstrate the expanded `go-runtime` job fits its existing thirty minutes.
-Historical job timings and the sum of separate focused tests are planning
-evidence, not qualification. Controlled SEARCH transport/identity/SQL evidence
+must demonstrate the expanded `go-local` job and unchanged `go-runtime` job each
+fit their existing thirty minutes, including action setup and compilation.
+The theoretical local-tail and SEARCH ceilings do not prove fit. Historical
+job timings, estimated headroom and the sum of separate focused tests are
+planning evidence, not qualification. Controlled SEARCH transport/identity/SQL evidence
 is not real-provider, native-YDB, browser/login, activation or full MVP proof.
 
 A cancelled Worker step after a long preceding ordinary tail is not proof that

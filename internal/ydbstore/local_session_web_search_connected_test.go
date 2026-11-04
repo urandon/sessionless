@@ -379,7 +379,10 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 					cancelBorrow()
 				}
 			default:
-				mutationErr = seed.InvalidateCurrentSearchAuthorityData(authorityMutation)
+				// Exercise a real sub-microsecond wall-clock sample through the
+				// shared fixture path on every host, not just Linux clock hardware.
+				sample := time.Now().UTC().Truncate(time.Microsecond).Add(789 * time.Nanosecond)
+				mutationErr = seed.InvalidateCurrentSearchAuthorityData(authorityMutation, sample)
 			}
 			return mutationErr
 		}

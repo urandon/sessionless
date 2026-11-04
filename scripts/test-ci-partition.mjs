@@ -67,7 +67,10 @@ const offlineMcp = [
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOfflineWebUnknownMCPFailure' ./internal/ydbstore",
   "go test -race -count=1 -shuffle=190351 -timeout=5m -tags=sessionless_mcp_offline -overlay=test/mcp-offline-overlay.json -run='^TestLocalSessionCredentialedMCPOffline' -skip='^TestLocalSessionCredentialedMCPOfflineWeb(KnownServiceError|ModelAfterMCPFailure|UnknownMCPFailure)' ./internal/ydbstore",
 ];
-const offlineSearch = "go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOffline' ./internal/ydbstore";
+const offlineSearch = [
+  "go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOfflineFailureTails' ./internal/ydbstore",
+  "go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOffline' -skip='^TestLocalSessionWebSearchOfflineFailureTails' ./internal/ydbstore",
+];
 const offlineSearchStepName = 'Run additive offline SEARCH connected fixtures';
 const offlineSearchOverlay = {
   Replace: {
@@ -80,7 +83,7 @@ const offlineSearchRecipe = [
   ...Object.keys(offlineSearchOverlay.Replace).map(path => `test ! -e ${path} && test ! -L ${path}`),
   'search_fixture_format=$$(gofmt -l internal/localloopback/testdata/search_offline_fixture.go.txt internal/providerloopsession/testdata/search_offline_fixture.go.txt internal/worker/testdata/search_offline_fixture.go.txt) && test -z "$$search_fixture_format"',
   'go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession ./internal/worker',
-  offlineSearch,
+  ...offlineSearch,
 ];
 const generationStepName = 'Prove attached resource generation CAS and exact uint64 persistence';
 const localRuntimeStepName = 'Prove local Web runtime and two-message trigger batch';
@@ -211,7 +214,7 @@ function verify({ make, ci, release }) {
   assert.doesNotMatch(runtime, /^    (?:needs|permissions|env|services|container|defaults|strategy):/m, 'runtime is parallel, offline, inherits read-only policy');
   assert.equal(step(runtime, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact runtime checkout');
   assert.deepEqual([...runtime.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
-    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages', ordinaryFailureSourceStep, offlineSearchStepName], 'exact runtime steps and MCP-before-Worker order');
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages', ordinaryFailureSourceStep], 'exact runtime steps and MCP-before-Worker order');
   assert.equal(step(runtime, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
   assert.equal(step(runtime, ordinaryFailureSourceStep), 'run: make test-ordinary-ci-failure-source', 'complete ordinary failure/source invocation');
   assert.equal([...ci.matchAll(/\bmake test-ordinary-ci-failure-source\b/g)].length, 1, 'one required CI failure/source execution');
@@ -219,7 +222,8 @@ function verify({ make, ci, release }) {
   assert.equal([...ci.matchAll(/\bmake test-connected-worker-ci\b/g)].length, 1, 'no alternate or duplicate CI Worker invocation');
   assert.deepEqual([...core.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
     ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Set up pinned Node.js', 'Set up pinned npm', 'Run repository CI contract'], 'core-only verification steps');
-  assert.equal([...local.matchAll(/^      - name:/gm)].length, 4, 'bounded local tail steps');
+  assert.deepEqual([...local.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run ordinary local-tail tests over all packages', offlineSearchStepName], 'exact local tail steps and SEARCH-after-tail order');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -251,7 +255,7 @@ function verify({ make, ci, release }) {
   assert.equal(step(runtime, mcpStepName), 'run: make test-mcp-offline', 'required complete CI offline MCP invocation');
   assert.equal([...ci.matchAll(/^        run: make test-mcp-offline$/gm)].length, 1, 'one required CI offline MCP execution');
   assert.equal([...ci.matchAll(/\bmake test-mcp-offline\b/g)].length, 1, 'no alternate or duplicate CI MCP invocation');
-  assert.equal(step(runtime, offlineSearchStepName), 'run: make test-search-offline', 'required complete CI offline SEARCH invocation');
+  assert.equal(step(local, offlineSearchStepName), 'run: make test-search-offline', 'required complete CI offline SEARCH invocation');
   assert.equal([...ci.matchAll(/\bmake test-search-offline\b/g)].length, 1, 'one required CI offline SEARCH execution');
   assert.equal([...ci.matchAll(/\bmake ci-core-base\b/g)].length, 1, 'one complete CI core invocation');
   const offlineName = 'Run offline worker and egress security contracts';
@@ -599,16 +603,19 @@ test('offline SEARCH overlay rejects replacement, omissions and wrong fixture ta
 });
 test('offline SEARCH selector covers the actual and future full prefix once', t => {
   const commands = recipe(original.make, 'test-search-offline').split('\n\t').filter(value => value.startsWith('go test '));
-  assert.deepEqual(commands, [offlineSearch], 'one complete SEARCH command');
-  const selectors = commands.map(command => new RegExp(command.match(/-run='([^']+)'/)[1]));
-  const selected = name => selectors.filter(pattern => pattern.test(name)).length;
+  assert.deepEqual(commands, offlineSearch, 'two exact disjoint SEARCH commands');
+  const selectors = commands.map(command => ({ run: new RegExp(command.match(/-run='([^']+)'/)[1]), skip: command.match(/-skip='([^']+)'/)?.[1] }));
+  const selected = name => selectors.filter(({ run, skip }) => run.test(name) && !(skip && new RegExp(skip).test(name))).length;
   for (const name of [
     'TestLocalSessionWebSearchOffline', 'TestLocalSessionWebSearchOfflineFuture',
-    'TestLocalSessionWebSearchOfflineFailureTailsFuture', 'TestLocalSessionWebSearchOfflineish',
+    'TestLocalSessionWebSearchOfflineFailureTails', 'TestLocalSessionWebSearchOfflineFailureTailsFuture',
+    'TestLocalSessionWebSearchOfflineFailureTail', 'TestLocalSessionWebSearchOfflineFailureTailsBoundary',
+    'TestLocalSessionWebSearchOfflineFailureTailsish', 'TestLocalSessionWebSearchOfflineish',
     'TestLocalSessionWebSearch', 'TestLocalSessionOther',
     'ExampleLocalSessionWebSearchOffline', 'FuzzLocalSessionWebSearchOffline',
   ]) assert.equal(selected(name), Number(/^TestLocalSessionWebSearchOffline/.test(name)), name);
   let count = 0;
+  const populated = [0, 0];
   function inspect(directory) {
     for (const entry of readdirSync(new URL(`../${directory}/`, import.meta.url), { withFileTypes: true })) {
       const path = `${directory}/${entry.name}`;
@@ -621,13 +628,17 @@ test('offline SEARCH selector covers the actual and future full prefix once', t 
         assert.equal(directory, 'internal/ydbstore', `${path}:${name} must be in the actual selected package`);
         assert.match(source, /^\/\/go:build sessionless_search_offline\n/m, `${path} explicit SEARCH tag`);
         assert.equal(selected(name), 1, `${path}:${name}`);
+        selectors.forEach(({ run, skip }, i) => {
+          if (run.test(name) && !(skip && new RegExp(skip).test(name))) populated[i]++;
+        });
         count++;
       }
     }
   }
   for (const root of ['cmd', 'internal', 'migrations']) inspect(root);
   assert.ok(count > 0, 'actual populated SEARCH selector');
-  t.diagnostic(`actual offline SEARCH top-level test census: ${count}`);
+  assert.ok(populated.every(n => n > 0), 'BOTH actual SEARCH partitions populated');
+  t.diagnostic(`actual offline SEARCH top-level test census: ${count}; partitions ${populated.join('+')}`);
 });
 function connectedSelections(name) {
   return [
@@ -954,13 +965,17 @@ for (const [name, mutate] of [
   ['wrong tag', value => value.replace('sessionless_search_offline', 'sessionless_mcp_offline')],
   ['wrong overlay', value => value.replace('test/search-offline-overlay.json', 'test/mcp-offline-overlay.json')],
   ['lost overlay', value => value.replace(' -overlay=test/search-offline-overlay.json', '')],
-  ['narrow selector', value => value.replace("-run='^TestLocalSessionWebSearchOffline'", "-run='^TestLocalSessionWebSearchOfflineNormalQueuedApproved$'")],
+  ['narrow selector', value => value.replace(/-run='[^']+'/, "-run='^TestLocalSessionWebSearchOfflineNormalQueuedApproved$'")],
   ['extra exclusion', value => value.replace(' ./internal/ydbstore', " -skip='Failure' ./internal/ydbstore")],
   ['incomplete package', value => value.replace('./internal/ydbstore', './internal/worker')],
   ['parallel command', value => `${value} &`],
   ['ignored failure', value => `${value} || true`],
   ['ignored Make failure', value => `-${value}`],
-]) mutations.push([`offline SEARCH ${name}`, 'make', offlineSearch, mutate(offlineSearch), /exact additive offline SEARCH gate/]);
+]) {
+  for (const [index, command] of offlineSearch.entries()) {
+    mutations.push([`offline SEARCH partition ${index + 1} ${name}`, 'make', command, mutate(command), /exact additive offline SEARCH gate/]);
+  }
+}
 for (const [index, command] of offlineSearchRecipe.entries()) {
   mutations.push([`offline SEARCH missing prerequisite ${index}`, 'make', `\t${command}\n`, '', /exact additive offline SEARCH gate/]);
 }
@@ -974,11 +989,33 @@ for (const [name, changed] of [
   ['duplicate step', `${offlineSearchStep}\n${offlineSearchStep}`],
   ['ignored failure', offlineSearchStep.replace('make test-search-offline', 'make test-search-offline || true')],
   ['conditional step', offlineSearchStep.replace('        run:', '        if: false\n        run:')],
+  ['ignored step', offlineSearchStep.replace('        run:', '        continue-on-error: true\n        run:')],
+  ['background step', offlineSearchStep.replace('make test-search-offline', 'make test-search-offline &')],
+  ['changed step timeout', offlineSearchStep.replace('        run:', '        timeout-minutes: 60\n        run:')],
+  ['step environment', offlineSearchStep.replace('        run:', '        env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local\n        run:')],
 ]) mutations.push([`offline SEARCH CI ${name}`, 'ci', offlineSearchStep, changed]);
-mutations.push(['offline SEARCH CI precedes Failure/Source', 'ci',
-  `      - name: ${ordinaryFailureSourceStep}\n        run: make test-ordinary-ci-failure-source\n\n${offlineSearchStep}`,
-  `${offlineSearchStep}\n      - name: ${ordinaryFailureSourceStep}\n        run: make test-ordinary-ci-failure-source\n`, /exact runtime steps/]);
-mutations.push(['offline SEARCH duplicate test command', 'make', offlineSearch, `${offlineSearch}\n\t${offlineSearch}`, /exact additive offline SEARCH gate/]);
+const localTailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
+mutations.push(['offline SEARCH CI precedes local tail', 'ci',
+  `${localTailStep}\n${offlineSearchStep}`, `${offlineSearchStep}\n${localTailStep}`, /exact local tail steps/]);
+mutations.push(['offline SEARCH CI returns to overloaded runtime', 'ci',
+  `  go-local:\n${job(original.ci, 'go-local')}`,
+  `  go-local:\n${job(original.ci, 'go-local').replace(offlineSearchStep, '')}`]);
+test('offline SEARCH cannot move back to runtime or another job', () => {
+  for (const destination of [ordinaryFailureSourceStep, 'Run connected-session tests over all packages', 'Run repository CI contract']) {
+    const command = destination === ordinaryFailureSourceStep ? 'test-ordinary-ci-failure-source' : destination === 'Run connected-session tests over all packages' ? 'test-connected-ci' : 'ci-core-base';
+    const anchor = `      - name: ${destination}\n        run: make ${command}\n`;
+    const ci = original.ci.replace(offlineSearchStep, '').replace(anchor, anchor + '\n' + offlineSearchStep);
+    assert.notEqual(ci, original.ci, `SEARCH move to ${destination} must be effective`);
+    assert.throws(() => verify({ ...original, ci }));
+  }
+});
+for (const [index, command] of offlineSearch.entries()) {
+  mutations.push([`offline SEARCH duplicate partition ${index + 1}`, 'make', command, `${command}\n\t${command}`, /exact additive offline SEARCH gate/]);
+}
+mutations.push(['offline SEARCH partition order reversed', 'make', offlineSearch.join('\n\t'), [...offlineSearch].reverse().join('\n\t'), /exact additive offline SEARCH gate/]);
+mutations.push(['offline SEARCH failure-family gap', 'make', offlineSearch[0], offlineSearch[0].replace('OfflineFailureTails', 'OfflineFailureTailsKnownOnly'), /exact additive offline SEARCH gate/]);
+mutations.push(['offline SEARCH complement overlap', 'make', offlineSearch[1], offlineSearch[1].replace(" -skip='^TestLocalSessionWebSearchOfflineFailureTails'", ''), /exact additive offline SEARCH gate/]);
+mutations.push(['offline SEARCH complement gap', 'make', offlineSearch[1], offlineSearch[1].replace("-skip='^TestLocalSessionWebSearchOfflineFailureTails'", "-skip='^TestLocalSessionWebSearchOfflineFailure'"), /exact additive offline SEARCH gate/]);
 for (const [index, command] of ordinaryTail.entries()) {
   for (const [name, mutate] of [
     ['missing command', () => ''],

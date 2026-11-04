@@ -742,18 +742,22 @@ func (s *LocalSearchWebSeed) RequireApprovedSearchBorrowData() error {
 
 // Controlled current SQL DATA changes only AFTER the real MODEL/pending/Web
 // decision and prepared holder exist. No consent/grant/claim is seeded here.
-func (s *LocalSearchWebSeed) InvalidateCurrentSearchAuthorityData(mode string) error {
+func (s *LocalSearchWebSeed) InvalidateCurrentSearchAuthorityData(mode string, sample time.Time) error {
 	f := s.peer
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Use the same canonical precision as the SQL peer's authoritative time.
+	// A raw nanosecond Linux clock is not a valid authority timestamp. Sample
+	// once; neither validation nor the mutation may renew an existing window.
+	at := localSearchFixtureAuthorityTime(sample)
 	var member domain.TenantMembership
 	var states ownedConsentStates
-	if len(f.rows["tenant_memberships"]) != 1 || json.Unmarshal([]byte(f.rows["tenant_memberships"][0].(string)), &member) != nil || member.Validate() != nil || f.web.Authorize(member, domain.TenantPermissionWrite, time.Now()) != nil || json.Unmarshal([]byte(f.consentRecord), &states) != nil || len(states.States) != 1 || states.States[0].Status != domain.WebSearchConsentApprovedV1 || f.effects == nil || len(f.effects.operations) != 1 {
+	if len(f.rows["tenant_memberships"]) != 1 || json.Unmarshal([]byte(f.rows["tenant_memberships"][0].(string)), &member) != nil || member.Validate() != nil || f.web.Authorize(member, domain.TenantPermissionWrite, at) != nil || json.Unmarshal([]byte(f.consentRecord), &states) != nil || len(states.States) != 1 || states.States[0].Status != domain.WebSearchConsentApprovedV1 || f.effects == nil || len(f.effects.operations) != 1 {
 		return errors.New("current-authority mutation lacks genuine valid approved baseline")
 	}
 	switch mode {
 	case "membership":
-		member.Status, member.UpdatedAt = domain.TenantMembershipSuspended, time.Now().UTC().Truncate(time.Microsecond)
+		member.Status, member.UpdatedAt = domain.TenantMembershipSuspended, at
 		if member.Validate() != nil || member.Authorize(s.Owner, s.Tenant, domain.TenantPermissionWrite) == nil {
 			return errors.New("membership mutation must be typed-valid and nonvacuous")
 		}
@@ -764,7 +768,6 @@ func (s *LocalSearchWebSeed) InvalidateCurrentSearchAuthorityData(mode string) e
 		f.rows["tenant_memberships"] = []driver.Value{string(raw)}
 		f.membership = []driver.Value{string(raw), string(member.Role), string(member.Status), int64(member.SecurityVersion)}
 	case "session":
-		at := time.Now().UTC().Truncate(time.Microsecond)
 		f.web.RevokedAt = &at
 		if f.web.Validate() != nil || f.web.Authorize(member, domain.TenantPermissionWrite, at) == nil {
 			return errors.New("session mutation must be typed-valid and nonvacuous")
@@ -794,12 +797,12 @@ func (s *LocalSearchWebSeed) InvalidateCurrentSearchAuthorityData(mode string) e
 			return errors.New("original SEARCH funding head absent")
 		}
 		old, err := domain.DecodeAttemptSpendingAuthorizationCurrentV1([]byte(row[0].(string)))
-		if err != nil || old.ValidateAt(time.Now()) != nil || old.Locator.AttemptID != request.Scope.AttemptID || old.Locator.ComponentKind != domain.AttemptSpendingWebSearchV1 || old.ScopedGrantDigest != request.GrantDigest {
+		if err != nil || old.ValidateAt(at) != nil || old.Locator.AttemptID != request.Scope.AttemptID || old.Locator.ComponentKind != domain.AttemptSpendingWebSearchV1 || old.ScopedGrantDigest != request.GrantDigest {
 			return errors.New("SEARCH authority revoke lacks valid exact original grant baseline")
 		}
 		next := old.Clone()
-		next.State, next.RevocationGeneration, next.UpdatedAt, next.MutationID = domain.OwnedAgentCurrentRevokedV1, old.RevocationGeneration+1, time.Now().UTC().Truncate(time.Microsecond), "controlled-search-authority-revoked"
-		if next.ValidateTransitionFrom(old) != nil || next.ValidateAt(time.Now()) == nil {
+		next.State, next.RevocationGeneration, next.UpdatedAt, next.MutationID = domain.OwnedAgentCurrentRevokedV1, old.RevocationGeneration+1, at, "controlled-search-authority-revoked"
+		if next.ValidateTransitionFrom(old) != nil || next.ValidateAt(at) == nil {
 			return errors.New("SEARCH authority revoke must be valid closed transition and nonvacuous")
 		}
 		raw, err := domain.EncodeAttemptSpendingAuthorizationCurrentV1(next)
@@ -813,6 +816,10 @@ func (s *LocalSearchWebSeed) InvalidateCurrentSearchAuthorityData(mode string) e
 		return errors.New("unknown current authority mutation")
 	}
 	return nil
+}
+
+func localSearchFixtureAuthorityTime(at time.Time) time.Time {
+	return at.UTC().Truncate(time.Microsecond)
 }
 
 func (s *LocalSearchWebSeed) NewBFFDatabase(t *testing.T) *sql.DB {

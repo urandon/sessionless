@@ -225,7 +225,7 @@ test-connected: prepare
 	$(MAKE) test-search-offline
 
 # CI runs Terminal and the remainder here, and the complete Worker family in
-# go-runtime after offline MCP. SEARCH follows the existing runtime families.
+# go-runtime after offline MCP. CI SEARCH follows the go-local ordinary tail.
 .PHONY: test-connected-ci test-connected-worker-ci
 test-connected-ci: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
@@ -242,7 +242,8 @@ test-search-offline: prepare
 	test ! -e internal/worker/search_offline_fixture.go && test ! -L internal/worker/search_offline_fixture.go
 	search_fixture_format=$$(gofmt -l internal/localloopback/testdata/search_offline_fixture.go.txt internal/providerloopsession/testdata/search_offline_fixture.go.txt internal/worker/testdata/search_offline_fixture.go.txt) && test -z "$$search_fixture_format"
 	go build -overlay= -tags= ./internal/localloopback ./internal/providerloopsession ./internal/worker
-	go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOffline' ./internal/ydbstore
+	go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOfflineFailureTails' ./internal/ydbstore
+	go test -race -count=1 -shuffle=194195 -timeout=5m -tags=sessionless_search_offline -overlay=test/search-offline-overlay.json -run='^TestLocalSessionWebSearchOffline' -skip='^TestLocalSessionWebSearchOfflineFailureTails' ./internal/ydbstore
 
 # Additive test instrumentation only: neither normal Go package exposes a
 # resolver/dialer/CA override. The overlay must never replace an existing file.

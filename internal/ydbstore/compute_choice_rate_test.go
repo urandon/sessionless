@@ -123,7 +123,7 @@ func (f *computeChoiceSourceFixture) readRated(input computechoice.ListQuery, re
 		}
 		defer attempt.Finish()
 		query := &computeChoiceQuery{tx: tx, budget: attempt}
-		auth, err := readComputeChoiceAuth(ctx, query, f.cookie.SessionDigest, f.session.ID)
+		auth, err := f.store.readComputeChoiceAuth(ctx, query, f.cookie.SessionDigest, f.session.ID)
 		if err != nil {
 			return err
 		}

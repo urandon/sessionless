@@ -80,6 +80,14 @@ executor is delivered by this storage description, and no old identity may be
 silently reactivated. Keep V2 serving disabled until the complete transition and
 all transactional authorization consumers are independently verified.
 
+The private compute-choice LIST transaction can select the V2 cookie contract
+and point-read the authenticating forward identity before membership, Session,
+limiter and candidate reads. The existing compute-choice resource budget owns
+that read and charges its returned prefix before decoding. Default V1 mode
+remains unchanged. This source reader adds no durable state, public serving
+installation or SEND authority; persisted CSRF-column correspondence is not
+verification of a presented CSRF token.
+
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has
 no new row, table, TTL, cache, approval registry or custody owner. The original

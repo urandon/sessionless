@@ -3,7 +3,6 @@
 package ydbintegration
 
 import (
-	"strings"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,6 +16,7 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,17 +110,22 @@ func TestYandexLoginYDBClientAndProviderBindingDenials(t *testing.T) {
 			if err != nil {
 				t.Fatalf("actual adapter: %v", err)
 			}
-			h, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:provider,OAuthClientID:"test-yandex-client"}},
-BaseURL: origin,
-Store: store,
-IDs: idgen.New(),
-Clock: clock,
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
+			h, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: provider, OAuthClientID: "test-yandex-client"}},
+				BaseURL: origin,
+				Store:   store,
+				IDs:     idgen.New(),
+				Clock:   clock,
+				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatalf("normal BFF: %v", err)
 			}
 			start := httptest.NewRecorder()
-			h.ServeHTTP(start, func() *http.Request { r:=httptest.NewRequest(http.MethodPost,origin+webcontract.RouteYandexLoginStart,strings.NewReader("return_to=%2Fsessions"));r.Header.Set("Origin",origin);r.Header.Set("Content-Type","application/x-www-form-urlencoded");return r }().WithContext(ctx))
+			h.ServeHTTP(start, func() *http.Request {
+				r := httptest.NewRequest(http.MethodPost, origin+webcontract.RouteYandexLoginStart, strings.NewReader("return_to=%2Fsessions"))
+				r.Header.Set("Origin", origin)
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				return r
+			}().WithContext(ctx))
 			if start.Code != http.StatusSeeOther {
 				t.Fatalf("start status=%d want303", start.Code)
 			}

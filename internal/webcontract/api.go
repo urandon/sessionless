@@ -123,11 +123,13 @@ type OIDCStartRequest struct {
 
 // Public configuration metadata only; never client/issuer/subject/credentials.
 type LoginMethod struct {
- Provider domain.IdentityProvider `json:"provider"`
- Label string `json:"label"`
- StartPath string `json:"start_path"`
+	Provider  domain.IdentityProvider `json:"provider"`
+	Label     string                  `json:"label"`
+	StartPath string                  `json:"start_path"`
 }
-type LoginMethods struct { Methods []LoginMethod `json:"methods"` }
+type LoginMethods struct {
+	Methods []LoginMethod `json:"methods"`
+}
 
 func (request OIDCStartRequest) Validate() error {
 	if request.ReturnTo == "" {

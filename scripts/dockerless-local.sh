@@ -492,6 +492,10 @@ start_web_bff() {
 	test "${WEB_LOGIN_PROVIDER+x}" != x || fail 'remove WEB_LOGIN_PROVIDER; configure WEB_LOGIN_PROVIDERS explicitly'
 	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDERS:-}" || \
 		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDERS'
+	case "$WEB_LOGIN_PROVIDERS" in
+		yandex|telegram|yandex,telegram) ;;
+		*) fail 'WEB_LOGIN_PROVIDERS must be yandex, telegram, or yandex,telegram' ;;
+	esac
 	web_port=${WEB_PORT:-8083}
 	case "$web_port" in
 		''|0*|*[!0-9]*) fail 'WEB_PORT must be a decimal port between 1 and 65535' ;;

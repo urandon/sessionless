@@ -51,12 +51,12 @@ func TestTelegramBoundChallengeRequiresExactCallbackBeforeExchange(t *testing.T)
 			store.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: user, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
 			store.memberships[user] = []domain.TenantMembership{membership("ten_alpha", user, domain.TenantMembershipOwner)}
 			provider := &callbackBindingProvider{fakeProvider: fakeProvider{subject: subject.Subject}}
-			handler, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:provider,OIDCPolicy:domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
-BaseURL: origin,
-Store: store,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
+			handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: provider, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
+				BaseURL: origin,
+				Store:   store,
+				IDs:     fixedIDs{},
+				Clock:   fixedClock{now: bffTestTime},
+				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

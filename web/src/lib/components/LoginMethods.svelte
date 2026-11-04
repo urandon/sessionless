@@ -1,35 +1,52 @@
 <script lang="ts">
   import { CanonicalApiClient, type LoginMethods } from '$lib/api/client';
 
-  let { returnTo = '/', client = new CanonicalApiClient() }: {
+  let {
+    returnTo = '/',
+    client = new CanonicalApiClient(),
+  }: {
     returnTo?: string;
     client?: Pick<CanonicalApiClient, 'getLoginMethods'>;
   } = $props();
   let methods: LoginMethods['methods'] = $state([]);
-  let state: 'loading' | 'ready' | 'unavailable' = $state('loading');
+  let phase: 'loading' | 'ready' | 'unavailable' = $state('loading');
   let reload = $state(0);
   const destination = $derived(
-    returnTo.startsWith('/') && !returnTo.startsWith('//') && !returnTo.includes('\\') &&
-    !Array.from(returnTo).some((character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127)
-      ? returnTo : '/',
+    returnTo.startsWith('/') &&
+      !returnTo.startsWith('//') &&
+      !returnTo.includes('\\') &&
+      !Array.from(returnTo).some(
+        (character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127,
+      )
+      ? returnTo
+      : '/',
   );
 
   $effect(() => {
     void reload;
     const abort = new AbortController();
-    state = 'loading'; methods = [];
-    void client.getLoginMethods(abort.signal).then((response) => {
-      if (!abort.signal.aborted) { methods = response.methods; state = 'ready'; }
-    }).catch(() => { if (!abort.signal.aborted) state = 'unavailable'; });
+    phase = 'loading';
+    methods = [];
+    void client
+      .getLoginMethods(abort.signal)
+      .then((response) => {
+        if (!abort.signal.aborted) {
+          methods = response.methods;
+          phase = 'ready';
+        }
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) phase = 'unavailable';
+      });
     return () => abort.abort();
   });
 </script>
 
-{#if state === 'loading'}
+{#if phase === 'loading'}
   <p role="status">Loading sign-in methods…</p>
-{:else if state === 'unavailable'}
+{:else if phase === 'unavailable'}
   <p role="alert">Sign-in methods are unavailable. Please try again.</p>
-  <button class="button" type="button" onclick={() => reload += 1}>Try again</button>
+  <button class="button" type="button" onclick={() => (reload += 1)}>Try again</button>
 {:else}
   <div class="actions" aria-label="Sign-in methods">
     {#each methods as method (method.provider)}

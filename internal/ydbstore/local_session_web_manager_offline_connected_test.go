@@ -194,15 +194,15 @@ func newWebManagerHandler(t *testing.T, seed *ydbstore.LocalWebManagerSeed, blob
 	if e != nil {
 		t.Fatal(e)
 	}
-	h, e := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:&webManagerIdentity{subject: "owner-subject", auth: auth},OAuthClientID:webManagerOAuthClient}},
-BaseURL: webManagerOrigin,
-ObjectStorageOrigin: "https://objects.fixture.invalid",
-Store: auth,
-Sessions: sessions,
-API: api,
-IDs: webManagerIDs{},
-Clock: localManagerClock{},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
+	h, e := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: &webManagerIdentity{subject: "owner-subject", auth: auth}, OAuthClientID: webManagerOAuthClient}},
+		BaseURL:             webManagerOrigin,
+		ObjectStorageOrigin: "https://objects.fixture.invalid",
+		Store:               auth,
+		Sessions:            sessions,
+		API:                 api,
+		IDs:                 webManagerIDs{},
+		Clock:               localManagerClock{},
+		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -222,7 +222,15 @@ func webManagerCookie(t *testing.T, r *http.Response, name string) *http.Cookie 
 func webManagerLogin(t *testing.T, h http.Handler) (*http.Cookie, *http.Cookie) {
 	t.Helper()
 	start := httptest.NewRecorder()
-	h.ServeHTTP(start, func() *http.Request { u,_:=url.Parse(webManagerOrigin+webcontract.RouteYandexLoginStart+"?return_to=/sessions");body:=u.Query().Encode();u.RawQuery="";r:=httptest.NewRequest(http.MethodPost,u.String(),strings.NewReader(body));r.Header.Set("Origin",u.Scheme+"://"+u.Host);r.Header.Set("Content-Type","application/x-www-form-urlencoded");return r }())
+	h.ServeHTTP(start, func() *http.Request {
+		u, _ := url.Parse(webManagerOrigin + webcontract.RouteYandexLoginStart + "?return_to=/sessions")
+		body := u.Query().Encode()
+		u.RawQuery = ""
+		r := httptest.NewRequest(http.MethodPost, u.String(), strings.NewReader(body))
+		r.Header.Set("Origin", u.Scheme+"://"+u.Host)
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}())
 	if start.Code != http.StatusSeeOther {
 		t.Fatal("login start", start.Code, start.Body.String())
 	}
@@ -277,8 +285,11 @@ func TestLocalSessionCredentialedMCPOfflineWebCanonicalManager(t *testing.T) {
 	blobs := &canonicalManagerBlobs{canonicalTerminalBlobs: &canonicalTerminalBlobs{sessionCompactionBlobs: newSessionCompactionBlobs(), owner: t}}
 	h := newWebManagerHandler(t, seed, blobs, auth)
 	for _, legacyRoute := range []string{webcontract.RouteTelegramLoginStart, webcontract.RouteOIDCCallback} {
-		want:=http.StatusMethodNotAllowed;if legacyRoute==webcontract.RouteOIDCCallback{want=http.StatusSeeOther}
-		if response := webManagerRequest(h, http.MethodGet, legacyRoute, "", nil, nil); response.Code != want || legacyRoute==webcontract.RouteOIDCCallback&&response.Header().Get("Location")!="/login?auth_error=access_denied" {
+		want := http.StatusMethodNotAllowed
+		if legacyRoute == webcontract.RouteOIDCCallback {
+			want = http.StatusSeeOther
+		}
+		if response := webManagerRequest(h, http.MethodGet, legacyRoute, "", nil, nil); response.Code != want || legacyRoute == webcontract.RouteOIDCCallback && response.Header().Get("Location") != "/login?auth_error=access_denied" {
 			t.Fatal("Yandex Web handler enabled a Telegram login route", legacyRoute, response.Code)
 		}
 	}

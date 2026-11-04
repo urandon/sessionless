@@ -65,15 +65,33 @@ export class CanonicalApiFixture {
       const captured = await this.#capture(route.request());
       this.requests.push(captured);
       if (this.loginMetadataError) return this.#error(route, 503, 'temporarily_unavailable');
-      return this.#json(route, this.loginMetadata ?? { methods: this.loginProviders.map((provider) => ({ provider, label: provider === 'yandex' ? 'Yandex' : 'Telegram', start_path: `/auth/login/${provider}/start` })) });
+      return this.#json(
+        route,
+        this.loginMetadata ?? {
+          methods: this.loginProviders.map((provider) => ({
+            provider,
+            label: provider === 'yandex' ? 'Yandex' : 'Telegram',
+            start_path: `/auth/login/${provider}/start`,
+          })),
+        },
+      );
     });
     await this.#page.route('**/auth/login/*/start', async (route) => {
       const captured = await this.#capture(route.request());
       this.requests.push(captured);
       const url = new URL(captured.url);
       const provider = url.pathname.split('/')[3];
-      if (captured.method !== 'POST' || !this.loginProviders.some((enabled) => enabled === provider) || captured.headers.origin !== url.origin) return this.#error(route, 403, 'access_denied');
-      await route.fulfill({ status: 200, contentType: 'text/html', body: '<main><h1>Controlled provider navigation</h1></main>' });
+      if (
+        captured.method !== 'POST' ||
+        !this.loginProviders.some((enabled) => enabled === provider) ||
+        captured.headers.origin !== url.origin
+      )
+        return this.#error(route, 403, 'access_denied');
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: '<main><h1>Controlled provider navigation</h1></main>',
+      });
     });
   }
 

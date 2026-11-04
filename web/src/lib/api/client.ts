@@ -61,17 +61,39 @@ const safeErrorCodes = new Set<PublicErrorCode>([
 
 export function parseLoginMethods(text: string): LoginMethods {
   const value: unknown = JSON.parse(text);
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).join(',') !== 'methods') throw new TypeError('Invalid login metadata.');
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).join(',') !== 'methods'
+  )
+    throw new TypeError('Invalid login metadata.');
   const methods: unknown = (value as Record<string, unknown>).methods;
-  if (!Array.isArray(methods) || methods.length < 1 || methods.length > 2) throw new TypeError('Invalid login metadata.');
+  if (!Array.isArray(methods) || methods.length < 1 || methods.length > 2)
+    throw new TypeError('Invalid login metadata.');
   const result: LoginMethod[] = [];
   for (const method of methods) {
-    if (!method || typeof method !== 'object' || Array.isArray(method) || Object.keys(method).sort().join(',') !== 'label,provider,start_path') throw new TypeError('Invalid login metadata.');
+    if (
+      !method ||
+      typeof method !== 'object' ||
+      Array.isArray(method) ||
+      Object.keys(method).sort().join(',') !== 'label,provider,start_path'
+    )
+      throw new TypeError('Invalid login metadata.');
     const { provider, label, start_path } = method as Record<string, unknown>;
-    if ((provider !== 'yandex' && provider !== 'telegram') || label !== (provider === 'yandex' ? 'Yandex' : 'Telegram') || start_path !== `/auth/login/${provider}/start`) throw new TypeError('Invalid login metadata.');
+    if (
+      (provider !== 'yandex' && provider !== 'telegram') ||
+      label !== (provider === 'yandex' ? 'Yandex' : 'Telegram') ||
+      start_path !== `/auth/login/${provider}/start`
+    )
+      throw new TypeError('Invalid login metadata.');
     result.push({ provider, label, start_path } as LoginMethod);
   }
-  if (result.length === 2 && (result[0].provider !== 'yandex' || result[1].provider !== 'telegram')) throw new TypeError('Invalid login metadata.');
+  if (
+    result.length === 2 &&
+    (result[0]?.provider !== 'yandex' || result[1]?.provider !== 'telegram')
+  )
+    throw new TypeError('Invalid login metadata.');
   // Fixed DTO grammar: count decoded object-key tokens so JSON.parse cannot
   // erase duplicate/escaped-alias members before the closed-shape checks.
   const counts = new Map<string, number>();
@@ -80,7 +102,12 @@ export function parseLoginMethods(text: string): LoginMethods {
     if (typeof key !== 'string') throw new TypeError('Invalid login metadata.');
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  if (counts.size !== 4 || counts.get('methods') !== 1 || ['provider', 'label', 'start_path'].some((key) => counts.get(key) !== result.length)) throw new TypeError('Invalid login metadata.');
+  if (
+    counts.size !== 4 ||
+    counts.get('methods') !== 1 ||
+    ['provider', 'label', 'start_path'].some((key) => counts.get(key) !== result.length)
+  )
+    throw new TypeError('Invalid login metadata.');
   return { methods: result };
 }
 
@@ -166,10 +193,18 @@ export class CanonicalApiClient {
     try {
       if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
       const response = await this.#fetch('/auth/login/methods', {
-        method: 'GET', cache: 'no-store', credentials: 'same-origin', redirect: 'error',
-        referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal,
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+        headers: { Accept: 'application/json' },
+        signal,
       });
-      if (response.status !== 200 || !/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) {
+      if (
+        response.status !== 200 ||
+        !/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')
+      ) {
         await response.body?.cancel();
         throw new TypeError('Invalid login metadata.');
       }
@@ -178,7 +213,11 @@ export class CanonicalApiClient {
       return parseLoginMethods(text);
     } catch {
       if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
-      throw new ApiError('temporarily_unavailable', 'Sign-in methods are unavailable. Please try again.', 503);
+      throw new ApiError(
+        'temporarily_unavailable',
+        'Sign-in methods are unavailable. Please try again.',
+        503,
+      );
     }
   }
 

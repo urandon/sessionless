@@ -18,7 +18,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
-	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
 	"gitcode.com/urandon/sessionless/internal/localcontrolplane"
 	"gitcode.com/urandon/sessionless/internal/opssignal"
@@ -259,7 +258,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		BaseURL:    baseURL, LoginProviders: login.providers,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
 		AllowLoopbackObjectStorage: allowLocal,
-		Store: store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
+		Store:                      store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
 		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})

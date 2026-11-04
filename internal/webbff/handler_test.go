@@ -108,7 +108,7 @@ func TestLoginTenantSwitchCSRFAndLogout(t *testing.T) {
 func TestUnknownTelegramIdentityGetsDeterministicRecoveryWithoutSession(t *testing.T) {
 	store := newMemoryAuthStore()
 	handler := newTestHandler(t, store, "999999")
-	start := loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart)
+	start := loginStartRequest("https://web.dev.sessionless.triborg.dev" + webcontract.RouteTelegramLoginStart)
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	location, _ := url.Parse(startResponse.Header().Get("Location"))
@@ -143,7 +143,7 @@ func TestUnknownTelegramIdentityGetsDeterministicRecoveryWithoutSession(t *testi
 func TestOIDCProviderDenialRedirectsWithOnlyStableErrorCode(t *testing.T) {
 	store := newMemoryAuthStore()
 	handler := newTestHandler(t, store, "424242")
-	start := loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart+"?return_to=%2Fsessions")
+	start := loginStartRequest("https://web.dev.sessionless.triborg.dev" + webcontract.RouteTelegramLoginStart + "?return_to=%2Fsessions")
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	providerLocation, _ := url.Parse(startResponse.Header().Get("Location"))
@@ -173,7 +173,7 @@ func TestOIDCProviderDenialRedirectsWithOnlyStableErrorCode(t *testing.T) {
 func TestOIDCCallbackFailureRedirectsToStableUnavailableCodeWhenAuditCannotPersist(t *testing.T) {
 	store := newMemoryAuthStore()
 	handler := newTestHandler(t, store, "424242")
-	start := loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart+"?return_to=%2Fsessions")
+	start := loginStartRequest("https://web.dev.sessionless.triborg.dev" + webcontract.RouteTelegramLoginStart + "?return_to=%2Fsessions")
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	providerLocation, _ := url.Parse(startResponse.Header().Get("Location"))
@@ -231,7 +231,7 @@ func TestRequestLogsExcludeQueryAndAuthenticationSecrets(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	handler := newTestHandlerWithLogger(t, store, subject.Subject, logger)
 
-	start := loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart+"?return_to=%2Fsessions%3Fmarker%3Dquery-secret")
+	start := loginStartRequest("https://web.dev.sessionless.triborg.dev" + webcontract.RouteTelegramLoginStart + "?return_to=%2Fsessions%3Fmarker%3Dquery-secret")
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	location, _ := url.Parse(startResponse.Header().Get("Location"))
@@ -261,14 +261,14 @@ func TestContentSecurityPolicyAllowsOnlyConfiguredObjectStorageOrigin(t *testing
 }
 
 func TestObjectStorageOriginValidationRejectsBroadOrInsecureValues(t *testing.T) {
-	base := webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: "424242"},OIDCPolicy:domain.OIDCVerificationPolicy{
-			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
-		}}},
-BaseURL:     "https://web.dev.sessionless.triborg.dev",
-Store: newMemoryAuthStore(),
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),}
+	base := webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: "424242"}, OIDCPolicy: domain.OIDCVerificationPolicy{
+		Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+	}}},
+		BaseURL: "https://web.dev.sessionless.triborg.dev",
+		Store:   newMemoryAuthStore(),
+		IDs:     fixedIDs{},
+		Clock:   fixedClock{now: bffTestTime},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for _, origin := range []string{
 		"https://*.storage.yandexcloud.net", "http://storage.yandexcloud.net",
 		"https://storage.yandexcloud.net/path", "https://user@storage.yandexcloud.net",
@@ -702,16 +702,16 @@ func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.H
 
 func newTestHandlerWithLogger(t *testing.T, store *memoryAuthStore, subject string, logger *slog.Logger) http.Handler {
 	t.Helper()
-	handler, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: subject},OIDCPolicy:domain.OIDCVerificationPolicy{
-			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
-		}}},
-BaseURL:             "https://web.dev.sessionless.triborg.dev",
-ObjectStorageOrigin: "https://artifact-bucket.storage.yandexcloud.net",
-Store: store,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: logger,
-Build: buildinfo.Current("web-bff-test"),})
+	handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: subject}, OIDCPolicy: domain.OIDCVerificationPolicy{
+		Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+	}}},
+		BaseURL:             "https://web.dev.sessionless.triborg.dev",
+		ObjectStorageOrigin: "https://artifact-bucket.storage.yandexcloud.net",
+		Store:               store,
+		IDs:                 fixedIDs{},
+		Clock:               fixedClock{now: bffTestTime},
+		Logger:              logger,
+		Build:               buildinfo.Current("web-bff-test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,16 +726,16 @@ func newSessionTestHandler(t *testing.T, auth *memoryAuthStore, subject string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: subject},OIDCPolicy:domain.OIDCVerificationPolicy{
-			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
-		}}},
-BaseURL:     "https://web.dev.sessionless.triborg.dev",
-Store: auth,
-Sessions: sessions,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-Build: buildinfo.Current("web-bff-session-test"),})
+	handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: subject}, OIDCPolicy: domain.OIDCVerificationPolicy{
+		Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+	}}},
+		BaseURL:  "https://web.dev.sessionless.triborg.dev",
+		Store:    auth,
+		Sessions: sessions,
+		IDs:      fixedIDs{},
+		Clock:    fixedClock{now: bffTestTime},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Build:    buildinfo.Current("web-bff-session-test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,16 +758,16 @@ func newAttachedWorkerTestHandlerWithLogger(t *testing.T, auth *memoryAuthStore,
 
 func newAttachedWorkerHandlerWithService(t *testing.T, auth *memoryAuthStore, subject string, workers webbff.AttachedWorkerReadService, logger *slog.Logger) http.Handler {
 	t.Helper()
-	handler, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: subject},OIDCPolicy:domain.OIDCVerificationPolicy{
-			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
-		}}},
-BaseURL:     "https://web.dev.sessionless.triborg.dev",
-Store: auth,
-AttachedWorkers: workers,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: logger,
-Build: buildinfo.Current("web-bff-attached-worker-test"),})
+	handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: subject}, OIDCPolicy: domain.OIDCVerificationPolicy{
+		Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+	}}},
+		BaseURL:         "https://web.dev.sessionless.triborg.dev",
+		Store:           auth,
+		AttachedWorkers: workers,
+		IDs:             fixedIDs{},
+		Clock:           fixedClock{now: bffTestTime},
+		Logger:          logger,
+		Build:           buildinfo.Current("web-bff-attached-worker-test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,14 +776,14 @@ Build: buildinfo.Current("web-bff-attached-worker-test"),})
 
 func newAttachedWorkerControlHandler(t *testing.T, auth *memoryAuthStore, subject string, controls webbff.AttachedWorkerControlService) http.Handler {
 	t.Helper()
-	handler, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderTelegram,OIDCProvider:fakeProvider{subject: subject},OIDCPolicy:domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
-BaseURL: "https://web.dev.sessionless.triborg.dev",
-Store: auth,
-AttachedWorkerControls: controls,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-Build: buildinfo.Current("web-bff-attached-worker-control-test"),})
+	handler, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: subject}, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}},
+		BaseURL:                "https://web.dev.sessionless.triborg.dev",
+		Store:                  auth,
+		AttachedWorkerControls: controls,
+		IDs:                    fixedIDs{},
+		Clock:                  fixedClock{now: bffTestTime},
+		Logger:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Build:                  buildinfo.Current("web-bff-attached-worker-control-test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +804,7 @@ func attachedWorkerMutationRequest(method, path, body string, session, csrf *htt
 
 func performLogin(t *testing.T, handler http.Handler, returnTo string) (*http.Cookie, *http.Cookie) {
 	t.Helper()
-	start := loginStartRequest("https://web.dev.sessionless.triborg.dev"+webcontract.RouteTelegramLoginStart+"?return_to="+url.QueryEscape(returnTo))
+	start := loginStartRequest("https://web.dev.sessionless.triborg.dev" + webcontract.RouteTelegramLoginStart + "?return_to=" + url.QueryEscape(returnTo))
 	startResponse := httptest.NewRecorder()
 	handler.ServeHTTP(startResponse, start)
 	if startResponse.Code != http.StatusSeeOther {

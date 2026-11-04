@@ -29,7 +29,7 @@ run "yandex_login_web_module" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
   }
   assert {
@@ -84,7 +84,7 @@ run "reject_missing_yandex_login_client" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
   }
   expect_failures = [var.yandex_login_client_id]
 }
@@ -111,7 +111,7 @@ run "reject_unknown_login_provider" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "unknown"
+    login_providers                     = "unknown"
   }
   expect_failures = [var.login_providers]
 }
@@ -120,7 +120,7 @@ run "web_deployment_plan" {
   command = plan
 
   variables {
-    web_login_providers = "telegram"
+    web_login_providers         = "telegram"
     cloud_id                    = "cloud-test"
     base_domain                 = "sessionless.triborg.dev"
     artifact_bucket_name        = "sessionless-test-artifacts"
@@ -204,7 +204,7 @@ run "reject_foreign_release_subject" {
   command = plan
 
   variables {
-    web_login_providers = "telegram"
+    web_login_providers         = "telegram"
     cloud_id                    = "cloud-test"
     base_domain                 = "sessionless.triborg.dev"
     artifact_bucket_name        = "sessionless-test-artifacts"
@@ -235,7 +235,7 @@ run "foundation_bootstrap_without_web_payload" {
     artifact_bucket_name        = "sessionless-test-artifacts"
     telegram_secret_version_id  = ""
     web_bff_secret_version_id   = ""
-    web_login_providers          = "yandex"
+    web_login_providers         = "yandex"
     yandex_login_client_id      = "yandex-client-test"
     control_blue_image_tag      = "0000000000000000000000000000000000000000"
     control_green_image_tag     = "0000000000000000000000000000000000000000"
@@ -258,7 +258,7 @@ run "isolated_web_rollout" {
     artifact_bucket_name        = "sessionless-test-artifacts"
     telegram_secret_version_id  = ""
     web_bff_secret_version_id   = "web-version-test"
-    web_login_providers          = "yandex"
+    web_login_providers         = "yandex"
     yandex_login_client_id      = "yandex-client-test"
     control_blue_image_tag      = "0000000000000000000000000000000000000000"
     control_green_image_tag     = "0000000000000000000000000000000000000000"
@@ -293,7 +293,7 @@ run "reject_empty_web_version" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.web_secret_version_id]
@@ -321,7 +321,7 @@ run "reject_whitespace_web_version" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.web_secret_version_id]
@@ -349,7 +349,7 @@ run "reject_empty_scheduler_version" {
     scheduler_ymq_secret_version_id     = ""
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.scheduler_ymq_secret_version_id]
@@ -377,7 +377,7 @@ run "reject_whitespace_scheduler_version" {
     scheduler_ymq_secret_version_id     = " \t "
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers                      = "yandex"
+    login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.scheduler_ymq_secret_version_id]
@@ -405,8 +405,8 @@ run "both_login_web_module" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers = "yandex,telegram"
-    telegram_oidc_client_id = "123456789"
+    login_providers                     = "yandex,telegram"
+    telegram_oidc_client_id             = "123456789"
     yandex_login_client_id              = "yandex-client-test"
   }
   assert {
@@ -464,8 +464,8 @@ run "reject_both_missing_telegram_client" {
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
     log_group_id                        = "logs-test"
     deletion_protection                 = true
-    login_providers = "yandex,telegram"
-    yandex_login_client_id = "yandex-client-test"
+    login_providers                     = "yandex,telegram"
+    yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.telegram_oidc_client_id]
 }

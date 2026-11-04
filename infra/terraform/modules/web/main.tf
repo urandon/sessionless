@@ -28,18 +28,18 @@ locals {
   index_parameter    = { name = "index", in = "path", required = true, schema = { type = "integer" } }
   manifest_parameter = { name = "manifest_id", in = "path", required = true, schema = { type = "string" } }
   api_paths = {
-    "/healthz"                  = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/readyz"                   = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/version"                  = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/methods" = { get = { operationId = "webLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/yandex/start" = { post = { operationId = "webYandexLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/healthz"                   = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/readyz"                    = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/version"                   = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/methods"        = { get = { operationId = "webLoginMethods", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/yandex/start"   = { post = { operationId = "webYandexLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/login/telegram/start" = { post = { operationId = "webTelegramLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/login/callback"      = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/telegram/callback"   = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/auth/logout"              = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/me"            = { get = { operationId = "webMe", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/tenants"       = { get = { operationId = "webTenants", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
-    "/api/web/v1/active-tenant" = { post = { operationId = "webActiveTenant", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/callback"       = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/telegram/callback"    = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/logout"               = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/me"             = { get = { operationId = "webMe", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/tenants"        = { get = { operationId = "webTenants", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/api/web/v1/active-tenant"  = { post = { operationId = "webActiveTenant", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/api/web/v1/sessions" = {
       get  = { operationId = "webSessionsList", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
       post = { operationId = "webSessionsCreate", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration }
@@ -104,7 +104,7 @@ resource "yandex_serverless_container" "web" {
       WEB_OBJECT_STORAGE_ORIGIN   = local.object_storage_origin
       WEB_MAX_UPLOAD_BYTES        = tostring(var.max_upload_bytes)
       WEB_ALLOWED_MCP_SERVERS     = join(",", var.allowed_mcp_servers)
-      WEB_LOGIN_PROVIDERS          = var.login_providers
+      WEB_LOGIN_PROVIDERS         = var.login_providers
       YDB_CONNECTION_STRING       = var.ydb_connection_string
       YDB_METADATA_CREDENTIALS    = "1"
       S3_ENDPOINT                 = "https://storage.yandexcloud.net"

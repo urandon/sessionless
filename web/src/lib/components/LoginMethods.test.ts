@@ -6,8 +6,14 @@ import LoginMethods from './LoginMethods.svelte';
 describe('LoginMethods', () => {
   for (const providers of [['yandex'], ['telegram'], ['yandex', 'telegram']] as const) {
     it(`renders only configured normal POST forms: ${providers.join(',')}`, async () => {
-      const methods = providers.map((provider) => ({ provider, label: provider === 'yandex' ? 'Yandex' : 'Telegram', start_path: `/auth/login/${provider}/start` }));
-      const client = { getLoginMethods: vi.fn().mockResolvedValue(parseLoginMethods(JSON.stringify({ methods }))) };
+      const methods = providers.map((provider) => ({
+        provider,
+        label: provider === 'yandex' ? 'Yandex' : 'Telegram',
+        start_path: `/auth/login/${provider}/start`,
+      }));
+      const client = {
+        getLoginMethods: vi.fn().mockResolvedValue(parseLoginMethods(JSON.stringify({ methods }))),
+      };
       render(LoginMethods, { client, returnTo: '/sessions/one' });
       for (const provider of providers) {
         const label = provider === 'yandex' ? 'Yandex' : 'Telegram';
@@ -32,9 +38,22 @@ describe('LoginMethods', () => {
     await screen.findByRole('alert');
     expect(client.getLoginMethods).toHaveBeenCalledTimes(2);
   });
-  for (const returnTo of ['https://outside.example', '//outside.example', '/\\outside', '/unsafe\npath']) {
+  for (const returnTo of [
+    'https://outside.example',
+    '//outside.example',
+    '/\\outside',
+    '/unsafe\npath',
+  ]) {
     it(`refuses unsafe return ${JSON.stringify(returnTo)}`, async () => {
-      const client = { getLoginMethods: vi.fn().mockResolvedValue(parseLoginMethods('{"methods":[{"provider":"telegram","label":"Telegram","start_path":"/auth/login/telegram/start"}]}')) };
+      const client = {
+        getLoginMethods: vi
+          .fn()
+          .mockResolvedValue(
+            parseLoginMethods(
+              '{"methods":[{"provider":"telegram","label":"Telegram","start_path":"/auth/login/telegram/start"}]}',
+            ),
+          ),
+      };
       render(LoginMethods, { client, returnTo });
       const button = await screen.findByRole('button', { name: 'Continue with Telegram' });
       expect(button.closest('form')?.querySelector('input')).toHaveValue('/');

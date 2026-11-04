@@ -14,8 +14,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,7 +44,7 @@ const (
 )
 
 type Config struct {
-	LoginProviders []LoginProviderConfig
+	LoginProviders             []LoginProviderConfig
 	OpsSignals                 opssignal.Sink
 	BaseURL                    string
 	ObjectStorageOrigin        string
@@ -94,9 +94,13 @@ type Handler struct {
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Store == nil || config.IDs == nil || config.Clock == nil { return nil, errors.New("web BFF store, ID generator, and clock are required") }
+	if config.Store == nil || config.IDs == nil || config.Clock == nil {
+		return nil, errors.New("web BFF store, ID generator, and clock are required")
+	}
 	providers, err := validateLoginProviders(config.LoginProviders)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	config.LoginProviders = providers
 	if config.Random == nil {
 		config.Random = rand.Reader
@@ -117,7 +121,7 @@ func New(config Config) (*Handler, error) {
 		return nil, errors.New("web BFF security lifetimes may only be shortened from the documented defaults")
 	}
 	base, err := url.Parse(config.BaseURL)
-	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.Path != "" || base.RawPath != "" || base.RawQuery != "" || base.ForceQuery || base.Opaque != "" || base.Fragment != "" || base.String()!=config.BaseURL {
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.Path != "" || base.RawPath != "" || base.RawQuery != "" || base.ForceQuery || base.Opaque != "" || base.Fragment != "" || base.String() != config.BaseURL {
 		return nil, errors.New("WEB_BASE_URL must be an HTTPS origin")
 	}
 	objectStorageOrigin, err := validateObjectStorageOrigin(
@@ -792,18 +796,30 @@ func (handler *Handler) version(w http.ResponseWriter, _ *http.Request) {
 func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	provider, enabled := handler.loginConfig(domain.IdentityProvider(request.PathValue("provider")))
-	if !enabled { http.NotFound(w,request); return }
+	if !enabled {
+		http.NotFound(w, request)
+		return
+	}
 	origins := request.Header.Values("Origin")
 	media, params, mediaErr := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if len(origins)!=1 || origins[0]!=handler.config.BaseURL || mediaErr!=nil || media!="application/x-www-form-urlencoded" || len(params)>1 || len(params)==1&&!strings.EqualFold(params["charset"],"utf-8") || request.URL.RawQuery!="" || request.URL.ForceQuery {
-		handler.writeLoginFailure(w,request,"invalid_login_request",webcontract.ErrorAccessDenied,"The login request is invalid.",nil,"");return
+	if len(origins) != 1 || origins[0] != handler.config.BaseURL || mediaErr != nil || media != "application/x-www-form-urlencoded" || len(params) > 1 || len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8") || request.URL.RawQuery != "" || request.URL.ForceQuery {
+		handler.writeLoginFailure(w, request, "invalid_login_request", webcontract.ErrorAccessDenied, "The login request is invalid.", nil, "")
+		return
 	}
-	if request.Body==nil{request.Body=http.NoBody}
-	request.Body=http.MaxBytesReader(w,request.Body,maxRequestBytes)
-	if request.ParseForm()!=nil || len(request.PostForm)>1 || len(request.PostForm["return_to"])>1 {
-		handler.writeLoginFailure(w,request,"invalid_login_request",webcontract.ErrorInvalidRequest,"The login request is invalid.",nil,"");return
+	if request.Body == nil {
+		request.Body = http.NoBody
 	}
-	for key:=range request.PostForm { if key!="return_to" {handler.writeLoginFailure(w,request,"invalid_login_request",webcontract.ErrorInvalidRequest,"The login request is invalid.",nil,"");return} }
+	request.Body = http.MaxBytesReader(w, request.Body, maxRequestBytes)
+	if request.ParseForm() != nil || len(request.PostForm) > 1 || len(request.PostForm["return_to"]) > 1 {
+		handler.writeLoginFailure(w, request, "invalid_login_request", webcontract.ErrorInvalidRequest, "The login request is invalid.", nil, "")
+		return
+	}
+	for key := range request.PostForm {
+		if key != "return_to" {
+			handler.writeLoginFailure(w, request, "invalid_login_request", webcontract.ErrorInvalidRequest, "The login request is invalid.", nil, "")
+			return
+		}
+	}
 	start := webcontract.OIDCStartRequest{ReturnTo: request.PostForm.Get("return_to")}
 	if err := start.Validate(); err != nil {
 		handler.writeLoginFailure(w, request, "invalid_login_request", webcontract.ErrorInvalidRequest, "The login request is invalid.", nil, "")
@@ -850,11 +866,11 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 	var authorizationURL string
 	if provider.Provider == domain.IdentityProviderYandex {
 		authorizationURL, err = provider.OAuthProvider.AuthorizationURL(request.Context(), ports.OAuthAuthorizationRequest{
-			RedirectURI: handler.config.BaseURL+loginCallbackPath(provider.Provider), State: state, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
+			RedirectURI: handler.config.BaseURL + loginCallbackPath(provider.Provider), State: state, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
 		})
 	} else {
 		authorizationURL, err = provider.OIDCProvider.AuthorizationURL(request.Context(), ports.OIDCAuthorizationRequest{
-			Provider: domain.IdentityProviderTelegram, RedirectURI: handler.config.BaseURL+loginCallbackPath(provider.Provider),
+			Provider: domain.IdentityProviderTelegram, RedirectURI: handler.config.BaseURL + loginCallbackPath(provider.Provider),
 			State: state, Nonce: nonce, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
 			Scopes: []string{"openid", "profile"},
 		})
@@ -951,17 +967,21 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 }
 
 func (handler *Handler) matchesLoginBinding(provider LoginProviderConfig, challenge domain.OIDCLoginChallenge, callbackPath string) bool {
-	return challenge.Validate()==nil && challenge.Provider==provider.Provider && callbackPath==loginCallbackPath(provider.Provider) && challenge.Issuer==provider.issuer() && challenge.Audience==provider.audience()
+	return challenge.Validate() == nil && challenge.Provider == provider.Provider && callbackPath == loginCallbackPath(provider.Provider) && challenge.Issuer == provider.issuer() && challenge.Audience == provider.audience()
 }
-func (handler *Handler) exchangeLogin(ctx context.Context, provider LoginProviderConfig, code string, challenge domain.OIDCLoginChallenge, now time.Time) (domain.ExternalSubject,error) {
-	redirect:=handler.config.BaseURL+loginCallbackPath(provider.Provider)
-	if provider.Provider==domain.IdentityProviderYandex {
-		return provider.OAuthProvider.ExchangeAndVerify(ctx,ports.OAuthTokenRequest{Code:code,RedirectURI:redirect,PKCEVerifier:challenge.PKCEVerifier})
+func (handler *Handler) exchangeLogin(ctx context.Context, provider LoginProviderConfig, code string, challenge domain.OIDCLoginChallenge, now time.Time) (domain.ExternalSubject, error) {
+	redirect := handler.config.BaseURL + loginCallbackPath(provider.Provider)
+	if provider.Provider == domain.IdentityProviderYandex {
+		return provider.OAuthProvider.ExchangeAndVerify(ctx, ports.OAuthTokenRequest{Code: code, RedirectURI: redirect, PKCEVerifier: challenge.PKCEVerifier})
 	}
-	claims,err:=provider.OIDCProvider.ExchangeAndVerify(ctx,ports.OIDCTokenRequest{Provider:domain.IdentityProviderTelegram,Code:code,RedirectURI:redirect,PKCEVerifier:challenge.PKCEVerifier,ExpectedNonce:challenge.Nonce,Policy:provider.OIDCPolicy,Now:now})
-	if err!=nil{return domain.ExternalSubject{},err}
-	if err:=claims.Verify(provider.OIDCPolicy,challenge.Nonce,now);err!=nil{return domain.ExternalSubject{},err}
-	return domain.ExternalSubject{Provider:domain.IdentityProviderTelegram,Subject:claims.Subject},nil
+	claims, err := provider.OIDCProvider.ExchangeAndVerify(ctx, ports.OIDCTokenRequest{Provider: domain.IdentityProviderTelegram, Code: code, RedirectURI: redirect, PKCEVerifier: challenge.PKCEVerifier, ExpectedNonce: challenge.Nonce, Policy: provider.OIDCPolicy, Now: now})
+	if err != nil {
+		return domain.ExternalSubject{}, err
+	}
+	if err := claims.Verify(provider.OIDCPolicy, challenge.Nonce, now); err != nil {
+		return domain.ExternalSubject{}, err
+	}
+	return domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}, nil
 }
 
 func (handler *Handler) me(w http.ResponseWriter, request *http.Request) {
@@ -1324,12 +1344,17 @@ func (handler *Handler) securityEvent(
 		OccurredAt: handler.config.Clock.Now().UTC(),
 	}
 	if subject != nil {
-		event.Provider=subject.Provider
+		event.Provider = subject.Provider
 		event.SubjectFingerprint = domain.DigestSecret(subject.String())
 	}
-	if subject==nil {
-		event.Provider=loginCallbackProvider(request.URL.Path)
-		if event.Provider=="" { p,ok:=handler.loginConfig(domain.IdentityProvider(request.PathValue("provider")));if ok{event.Provider=p.Provider} }
+	if subject == nil {
+		event.Provider = loginCallbackProvider(request.URL.Path)
+		if event.Provider == "" {
+			p, ok := handler.loginConfig(domain.IdentityProvider(request.PathValue("provider")))
+			if ok {
+				event.Provider = p.Provider
+			}
+		}
 	}
 	return event
 }

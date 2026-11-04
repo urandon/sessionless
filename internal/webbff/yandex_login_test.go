@@ -38,12 +38,12 @@ func (p *yandexTestProvider) ExchangeAndVerify(_ context.Context, r ports.OAuthT
 	return p.subject, p.err
 }
 func yandexTestConfig(store ports.WebAuthStore, provider ports.OAuthIdentityProvider) webbff.Config {
-	return webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:provider,OAuthClientID:"yandex-client"}},
-BaseURL: "https://web.dev.sessionless.triborg.dev",
-Store: store,
-IDs: fixedIDs{},
-Clock: fixedClock{now: bffTestTime},
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),}
+	return webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: provider, OAuthClientID: "yandex-client"}},
+		BaseURL: "https://web.dev.sessionless.triborg.dev",
+		Store:   store,
+		IDs:     fixedIDs{},
+		Clock:   fixedClock{now: bffTestTime},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 func newYandexTestHandler(t *testing.T, store *memoryAuthStore, provider *yandexTestProvider) http.Handler {
 	t.Helper()
@@ -89,11 +89,20 @@ func TestYandexLoginBoundChallengeReplayTenantSwitchAndRevoke(t *testing.T) {
 	for _, path := range []string{webcontract.RouteTelegramLoginStart, webcontract.RouteOIDCCallback} {
 		r := httptest.NewRecorder()
 		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev"+path, nil))
-		want:=http.StatusMethodNotAllowed
-		if path==webcontract.RouteOIDCCallback{want=http.StatusSeeOther;if r.Header().Get("Location")!="/login?auth_error=access_denied"{t.Fatal("disabled Telegram callback did not deny")}}
-		if r.Code != want || p.exchanges!=0 || len(store.sessions)!=0 || len(store.challenges)!=0 {
+		want := http.StatusMethodNotAllowed
+		if path == webcontract.RouteOIDCCallback {
+			want = http.StatusSeeOther
+			if r.Header().Get("Location") != "/login?auth_error=access_denied" {
+				t.Fatal("disabled Telegram callback did not deny")
+			}
+		}
+		if r.Code != want || p.exchanges != 0 || len(store.sessions) != 0 || len(store.challenges) != 0 {
 			t.Fatalf("Telegram route %s status=%d", path, r.Code)
 		}
+	}
+	initialAudit := store.recordedSecurityEvents()
+	if len(initialAudit) != 1 || initialAudit[0].Provider != domain.IdentityProviderTelegram || initialAudit[0].Action != domain.WebSecurityLoginFailed || initialAudit[0].ReasonCode != "invalid_callback" {
+		t.Fatalf("disabled Telegram callback audit = %+v, want route-bound invalid-callback denial", initialAudit)
 	}
 	binding, state := startYandexLogin(t, h)
 	challenge := store.challenges[domain.DigestSecret(state)]
@@ -151,7 +160,7 @@ func TestYandexLoginBoundChallengeReplayTenantSwitchAndRevoke(t *testing.T) {
 	if after.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked session status=%d", after.Code)
 	}
-	for _, event := range store.recordedSecurityEvents() {
+	for _, event := range store.recordedSecurityEvents()[len(initialAudit):] {
 		if event.Provider != domain.IdentityProviderYandex {
 			t.Fatalf("audit provider=%q action=%q", event.Provider, event.Action)
 		}

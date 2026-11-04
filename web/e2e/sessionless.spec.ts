@@ -64,7 +64,10 @@ test.describe('authentication boundaries', () => {
     '/\\outside.example/path',
     '/sessions/unsafe\npath',
   ]) {
-    test(`uses the safe root return for ${JSON.stringify(candidate)}`, async ({ canonicalApi, page }) => {
+    test(`uses the safe root return for ${JSON.stringify(candidate)}`, async ({
+      canonicalApi,
+      page,
+    }) => {
       canonicalApi.auth = 'unauthenticated';
       await page.goto(`/login?return_to=${encodeURIComponent(candidate)}`);
       const form = page.locator('form[action="/auth/login/yandex/start"]');

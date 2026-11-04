@@ -79,19 +79,27 @@ func TestYandexLoginYDBFreshIdentityMembershipIsolationReplayAndRevocation(t *te
 	if err != nil {
 		t.Fatalf("compose actual Yandex adapter: %v", err)
 	}
-	h, err := webbff.New(webbff.Config{LoginProviders:[]webbff.LoginProviderConfig{{Provider:domain.IdentityProviderYandex,OAuthProvider:provider,OAuthClientID:"test-yandex-client"}},
-BaseURL: origin,
-Store: store,
-IDs: idgen.New(),
-Clock: clock,
-Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),})
+	h, err := webbff.New(webbff.Config{LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: provider, OAuthClientID: "test-yandex-client"}},
+		BaseURL: origin,
+		Store:   store,
+		IDs:     idgen.New(),
+		Clock:   clock,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatalf("compose normal Yandex BFF: %v", err)
 	}
 	start := func() (*http.Cookie, string) {
 		t.Helper()
 		r := httptest.NewRecorder()
-		req := func() *http.Request { u,_:=url.Parse(origin+webcontract.RouteYandexLoginStart+"?return_to=%2Fsessions");body:=u.Query().Encode();u.RawQuery="";r:=httptest.NewRequest(http.MethodPost,u.String(),strings.NewReader(body));r.Header.Set("Origin",u.Scheme+"://"+u.Host);r.Header.Set("Content-Type","application/x-www-form-urlencoded");return r }().WithContext(ctx)
+		req := func() *http.Request {
+			u, _ := url.Parse(origin + webcontract.RouteYandexLoginStart + "?return_to=%2Fsessions")
+			body := u.Query().Encode()
+			u.RawQuery = ""
+			r := httptest.NewRequest(http.MethodPost, u.String(), strings.NewReader(body))
+			r.Header.Set("Origin", u.Scheme+"://"+u.Host)
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			return r
+		}().WithContext(ctx)
 		h.ServeHTTP(r, req)
 		if r.Code != http.StatusSeeOther {
 			t.Fatalf("start status=%d body=%s", r.Code, r.Body.String())

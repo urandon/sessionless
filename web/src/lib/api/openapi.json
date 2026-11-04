@@ -9,7 +9,12 @@
         "security": [],
         "description": "Read-only enabled enums, labels and fixed same-origin POST start paths. No store/provider effects, credentials, subjects or configuration selectors. No query/body, no-store.",
         "responses": {
-          "200": { "description": "Configured login methods", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginMethods" } } } },
+          "200": {
+            "description": "Configured login methods",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/LoginMethods" } }
+            }
+          },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -19,9 +24,30 @@
         "operationId": "startLogin",
         "security": [],
         "description": "Exact Origin, browser-bound one-use state and S256; enabled fixed provider only. URL-encoded form only, 64KiB maximum; no query aliases or duplicate/unknown fields. No tenant enrollment or linking.",
-        "parameters": [{ "name": "provider", "in": "path", "required": true, "schema": { "type": "string", "enum": ["yandex", "telegram"] } }],
-        "requestBody": { "required": true, "content": { "application/x-www-form-urlencoded": { "schema": { "type": "object", "additionalProperties": false, "properties": { "return_to": { "type": "string" } } } } } },
-        "responses": { "303": { "description": "Pinned provider authorization redirect" }, "default": { "$ref": "#/components/responses/Error" } }
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "enum": ["yandex", "telegram"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "return_to": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "303": { "description": "Pinned provider authorization redirect" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current": {
@@ -622,15 +648,31 @@
     },
     "schemas": {
       "LoginMethod": {
-        "type": "object", "additionalProperties": false,
+        "type": "object",
+        "additionalProperties": false,
         "required": ["provider", "label", "start_path"],
         "properties": {
           "provider": { "type": "string", "enum": ["yandex", "telegram"] },
           "label": { "type": "string", "enum": ["Yandex", "Telegram"] },
-          "start_path": { "type": "string", "enum": ["/auth/login/yandex/start", "/auth/login/telegram/start"] }
+          "start_path": {
+            "type": "string",
+            "enum": ["/auth/login/yandex/start", "/auth/login/telegram/start"]
+          }
         }
       },
-      "LoginMethods": { "type": "object", "additionalProperties": false, "required": ["methods"], "properties": { "methods": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "$ref": "#/components/schemas/LoginMethod" } } } },
+      "LoginMethods": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["methods"],
+        "properties": {
+          "methods": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": { "$ref": "#/components/schemas/LoginMethod" }
+          }
+        }
+      },
       "SearchConsentDiscoveryV1": {
         "type": "object",
         "additionalProperties": false,

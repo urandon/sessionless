@@ -134,7 +134,9 @@ dependency acquisition; source/fixture verification does not grant that
 authority. Go builds continue to reuse repository Go caches.
 `dockerless-web-up` requires an already installed `lsof` for numeric listener
 ownership observation, `SESSIONLESS_ENVIRONMENT=local`,
-an explicit `WEB_BASE_URL` and `WEB_LOGIN_PROVIDER`, and an already built binary.
+an explicit `WEB_BASE_URL` and `WEB_LOGIN_PROVIDERS`, and an already built binary.
+The provider list is exactly `yandex`, `telegram`, or `yandex,telegram`, with no
+default; remove the retired singular variable even if it was set to empty.
 `WEB_PORT` defaults to 8083 and overrides shared `PORT` **only for this child**,
 so a control-api setting such as `PORT=8080` cannot put both processes on 8080.
 An occupied foreign port, exited child or changed listener fails readiness;
@@ -142,7 +144,7 @@ another service's successful `/readyz` cannot qualify this BFF.
 The BFF retains its existing listen-address behavior; this wrapper does not add
 a firewall, reverse proxy, TLS terminator or network isolation.
 
-For the MVP route select `WEB_LOGIN_PROVIDER=yandex`, the registered HTTPS
+For the Yandex-only route select `WEB_LOGIN_PROVIDERS=yandex`, the registered HTTPS
 `WEB_BASE_URL`/callback and existing Yandex client, session/cursor/identity keys,
 storage and queue settings documented in [development](development.md) and
 [Web BFF](web-bff.md). Keep secrets outside these examples. HTTPS termination
@@ -150,6 +152,14 @@ and allowed host exposure must already be explicitly configured; this workflow
 does not configure networking or substitute the Telegram/OIDC test fixture.
 Canonical membership still comes from the existing admitted bootstrap, not
 from merely logging in. Build/start/readiness is not browser or model proof.
+For dual login, configure both complete clients and their separate secrets;
+Terraform uses the matching `web_login_providers` list. The `/login` chooser
+discovers `GET /auth/login/methods` and submits exact-Origin forms to
+`POST /auth/login/{yandex|telegram}/start`; old GET starts are not aliases.
+Keep the existing fixed callback paths and co-land gateway/UI/BFF changes as
+described in [the operator migration](development.md#ordinary-login-provider-configuration).
+This does not register or deploy either client, automatically link accounts, or
+complete the linking/settings work in #172/#239/#240.
 
 For owner-local inference, the [operator workflow](development.md#explicit-local-profile-installation-operator-tool)
 must first produce one genuine private installation and its accepted receipt.

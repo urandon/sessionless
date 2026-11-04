@@ -26,9 +26,9 @@ func (i compactionReadBarrierIssuer) AuthenticateAttemptOperationObservation(g p
 	return v, err
 }
 
-func recordedCompactionEffect(t *testing.T) (*compactionSourceFixture, *localCompactionGenerationV1, ports.AttemptOperationObservationGrantV1, ports.AuthenticatedAttemptOperationObservationV1) {
+func recordedCompactionEffect(t *testing.T, prebuild localRuntimeActualPrebuild) (*compactionSourceFixture, *localCompactionGenerationV1, ports.AttemptOperationObservationGrantV1, ports.AuthenticatedAttemptOperationObservationV1) {
 	t.Helper()
-	f, g, _ := preparedCompactionEffectFixture(t, false)
+	f, g, _ := preparedCompactionEffectFixture(t, false, prebuild)
 	r, err := f.store.ReserveAttemptOperation(t.Context(), ports.ReserveAttemptOperationRequestV1{Operation: g.operation})
 	if err != nil || r.Capability == nil {
 		t.Fatalf("actual reserve: %v", err)
@@ -80,7 +80,7 @@ func TestLocalCompactionEffectReadCancellationBeforeBookkeeping(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, grant, expected := recordedCompactionEffect(t)
+				f, g, grant, expected := recordedCompactionEffect(t, localRuntimeActualPrebuild{})
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				authenticated := make(chan struct{})

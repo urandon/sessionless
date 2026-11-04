@@ -136,7 +136,16 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 					peer.mu.Unlock()
 				}
 				if result, e := a.RunModelStep(t.Context()); e != nil || !result.Model.SendAttempted {
-					t.Fatalf("A step%d err=%v attempted=%t", i, e, result.Model.SendAttempted)
+					compactionSent, compactionOutcome := false, domain.AttemptOperationOutcomeV1("")
+					var compactionRemaining time.Duration
+					if result.Compaction != nil {
+						compactionSent = result.Compaction.SendAttempted
+						compactionOutcome = result.Compaction.Observation.Observation.Outcome
+						if result.Compaction.Observation.Version != 0 {
+							compactionRemaining = time.Until(result.Compaction.Observation.Reservation.Operation.Deadline)
+						}
+					}
+					t.Fatalf("A step%d err=%v model_attempted=%t model_outcome=%s compaction_present=%t compaction_attempted=%t compaction_outcome=%s compaction_deadline_remaining=%s", i, e, result.Model.SendAttempted, result.Model.Observation.Observation.Outcome, result.Compaction != nil, compactionSent, compactionOutcome, compactionRemaining)
 				}
 			}
 			h, p := prepareTerminalPublication(t, a, blobs.terminalSessionBlobs)

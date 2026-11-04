@@ -162,7 +162,7 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 		var limits []ydbstore.LocalCompactionConnectedLimits
 		if compact {
 			name, text, steps = "two_compactions", strings.Repeat("x", 4096), 3
-			limits = []ydbstore.LocalCompactionConnectedLimits{{InputTokens: 8192, NetworkOperation: 20 * time.Second}}
+			limits = []ydbstore.LocalCompactionConnectedLimits{nonExpiryCompactionConnectedLimits(8192)}
 		}
 		t.Run(name, func(t *testing.T) {
 			session, seed, peer, blobs := newTerminalPublicationSession(t, "", text, limits...)
@@ -184,7 +184,7 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 				observed = append(observed, result.Model.Observation)
 			}
 			if compact {
-				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, steps)
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, p := prepareTerminalPublication(t, session, blobs)
 			before, stats := seed.TerminalPublicationRun(t), seed.Stats()
@@ -224,49 +224,6 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 				t.Fatal("Close retained prepared buffers")
 			}
 		})
-	}
-}
-
-// Read-only checks of the actual authenticated returns and persisted SQL
-// observations. Completing quickly does not refund any original reservation.
-// No permission, operation, price or deadline is manufactured by this helper.
-func assertOriginalCompactionActiveBudget(t *testing.T, seed *ydbstore.LocalSessionConnectedSeed, observed []ports.AuthenticatedAttemptOperationObservationV1, modelSteps int) {
-	t.Helper()
-	const perOperation = 20 * time.Second
-	const originalActiveLimit = 120 * time.Second
-	profile := seed.OriginalProfileReceipt().Profile
-	if profile.Limits.MaxActiveDuration != originalActiveLimit || profile.Limits.MaxNetworkOperationDuration != perOperation || seed.Profile.Limits.OperationTimeout != perOperation {
-		t.Fatal("positive fixture changed original active allowance or lost its pre-intake duration")
-	}
-	want := 2*modelSteps - 1
-	persisted := seed.PersistedCompactionObservations(t)
-	if len(observed) != want || len(persisted) != want {
-		t.Fatalf("original chain incomplete: returned=%d persisted=%d want=%d", len(observed), len(persisted), want)
-	}
-	var active time.Duration
-	models, compactions := 0, 0
-	for i, value := range observed {
-		r, o := value.Reservation, value.Observation
-		op := r.Operation
-		kind := domain.AttemptOperationModelV1
-		if i%2 == 1 {
-			kind = domain.AttemptOperationCompactionV1
-		}
-		if value.Validate() != nil || r.Validate() != nil || op.Sequence != uint64(i+1) || op.Scope != observed[0].Reservation.Operation.Scope || op.Kind != kind || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || !reflect.DeepEqual(o, persisted[i]) || op.Debit.ActiveDuration != perOperation {
-			t.Fatalf("original admitted operation mismatch at sequence=%d kind=%s duration=%s", op.Sequence, op.Kind, op.Debit.ActiveDuration)
-		}
-		active += op.Debit.ActiveDuration
-		if r.AggregateDebit.ActiveDuration != active || active > originalActiveLimit {
-			t.Fatalf("non-refundable active debit mismatch sequence=%d aggregate=%s summed=%s limit=%s", op.Sequence, r.AggregateDebit.ActiveDuration, active, originalActiveLimit)
-		}
-		if kind == domain.AttemptOperationCompactionV1 {
-			compactions++
-		} else {
-			models++
-		}
-	}
-	if models != modelSteps || compactions != modelSteps-1 || active != time.Duration(want)*perOperation || modelSteps == 3 && active != 100*time.Second {
-		t.Fatalf("original chain/count/budget mismatch MODEL=%d COMPACTION=%d active=%s", models, compactions, active)
 	}
 }
 

@@ -42,9 +42,9 @@ func newNativeManagedAdmissionGraph(t *testing.T) nativeManagedAdmissionGraph {
 		defer stop()
 		for _, table := range []string{
 			"audit_events", "run_explanation_heads_v1", "worker_jobs",
-			"quota_expiry", "quota_expiry_v2", "quota_reservations",
+			"quota_expiry_v2", "quota_reservations",
 			"subscription_scheduler_slots", "tenant_scheduler_counters",
-			"dispatch_ready", "dispatch_ready_v2", "dispatch_outbox",
+			"dispatch_ready_v2", "dispatch_outbox",
 			"artifact_manifests_by_run", "artifact_manifests", "attempts",
 			"runs_by_session", "run_idempotency", "runs", "subscription_connections",
 			"session_snapshots", "session_event_idempotency", "session_events",
@@ -126,14 +126,12 @@ func newNativeManagedAdmissionGraph(t *testing.T) nativeManagedAdmissionGraph {
 	return g
 }
 
-var nativeManagedAdmissionEffectTables = []string{"worker_jobs", "quota_reservations", "quota_expiry", "quota_expiry_v2", "subscription_scheduler_slots", "tenant_scheduler_counters", "run_explanation_heads_v1", "audit_events"}
+var nativeManagedAdmissionEffectTables = []string{"worker_jobs", "quota_reservations", "quota_expiry_v2", "subscription_scheduler_slots", "tenant_scheduler_counters", "run_explanation_heads_v1", "audit_events"}
 
-// Physical legacy tables remain during compatible code rollout, but successful
-// admission and replay must not populate their retired discovery projections.
-func nativeManagedAdmissionCommittedCount(table string) uint64 {
-	if table == "quota_expiry" {
-		return 0
-	}
+// Each enumerated active table owns one committed admission/replay effect.
+// Legacy discovery tables were physically retired by migrations 00126-00129;
+// their absence is checked by the separate native retirement gate.
+func nativeManagedAdmissionCommittedCount(_ string) uint64 {
 	return 1
 }
 

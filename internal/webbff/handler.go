@@ -1086,6 +1086,11 @@ func (handler *Handler) switchTenant(w http.ResponseWriter, request *http.Reques
 		return
 	}
 	handler.setSessionCookies(w, rawSession, rawCSRF)
+	if handler.config.IdentityAccounts != nil {
+		// Successful rotation invalidated the original operation's session.
+		// Discard only its browser binding; do not invent cancellation/erasure.
+		http.SetCookie(w, clearCookie(identityOperationCookieName, true))
+	}
 	response, err := handler.identityResponse(request.Context(), rotated.Session)
 	if err != nil {
 		handler.writeError(w, request, err)
@@ -1109,6 +1114,11 @@ func (handler *Handler) logout(w http.ResponseWriter, request *http.Request) {
 	}
 	http.SetCookie(w, clearCookie(webcontract.SessionCookieName, true))
 	http.SetCookie(w, clearCookie(webcontract.CSRFCookieName, false))
+	if handler.config.IdentityAccounts != nil {
+		// Revoke returned successfully. Unknown replies above must not clear
+		// this binding or claim a terminal operation result.
+		http.SetCookie(w, clearCookie(identityOperationCookieName, true))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

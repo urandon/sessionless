@@ -113,6 +113,21 @@ content-free audit are atomic; unknown storage/commit/cancellation results do
 not manufacture a receipt. Provider-unavailable does not mean an OAuth code was
 unused or can be exchanged again.
 
+The account-settings page is `/account/login-methods`, with at most one opaque
+`operation_id` query selector. It is a presentation client: enabled/linked/current
+rows, remaining method and allowed actions come from the server, never browser
+inference. Refresh and re-entry read status only. A provider roundtrip is not
+confirmation; only a separate local Confirm action may request the change.
+Unknown responses and the minimal `outcome_unavailable` 410 cannot authorize
+automatic retries. No provider subject, secret or protocol payload belongs in
+local routing, browser storage or user-facing errors.
+
+Successful logout and tenant rotation clear the optional sensitive-operation
+browser binding after the actual session invalidation succeeds. A subsequent
+projection read failure does not undo that cleanup. Unknown/denied mutations
+and ordinary new LOGIN do not clear it; the nil-service profile is unchanged.
+Clearing a cookie does not claim cancellation or destruction of durable state.
+
 ## Telegram OIDC flow
 
 When Telegram is selected, the flow is Authorization Code with PKCE `S256`. Telegram documents

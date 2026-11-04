@@ -13,6 +13,10 @@ describe('AppShell', () => {
     );
     expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Workers' })).toHaveAttribute('href', '/workers');
+    expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute(
+      'href',
+      '/account/login-methods',
+    );
     expect(screen.getByRole('main')).toHaveAttribute('tabindex', '-1');
   });
 });

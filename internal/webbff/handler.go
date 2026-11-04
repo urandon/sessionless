@@ -989,7 +989,11 @@ func (handler *Handler) matchesLoginBinding(challenge domain.OIDCLoginChallenge,
 	if challenge.Provider == "" {
 		return handler.config.Provider != nil && callbackPath == webcontract.RouteOIDCCallback
 	}
-	return challenge.Provider == handler.loginProvider() && challenge.Issuer == handler.loginIssuer() && challenge.Audience == handler.loginAudience()
+	expectedCallback := webcontract.RouteOIDCCallback
+	if handler.config.OAuthProvider != nil {
+		expectedCallback = webcontract.RouteLoginCallback
+	}
+	return callbackPath == expectedCallback && challenge.Provider == handler.loginProvider() && challenge.Issuer == handler.loginIssuer() && challenge.Audience == handler.loginAudience()
 }
 
 func (handler *Handler) exchangeLogin(ctx context.Context, code string, challenge domain.OIDCLoginChallenge, now time.Time) (domain.ExternalSubject, error) {

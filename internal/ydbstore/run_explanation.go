@@ -144,21 +144,10 @@ func (store *Store) ReadRunExplanationV1(ctx context.Context, auth ports.RunExpl
 		tx := state.(*stateTx)
 		query := explanationBudgetQuery{tx: tx.sqlTx, budget: budget}
 		tx.explanationQuery = query
-		// #1 transaction clock, #2 exact Web session, #3 exact membership.
-		session, at, err := readExplanationSession(ctx, query, auth.WebSessionDigest)
-		// Preserve the pure port's expected-identity check before expiry and
-		// membership; the rated port has no caller-selected identity context.
-		if (err == nil || errors.Is(err, domain.ErrWebSessionExpired)) && (session.UserID != auth.UserID || session.ActiveTenantID != auth.TenantID) {
-			return domain.ErrWebSessionRevoked
-		}
+		// The same resource transaction checks the selected cookie format,
+		// membership and (in private V2) current authenticating identity.
+		session, _, at, err := store.readExplanationAuthorization(ctx, query, auth.WebSessionDigest, &auth)
 		if err != nil {
-			return err
-		}
-		membership, err := readExplanationMembership(ctx, query, session, at)
-		if err != nil {
-			return err
-		}
-		if err := authorizeExplanation(session, membership, auth, at); err != nil {
 			return err
 		}
 		result, err = readExplanationResource(ctx, tx, session.UserID, runID, at)

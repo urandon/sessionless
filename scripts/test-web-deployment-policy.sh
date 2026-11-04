@@ -29,11 +29,13 @@ require_regex() {
 require_literal "$web_module" 'provision_policy { min_instances = 0 }'
 require_literal "$web_module" 'members      = ["serviceAccount:${var.gateway_service_account_id}"]'
 require_literal "$web_module" 'container_id       = yandex_serverless_container.web.id'
-require_literal "$web_module" 'WEB_BASE_URL                = local.origin'
-require_literal "$web_module" 'SESSIONLESS_ENVIRONMENT     = "cloud-dev"'
+require_regex "$web_module" 'WEB_BASE_URL[[:space:]]*=[[:space:]]*local\.origin'
+require_regex "$web_module" 'SESSIONLESS_ENVIRONMENT[[:space:]]*=[[:space:]]*"cloud-dev"'
 require_literal "$web_module" 'key                  = "session-cursor-hmac-key"'
 require_literal "$web_module" 'key                  = "session-id-hmac-key"'
 require_regex "$web_module" 'WEB_LOGIN_PROVIDERS[[:space:]]*=[[:space:]]*var\.login_providers'
+require_regex "$web_module" 'WEB_IDENTITY_VERSION[[:space:]]*=[[:space:]]*var\.identity_version'
+require_regex "$web_module" 'WEB_IDENTITY_SENSITIVE_OPERATIONS[[:space:]]*=[[:space:]]*tostring\(var\.identity_sensitive_operations\)'
 require_literal "$web_module" 'YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id'
 require_literal "$web_module" 'TELEGRAM_OIDC_CLIENT_ID = var.telegram_oidc_client_id'
 require_literal "$web_module" 'YANDEX_LOGIN_CLIENT_SECRET = "yandex-login-client-secret"'
@@ -57,6 +59,8 @@ require_literal "$web_variables" 'contains(["yandex", "telegram", "yandex,telegr
 require_literal "$web_variables" '!contains(split(",", var.login_providers), "yandex") ||'
 require_literal "$web_variables" '!contains(split(",", var.login_providers), "telegram") ||'
 require_regex "$cloud_root" 'login_providers[[:space:]]*=[[:space:]]*var\.web_login_providers'
+require_regex "$cloud_root" 'identity_version[[:space:]]*=[[:space:]]*var\.web_identity_version'
+require_regex "$cloud_root" 'identity_sensitive_operations[[:space:]]*=[[:space:]]*var\.web_identity_sensitive_operations'
 for retired in '"/auth/login/start"' '"/auth/telegram/start"' '"oidc-client-secret"'; do
   if grep -F "$retired" "$web_module" >/dev/null; then
     printf '%s\n' 'retired login route/shared-secret alias remains' >&2; exit 1

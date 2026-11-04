@@ -113,23 +113,25 @@ resource "yandex_serverless_container" "web" {
   image {
     url = var.image_ref
     environment = merge({
-      SESSIONLESS_ENVIRONMENT     = "cloud-dev"
-      WEB_BASE_URL                = local.origin
-      WEB_OBJECT_STORAGE_ORIGIN   = local.object_storage_origin
-      WEB_MAX_UPLOAD_BYTES        = tostring(var.max_upload_bytes)
-      WEB_ALLOWED_MCP_SERVERS     = join(",", var.allowed_mcp_servers)
-      WEB_LOGIN_PROVIDERS         = var.login_providers
-      YDB_CONNECTION_STRING       = var.ydb_connection_string
-      YDB_METADATA_CREDENTIALS    = "1"
-      S3_ENDPOINT                 = "https://storage.yandexcloud.net"
-      S3_REGION                   = "ru-central1"
-      S3_BUCKET                   = var.artifact_bucket_name
-      S3_FORCE_PATH_STYLE         = "true"
-      S3_IAM_METADATA_CREDENTIALS = "true"
-      QUEUE_ENDPOINT              = "https://message-queue.api.cloud.yandex.net"
-      QUEUE_REGION                = "ru-central1"
-      SCHEDULER_WAKE_QUEUE_URL    = var.scheduler_wake_queue_url
-      DEPLOYMENT_IMAGE            = var.image_ref
+      SESSIONLESS_ENVIRONMENT           = "cloud-dev"
+      WEB_BASE_URL                      = local.origin
+      WEB_OBJECT_STORAGE_ORIGIN         = local.object_storage_origin
+      WEB_MAX_UPLOAD_BYTES              = tostring(var.max_upload_bytes)
+      WEB_ALLOWED_MCP_SERVERS           = join(",", var.allowed_mcp_servers)
+      WEB_LOGIN_PROVIDERS               = var.login_providers
+      WEB_IDENTITY_VERSION              = var.identity_version
+      WEB_IDENTITY_SENSITIVE_OPERATIONS = tostring(var.identity_sensitive_operations)
+      YDB_CONNECTION_STRING             = var.ydb_connection_string
+      YDB_METADATA_CREDENTIALS          = "1"
+      S3_ENDPOINT                       = "https://storage.yandexcloud.net"
+      S3_REGION                         = "ru-central1"
+      S3_BUCKET                         = var.artifact_bucket_name
+      S3_FORCE_PATH_STYLE               = "true"
+      S3_IAM_METADATA_CREDENTIALS       = "true"
+      QUEUE_ENDPOINT                    = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION                      = "ru-central1"
+      SCHEDULER_WAKE_QUEUE_URL          = var.scheduler_wake_queue_url
+      DEPLOYMENT_IMAGE                  = var.image_ref
     }, local.login_client_environment)
   }
   metadata_options {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/webauthconfig"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -19,6 +20,9 @@ import (
 func main() {
 	if len(os.Args) != 1 {
 		fatal(errors.New("web bootstrap accepts no command-line arguments; use documented environment values and stdin confirmation"))
+	}
+	if err := requireBootstrapIdentityV1(os.LookupEnv); err != nil {
+		fatal(err)
 	}
 	grant, err := grantFromEnvironment(time.Now().UTC())
 	if err != nil {
@@ -66,6 +70,17 @@ func main() {
 	}); err != nil {
 		fatal(err)
 	}
+}
+
+func requireBootstrapIdentityV1(lookup func(string) (string, bool)) error {
+	config, err := webauthconfig.RuntimeFromEnvironment(lookup)
+	if err != nil {
+		return err
+	}
+	if config.Version != "1" {
+		return errors.New("web bootstrap is retired in identity version 2; it cannot grant or rewrite linked identities")
+	}
+	return nil
 }
 
 // Optional explicit provisioning is privileged cloud-dev bootstrap before

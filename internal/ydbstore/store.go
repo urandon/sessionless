@@ -58,8 +58,8 @@ type Options struct {
 
 type Store struct {
 	attachedResourceGenerations *attachedresourcegeneration.Registry
-	// Private until the complete V2 writer/consumer cutover is implemented.
-	// No public option or serving configuration can activate a partial rollout.
+	// Immutable after NewWebIdentityRuntimeV2 returns; nil is the explicit
+	// pre-cutover V1 Store. Never changed in response to a request or flag reload.
 	webIdentityV2                      *identityConfigurationV2
 	sessionDeletionBlobReader          SessionDeletionBlobReader
 	localBootstrap                     *LocalOwnedStoreBootstrapV1

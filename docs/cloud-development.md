@@ -381,6 +381,19 @@ is not a fallback. For Telegram-only use `WEB_LOGIN_PROVIDERS=telegram`,
 and `telegram_oidc_client_id`, with the existing registered callback
 `https://web.dev.sessionless.triborg.dev/auth/telegram/callback`. Wildcards,
 HTTP aliases and direct container URLs are not allowed for either provider.
+
+Also pin `web_identity_version` and `web_identity_sensitive_operations` with the
+image/configuration. The defaults explicitly render `WEB_IDENTITY_VERSION=1`
+and `WEB_IDENTITY_SENSITIVE_OPERATIONS=false`; V2 renders `2` and the exact
+selected gate. A V2 gate of false preserves V2 ordinary login and retained
+receipts, rather than selecting V1. These inputs are not a data/schema cutover
+attestation. The separate runtime module's chat writer remains V1; a targeted
+Web plan does not stop old control slots, direct revision URLs, bootstrap or
+private callers. Before admitting V2, follow the [all-writer retirement and
+maintenance procedure](development.md#immutable-identity-runtime-and-retired-writers),
+then actual registered-client compatibility/canary. Telegram Web login does not
+require re-enabling Telegram chat. No Terraform mock plan authorizes apply,
+secret creation, shared migrations or live provider calls.
 Provider login alone grants no tenant membership; use a validated invitation or
 the [audited cloud-dev bootstrap](web-bff.md#audited-cloud-development-bootstrap).
 

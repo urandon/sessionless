@@ -17,7 +17,7 @@ const identityOperationRowSQLV2 = `SELECT SUBSTRING(CAST(record AS String),0,819
 // This private configuration is supplied by the trusted installation, never
 // reconstructed from an operation or browser request. It does not fence other
 // deployment revisions: the design's freeze/drain/exclusive-writer cutover is
-// still mandatory. No serving caller or V2 mode is installed by this file.
+// still mandatory. NewWebIdentityRuntimeV2 installs it before publication.
 type identityConfigurationV2 struct {
 	ManifestDigest             domain.SecretDigest
 	Providers                  []domain.IdentityProviderBindingV2

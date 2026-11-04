@@ -1193,6 +1193,60 @@ revision-aware V2 readers and tombstones, disables new operations, and retains
 forward schema/receipts. It never restores V1 readers, TTL on `expires_at`, old
 writers that omit retention, a destructive Down, or provider-token replay.
 
+### Immutable identity runtime and retired writers
+
+`cmd/web-bff` requires exact `WEB_IDENTITY_VERSION=1` (pre-cutover) or `2`.
+V2 also requires exact `WEB_IDENTITY_SENSITIVE_OPERATIONS=true` or `false`;
+V1 accepts absent or exact `false`, never `true`. Empty, padded, aliased or
+unknown values fail before dependencies open. The local stand explicitly selects
+V1/false unless the operator supplies another exact value. The version is never
+autodetected from JSON or inferred from a callback/cookie.
+
+V2 startup uses `ydbstore.NewWebIdentityRuntimeV2` to construct a new immutable
+Store and paired account service before publishing either. The SAME Store reaches
+BFF, session API, ingress, compute/explanation/consent/canonical readers. Ordinary
+login and proof exchange reuse the SAME actual adapter instances and existing
+`SESSION_API_ID_HMAC_KEY`; no new key/table/sidecar or public Store setter exists.
+`WebIdentityManifestDigestV2` derives the operator maintenance pin from the exact
+ordered provider bindings and accepted versioned proof policy, excluding secrets,
+HMAC, time, source commit and the sensitive-operations gate. A digest or version
+does not prove the external schema/data/writer cutover described above.
+
+V2 sensitive OFF keeps V2 ordinary login, tombstone/revision authorization,
+methods and same-user retained receipt reads, safe cancellation and terminal
+receipt-only repeated confirmation. New Start/Continue/proof/pending Confirm
+remain denied. Turning OFF never switches the Store to V1 or unmounts the service.
+Changing bindings/proof configuration still needs the accepted freeze/drain;
+OFF is not evidence that old directly invokable revisions have stopped.
+
+Writer inventory for this rollout:
+
+| Writer/consumer | V2 disposition |
+| --- | --- |
+| Ordinary resolver/login/challenge/session/switch/logout | Existing strict V2 branches through the one new Store; no V1 fallback or automatic membership |
+| Account proofs/link/unlink/outcomes | Same paired Store/service, original transaction and expiry bounds |
+| Direct Web compute, explanation, search-consent, canonical transaction readers | Same Store, existing current identity/revision plus membership/session/participant checks |
+| `Store.Enroll` | Retired in V2; explicit deny, no production caller admitted |
+| `cmd/web-bootstrap`, both subject and no-subject variants | Retired in V2; canonical mode validation/refusal before grant/stdin/DB; V1 bootstrap must be completed before cutover |
+| `cmd/control-api` Telegram chat webhook → `EnsureTelegramIdentity` | Retired in V2; configured webhook plus V2 refuses startup before DB/Bot/queue; no silent webhook removal. Attached-only/health control remains allowed |
+| Older binaries/revisions/private invokers | Must actually be stopped/drained by the operator; new command guards cannot fence old code |
+
+Terraform's `web_identity_version` and `web_identity_sensitive_operations`
+reach the Web container as exact strings (defaults explicitly select V1/false).
+The separate runtime module still declares legacy chat V1; a Web-only plan
+does NOT retire either control slot, its old revisions, bootstrap jobs or private
+callers. Keep those writers stopped through maintenance and admit only the
+V2 Web runtime. Telegram **login** is distinct from deferred Telegram **chat**;
+retiring the latter does not remove the former or disable attached workers.
+Creating new enrollment/bootstrap features is not a prerequisite for linking
+an already provisioned account. Do not claim those retired writers are V2 capable.
+
+No constructor performs SQL, migrations, inventory, repair, registration or
+provider probes. Complete the accepted schema130/131, bounded maintenance,
+ZERO-legacy correspondence and all-writer retirement under separate authority
+before admitting V2 traffic. Native HTTP/SQL fixtures prove only controlled
+integration, not real registered-client/browser compatibility or deployment.
+
 ### Ordinary login provider configuration
 
 Set `WEB_LOGIN_PROVIDERS` explicitly to exactly `yandex`, `telegram`, or

@@ -40,10 +40,13 @@ resource "yandex_serverless_container" "control" {
       DEFAULT_COMPUTE_PROVIDER = "deterministic"
       DEPLOYMENT_IMAGE         = var.images["control-${each.key}"]
       TELEGRAM_SOURCE_ID       = "bot-primary"
-      QUEUE_ENDPOINT           = "https://message-queue.api.cloud.yandex.net"
-      QUEUE_REGION             = "ru-central1"
-      SCHEDULER_WAKE_QUEUE_URL = var.scheduler_wake_queue_url
-      DELIVERY_QUEUE_URL       = var.delivery_queue_url
+      # Legacy chat ingress must be retired before the separate Web V2 cutover.
+      WEB_IDENTITY_VERSION              = "1"
+      WEB_IDENTITY_SENSITIVE_OPERATIONS = "false"
+      QUEUE_ENDPOINT                    = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION                      = "ru-central1"
+      SCHEDULER_WAKE_QUEUE_URL          = var.scheduler_wake_queue_url
+      DELIVERY_QUEUE_URL                = var.delivery_queue_url
     })
   }
   metadata_options {

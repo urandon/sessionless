@@ -180,6 +180,8 @@ and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
 | `PORT` | Serverless platform listen port; takes precedence over `WEB_PORT` when set |
 | `WEB_OBJECT_STORAGE_ORIGIN` | Exact browser-facing capability origin; required with the Web API, HTTPS except loopback HTTP in `local` |
 | `WEB_LOGIN_PROVIDERS` | Required exact ordered value `yandex`, `telegram`, or `yandex,telegram`; no default, spaces, duplicates or reversed list |
+| `WEB_IDENTITY_VERSION` | Required exact `1` before cutover or `2` after the separately accepted writer/data transition; never auto-detected |
+| `WEB_IDENTITY_SENSITIVE_OPERATIONS` | Required exact `true`/`false` in V2; V1 permits absent or `false` only. OFF preserves V2 login/currentness/receipts, denying new changes |
 | `YANDEX_LOGIN_CLIENT_ID` | Registered Yandex application client ID, required when selected |
 | `YANDEX_LOGIN_CLIENT_SECRET` | Private Yandex client secret, required when selected |
 | `YANDEX_LOGIN_AUTHORIZATION_ENDPOINT`, `YANDEX_LOGIN_TOKEN_ENDPOINT`, `YANDEX_LOGIN_INFO_ENDPOINT` | Optional local-loopback fixture overrides; public endpoints are pinned by default |
@@ -221,6 +223,14 @@ chooser/UI and BFF discovery/POST changes. See the
 These source/runbook changes do not register clients or deploy secrets. Ordinary
 login does not complete dual-proof linking (#172/#239) or settings (#240), and
 never links equal provider subjects/emails or creates tenant membership.
+
+Normal V2 startup now mounts the paired account service, using the same Store,
+actual ordinary/proof adapters and existing identity HMAC key. It is not a
+cutover attestation. Before serving V2, follow the
+[immutable runtime/writer inventory](development.md#immutable-identity-runtime-and-retired-writers)
+and all-ingress maintenance procedure. Legacy bootstrap/enrollment and Telegram
+chat writers are explicitly retired, not silently converted. Turning sensitive
+operations OFF never restores V1 readers or erases existing receipts.
 
 `oidc-fake` is a Go-only local fixture. It uses the `OIDC_FIXTURE_*` variables,
 generates one ephemeral RSA key per process, supports one-time authorization

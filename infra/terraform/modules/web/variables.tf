@@ -47,6 +47,24 @@ variable "login_providers" {
     error_message = "login_providers must be yandex, telegram, or yandex,telegram."
   }
 }
+variable "identity_version" {
+  description = "Identity codec version. Selecting 2 does not establish schema/data or old-writer retirement."
+  type        = string
+  default     = "1"
+  validation {
+    condition     = contains(["1", "2"], var.identity_version)
+    error_message = "identity_version must be exactly 1 or 2."
+  }
+}
+variable "identity_sensitive_operations" {
+  description = "New link/unlink operations only; false retains V2 login and receipts."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.identity_sensitive_operations || var.identity_version == "2"
+    error_message = "Sensitive identity operations require identity_version 2."
+  }
+}
 variable "yandex_login_client_id" {
   description = "Non-secret Yandex OAuth client identifier, required only when selected."
   type        = string

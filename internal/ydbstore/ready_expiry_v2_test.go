@@ -203,10 +203,12 @@ func readyExpiryNoLegacy(t *testing.T, queries []string) {
 // Pure count-policy control for BOTH native positive loops; this does not
 // enable their opt-in gate or open a database. Keep expected tables explicit
 // so adding/removing a table cannot silently inherit a positive count.
+// Retired tables are absent after 00126-00129, as the native retirement gate
+// verifies; they are not active effect tables with an expected zero count.
 func TestReadyExpiryCommittedNativeEffectCounts(t *testing.T) {
 	want := map[string]uint64{
 		"worker_jobs": 1, "quota_reservations": 1,
-		"quota_expiry": 0, "quota_expiry_v2": 1,
+		"quota_expiry_v2":              1,
 		"subscription_scheduler_slots": 1, "tenant_scheduler_counters": 1,
 		"run_explanation_heads_v1": 1, "audit_events": 1,
 	}

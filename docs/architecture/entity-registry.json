@@ -1547,12 +1547,14 @@
             "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 9
+          "total": 11
         },
         "writers": {
           "paths": [
@@ -1598,12 +1600,13 @@
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 7
+          "total": 8
         },
         "writers": {
           "paths": [
@@ -2221,19 +2224,21 @@
           "paths": [
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "identity-web",
@@ -3982,12 +3987,13 @@
             "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 13
+          "total": 14
         },
         "writers": {
           "paths": [
@@ -4140,9 +4146,10 @@
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_outcome_v2.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "audit-evidence",
@@ -4177,14 +4184,16 @@
             "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
             "internal/ydbstore/web_search_consent_store.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 11
+          "total": 13
         },
         "writers": {
           "paths": [

@@ -496,8 +496,9 @@ type OIDCIdentityClaims struct {
 type WebSecurityAuditAction string
 
 const (
-	WebSecurityLoginFailed  WebSecurityAuditAction = "web.login.failed"
-	WebSecurityCSRFRejected WebSecurityAuditAction = "web.csrf.rejected"
+	WebSecurityLoginFailed              WebSecurityAuditAction = "web.login.failed"
+	WebSecurityCSRFRejected             WebSecurityAuditAction = "web.csrf.rejected"
+	WebSecurityIdentityOperationStopped WebSecurityAuditAction = "web.identity.operation_stopped"
 )
 
 // WebSecurityAuditEvent is the redacted, durable record for authentication
@@ -521,7 +522,7 @@ func (event WebSecurityAuditEvent) Validate() error {
 		return err
 	}
 	switch event.Action {
-	case WebSecurityLoginFailed, WebSecurityCSRFRejected:
+	case WebSecurityLoginFailed, WebSecurityCSRFRejected, WebSecurityIdentityOperationStopped:
 	default:
 		return ValidationError{Field: "web_security_audit.action", Reason: "is unknown"}
 	}
@@ -555,6 +556,10 @@ func (event WebSecurityAuditEvent) Validate() error {
 	if event.Action == WebSecurityCSRFRejected &&
 		(event.TenantID == "" || event.UserID == "" || event.MembershipSecurityVersion == 0) {
 		return ValidationError{Field: "web_security_audit.csrf", Reason: "requires authorized tenant, user, and membership version"}
+	}
+	if event.Action == WebSecurityIdentityOperationStopped &&
+		(event.TenantID == "" || event.UserID == "" || event.MembershipSecurityVersion == 0 || event.SubjectFingerprint != "" || event.ReasonCode != "cancelled" && event.ReasonCode != "expired") {
+		return ValidationError{Field: "web_security_audit.identity_stop", Reason: "requires scoped content-free cancellation or expiry"}
 	}
 	return nil
 }

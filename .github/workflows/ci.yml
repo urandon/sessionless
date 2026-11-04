@@ -262,6 +262,11 @@ jobs:
       - name: Prove exact four legacy-index existing and missing retirement
         run: make ready-expiry-retirement-ydb-gate
 
+      - name: Prove V2 consent identity at reservation and before-send
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make web-consent-identity-v2-ydb-gate
+
       - name: Run YDB integration suite
         run: make ydb-integration
 

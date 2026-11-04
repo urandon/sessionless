@@ -34,11 +34,10 @@ type privateConsentViewFixture struct {
 	query          string
 
 	commits, commitErrorAt int
-	intentBytes            uint64
 	budget                 *ownedAuthorityBudget
 	reads                  []string
 	readCaps               []uint64
-	lastReadBytes          uint64
+	bodyObservations       map[*ownedAuthorityBudget]*privateConsentBodyObservation
 	bodyFault              func(context.Context, string)
 	afterCommit            func()
 	beforeBegin            func()
@@ -58,6 +57,20 @@ type privateConsentViewFixture struct {
 	otherParticipant       []driver.Value
 	otherPrincipalReads    int
 	callbackStatements     []int
+	// Optional V2 canonical rows for identity-fence tests. Nil preserves the
+	// original V1 row; this is SQL DATA, never a production mode installer.
+	webV2Record       *string
+	identityV2Record  *string
+	identityReadError error
+	identityReads     int
+}
+
+// Observer frontiers belong to the original logical-call budget, not the
+// fixture's lifetime. Keep each budget's history so returning to the same
+// budget (including SDK retries) cannot refresh its prospective funding.
+type privateConsentBodyObservation struct {
+	intentBytes, lastReadBytes uint64
+	reads                      int
 }
 
 type privateConsentViewConnector struct{ f *privateConsentViewFixture }
@@ -98,8 +111,11 @@ func (tx privateConsentViewTx) Commit() error {
 	if b, ok := tx.ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget); ok {
 		tx.f.budget = b
 		b.mu.Lock()
-		if tx.f.commits == 1 {
-			tx.f.intentBytes = b.bytes
+		if tx.f.bodyObservations == nil {
+			tx.f.bodyObservations = make(map[*ownedAuthorityBudget]*privateConsentBodyObservation)
+		}
+		if tx.f.bodyObservations[b] == nil {
+			tx.f.bodyObservations[b] = &privateConsentBodyObservation{intentBytes: b.bytes}
 		}
 		tx.f.callbackStatements = append(tx.f.callbackStatements, b.callbackStatements)
 		b.mu.Unlock()
@@ -175,7 +191,7 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 			return nil, errors.New("consent fixture rejects foreign current lease-head selector")
 		}
 		row = append([]driver.Value(nil), parent.sql.leaseRow[2:8]...)
-	case privateConsentWebSessionSQL:
+	case privateConsentWebSessionSQL, webIdentitySessionSQLV2:
 		bucket, _ := webBucket(string(f.web.SessionDigest))
 		if len(args) != 2 || args[0].Value != int64(bucket) || args[1].Value != string(f.web.SessionDigest) {
 			return &explanationFixtureRows{}, nil
@@ -184,7 +200,36 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 		if err != nil {
 			return nil, err
 		}
-		row = []driver.Value{string(raw)}
+		encoded := string(raw)
+		if f.webV2Record != nil {
+			encoded = *f.webV2Record
+		}
+		limit := ownedAuthorityHeadBytes
+		if statement == webIdentitySessionSQLV2 {
+			limit = domain.IdentityAuthMaxRecordBytesV2
+		}
+		if len(encoded) > limit+1 {
+			encoded = encoded[:limit+1]
+		}
+		row = []driver.Value{encoded}
+	case webIdentityRowSQLV2:
+		bucket, err := webBucket(f.web.AuthenticatedSubject.String())
+		if err != nil || len(args) != 3 || args[0].Value != int64(bucket) || args[1].Value != string(f.web.AuthenticatedSubject.Provider) || args[2].Value != f.web.AuthenticatedSubject.Subject {
+			return nil, errors.New("consent identity requires exact full forward key")
+		}
+		f.identityReads++
+		parent.base.recordQuery(statement, args)
+		if f.identityReadError != nil {
+			return nil, f.identityReadError
+		}
+		if f.identityV2Record == nil {
+			return &explanationFixtureRows{}, nil
+		}
+		raw := *f.identityV2Record
+		if len(raw) > domain.IdentityAuthMaxRecordBytesV2+1 {
+			raw = raw[:domain.IdentityAuthMaxRecordBytesV2+1]
+		}
+		return &explanationFixtureRows{values: []driver.Value{raw}}, nil
 	case ownedConsentReadSQL:
 		r := parent.parent.Reservation
 		if len(args) != 3 || args[0].Value != string(r.TenantID) || args[1].Value != string(r.AttemptID) || args[2].Value != string(r.Kind) {
@@ -275,9 +320,13 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	b.mu.Lock()
 	charged, active, callbacks := b.bytes, b.active, b.callbacks
 	b.mu.Unlock()
-	base := f.lastReadBytes
-	if len(f.reads) == 0 {
-		base = f.intentBytes
+	observation := f.bodyObservations[b]
+	if observation == nil {
+		return nil, errors.New("private-view keeper requires the original committed intent frontier")
+	}
+	base := observation.lastReadBytes
+	if observation.reads == 0 {
+		base = observation.intentBytes
 	}
 	if active || callbacks != 1 || !f.legacyGrantOnly && (charged < base || charged-base < cap) {
 		return nil, errors.New("private-view keeper read was not funded prospectively in the original budget")
@@ -285,7 +334,8 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	if f.legacyGrantOnly && ref != f.grantRef {
 		return nil, errors.New("legacy consent state method unexpectedly read query arguments")
 	}
-	f.budget, f.lastReadBytes = b, charged
+	f.budget, observation.lastReadBytes = b, charged
+	observation.reads++
 	f.reads, f.readCaps = append(f.reads, ref), append(f.readCaps, cap)
 	if f.argumentBodies != nil && ref != f.grantRef {
 		return f.argumentBodies.ReadAttemptOperationBody(ctx, scope, ref, cap)
@@ -306,9 +356,31 @@ type privateConsentGrantSetup func(*testing.T, *domain.OwnedAgentProfileCurrentV
 
 func newPrivateConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetup) *privateConsentViewFixture {
 	t.Helper()
+	return newPrivateConsentViewFixtureFromState(t, nil, setup...)
+}
+
+// Explicit test-only composition input is applied BEFORE any profile/source/
+// admission seal. It is not a route or a way to rewrite an existing authority.
+func newPrivateConsentViewFixtureFromState(t *testing.T, state *ports.WorkerJobState, setup ...privateConsentGrantSetup) *privateConsentViewFixture {
+	t.Helper()
 	// Freeze the synthetic grant before any profile/source/parent seal. Reuse
 	// the existing fixture's scope and source setup, not post-seal rebinding.
-	_, seed, _, _ := newOwnedFinalScript(t)
+	var seed *ownedFinalScript
+	if state == nil {
+		_, seed, _, _ = newOwnedFinalScript(t)
+	} else {
+		copy := *state
+		copy.Run = state.Run.Clone()
+		copy.Job = state.Job.Clone()
+		if copy.Job.ContextWindow == nil {
+			copy.Job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 1}
+		}
+		if copy.Job.ContextWindow.Validate() != nil || copy.Job.ContextWindow.ThroughSequence != 1 || copy.Job.ContextWindow.AfterSequence != 0 || copy.Job.ContextWindow.SnapshotVersion != nil {
+			t.Fatal("stateful resource fixture requires its exact pre-seal trigger window")
+		}
+		state = &copy
+		_, seed, _, _ = newOwnedFinalScript(t, ownedFinalPrebuild{state: state})
+	}
 	p := seed.reader.profile.Clone()
 	cost := p.CostCeiling.WebSearchCost
 	grant := ports.OwnedFixtureToolGrantV1{Version: 1, TenantID: cost.TenantID, OwnerUserID: cost.OwnerUserID, BillingOwnerUserID: cost.BillingOwnerUserID, Kind: cost.Kind, ResourceID: cost.ResourceID, ResourceRevision: cost.ResourceRevision, RevocationGeneration: cost.RevocationGeneration, ProfileID: cost.ProfileID, ProfileRevision: cost.ProfileRevision, ConsentMode: "initiating_user_required", ConsentRevision: 1, Endpoint: "fixture://owned/web-search", MaxArgumentBytes: 4096, MaxResultBytes: 24576, ExpiresAt: cost.PriceExpiresAt}
@@ -348,13 +420,15 @@ func newPrivateConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetu
 		bindReaderSpendingSource(t, &v)
 		sources.spending[i] = v
 	}
-	prebuild := ownedFinalPrebuild{at: seed.at, sources: &sources}
+	prebuild := ownedFinalPrebuild{at: seed.at, sources: &sources, state: state}
 	if p.WebSearchResourceGrant != nil {
 		// Declare canonical input before the original job/admission/parent seals.
 		// The deterministic legacy fixture keeps its original blob-only grammar.
-		state := currentWorkerAuthorityFixture(t)
-		state.Job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 1}
-		prebuild.state = &state
+		if state == nil {
+			initial := currentWorkerAuthorityFixture(t)
+			initial.Job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 1}
+			prebuild.state = &initial
+		}
 	}
 	a := newOwnedAllocationFixture(t, prebuild)
 	if _, err := a.parent.store.publishBoundedOwnedAllocation(t.Context(), a.publication); err != nil {

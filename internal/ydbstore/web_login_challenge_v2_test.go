@@ -282,7 +282,7 @@ func TestIdentityLoginServingV2PurposeIsolation(t *testing.T) {
 					t.Error("proof writer repurposed ordinary login")
 				}
 				got, err := store.consumeIdentityProofV2(ctx, identityProofConsumeV2{Phase: request.Phase, ChallengeDigest: challenge.StateDigest, BrowserSecret: "login-browser"}, config)
-				if err == nil || !reflect.DeepEqual(got, domain.IdentityChallengeExchangeV2{}) || !reflect.DeepEqual(before, f.children) {
+				if err == nil || !reflect.DeepEqual(got, identityConsumedProofV2{}) || !reflect.DeepEqual(before, f.children) {
 					t.Error("ordinary login acquired proof authority or was changed")
 				}
 			} else {

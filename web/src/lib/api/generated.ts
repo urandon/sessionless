@@ -4,6 +4,108 @@
  */
 
 export interface paths {
+    "/api/web/v1/account/login-methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Default-off pure current-session read. Exactly the two known provider rows, opaque own handles and advisory actions; no subject, activity refresh, provider call, query or body. */
+        get: operations["getAccountLoginMethods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/account/identity-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Default-off explicit link/unlink. Current authority, exact Origin/CSRF and revision required. Closed flat body <=2048 bytes; no caller identity ownership. New independent Lax HttpOnly operation cookie, no automatic OAuth. */
+        post: operations["startIdentityOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/account/identity-operations/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Pure same-user read, including legitimate relogin. Original browser/CSRF not required; optional operation cookie only controls hints. No activity touch, pruning, replay or cookies. Missing retained row is HTTP410 outcome_unavailable with unknown facts omitted. */
+        get: operations["getIdentityOperationOutcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/account/identity-operations/{operation_id}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline. */
+        post: operations["continueIdentityOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/account/identity-operations/{operation_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline. */
+        post: operations["confirmIdentityOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/account/identity-operations/{operation_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Default-off. Exact Origin and cookie/header CSRF equality; current original session/browser/revision/manifest rechecked by owning transaction. Flat closed JSON <=2048 bytes, exact key casing, no duplicates/query/trailing values. One original 15-second deadline. */
+        post: operations["cancelIdentityOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login/methods": {
         parameters: {
             query?: never;
@@ -451,6 +553,63 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Canonical positive uint64 decimal string through18446744073709551615, never JavaScript number. Server rejects overflow/aliases. */
+        AuthRevisionV2: string;
+        AccountLoginMethod: {
+            /** @enum {string} */
+            provider: "yandex" | "telegram";
+            method_handle?: string;
+            linked: boolean;
+            current: boolean;
+            enabled: boolean;
+            allowed_actions: ("link" | "unlink")[];
+            /** @enum {string} */
+            remaining_provider?: "yandex" | "telegram";
+        };
+        AccountLoginMethods: {
+            revision: components["schemas"]["AuthRevisionV2"];
+            methods: components["schemas"]["AccountLoginMethod"][];
+        };
+        IdentityOperationStartRequest: {
+            /** @enum {string} */
+            kind: "link" | "unlink";
+            /** @enum {string} */
+            target_provider?: "yandex" | "telegram";
+            method_handle?: string;
+            expected_revision: components["schemas"]["AuthRevisionV2"];
+        } & ({
+            /** @constant */
+            kind?: "link";
+        } | {
+            /** @constant */
+            kind?: "unlink";
+        });
+        IdentityOperationRevisionRequest: {
+            expected_revision: components["schemas"]["AuthRevisionV2"];
+        };
+        /** @description Only owned stored facts. Terminal receipts omit target provider after privacy pruning; absent outcomes omit unknown kind/phase/revisions/times. Advisory actions never grant authority. */
+        IdentityOperationView: {
+            operation_id: string;
+            /** @enum {string} */
+            kind?: "link" | "unlink";
+            /** @enum {string} */
+            phase?: "source_proof" | "target_proof" | "confirm" | "terminal";
+            /** @enum {string} */
+            target_provider?: "yandex" | "telegram";
+            /** @enum {string} */
+            outcome?: "linked" | "unlinked" | "cancelled" | "conflict" | "stale_revision" | "proof_required" | "proof_unavailable" | "last_method" | "provider_unavailable" | "expired" | "outcome_unavailable" | "access_denied";
+            /** Format: date-time */
+            expires_at?: string;
+            before_revision?: components["schemas"]["AuthRevisionV2"];
+            after_revision?: components["schemas"]["AuthRevisionV2"];
+            /** Format: date-time */
+            completed_at?: string;
+            allowed_actions: ("continue" | "confirm" | "cancel")[];
+        };
+        IdentityOperationContinuation: {
+            /** Format: uri */
+            authorization_url: string;
+        };
         LoginMethod: {
             /** @enum {string} */
             provider: "yandex" | "telegram";
@@ -657,7 +816,7 @@ export interface components {
         };
         PublicError: {
             /** @enum {string} */
-            code: "invalid_request" | "unauthenticated" | "access_denied" | "csrf_failed" | "not_found" | "conflict" | "payload_too_large" | "rate_limited" | "temporarily_unavailable";
+            code: "invalid_request" | "unauthenticated" | "access_denied" | "csrf_failed" | "not_found" | "conflict" | "payload_too_large" | "rate_limited" | "temporarily_unavailable" | "stale_revision" | "proof_required" | "proof_unavailable" | "last_method" | "provider_unavailable" | "expired" | "outcome_unavailable";
             message: string;
             request_id: string;
         };
@@ -1215,6 +1374,165 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAccountLoginMethods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLoginMethods"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startIdentityOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityOperationStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getIdentityOperationOutcome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationView"];
+                };
+            };
+            /** @description Authenticated account operation data, not reusable authority */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    continueIdentityOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityOperationRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationContinuation"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    confirmIdentityOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityOperationRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    cancelIdentityOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityOperationRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated account operation data, not reusable authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityOperationView"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getLoginMethods: {
         parameters: {
             query?: never;

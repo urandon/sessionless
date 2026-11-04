@@ -54,6 +54,7 @@ type Config struct {
 	API                        *webapi.Service
 	RunExplanations            ports.RunExplanationRatedReadStoreV1
 	SearchConsents             WebSearchConsentService
+	IdentityAccounts           ports.IdentityAccountServiceV2
 	AttachedWorkers            AttachedWorkerReadService
 	AttachedWorkerControls     AttachedWorkerControlService
 	IDs                        ports.IDGenerator
@@ -123,6 +124,15 @@ func New(config Config) (*Handler, error) {
 	base, err := url.Parse(config.BaseURL)
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.Path != "" || base.RawPath != "" || base.RawQuery != "" || base.ForceQuery || base.Opaque != "" || base.Fragment != "" || base.String() != config.BaseURL {
 		return nil, errors.New("WEB_BASE_URL must be an HTTPS origin")
+	}
+	if config.IdentityAccounts != nil {
+		bindings := make([]domain.IdentityProviderBindingV2, 0, len(providers))
+		for _, provider := range providers {
+			bindings = append(bindings, domain.IdentityProviderBindingV2{Provider: provider.Provider, Issuer: provider.issuer(), ClientID: provider.audience(), CallbackURI: config.BaseURL + loginCallbackPath(provider.Provider)})
+		}
+		if err := config.IdentityAccounts.ValidateLoginBindings(bindings); err != nil {
+			return nil, errors.New("identity account service and ordinary login bindings must match exactly")
+		}
 	}
 	objectStorageOrigin, err := validateObjectStorageOrigin(
 		config.ObjectStorageOrigin, config.AllowLoopbackObjectStorage,
@@ -208,6 +218,14 @@ func (handler *Handler) routes() {
 	handler.mux.HandleFunc("GET "+webcontract.RouteMe, handler.me)
 	handler.mux.HandleFunc("GET "+webcontract.RouteTenants, handler.tenants)
 	handler.mux.HandleFunc("POST "+webcontract.RouteActiveTenant, handler.switchTenant)
+	if handler.config.IdentityAccounts != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteAccountLoginMethods, handler.accountLoginMethods)
+		handler.mux.HandleFunc("POST "+webcontract.RouteIdentityOperations, handler.startIdentityOperation)
+		handler.mux.HandleFunc("GET "+webcontract.RouteIdentityOperation, handler.identityOperationOutcome)
+		handler.mux.HandleFunc("POST "+webcontract.RouteIdentityOperationContinue, handler.continueIdentityOperation)
+		handler.mux.HandleFunc("POST "+webcontract.RouteIdentityOperationConfirm, handler.confirmIdentityOperation)
+		handler.mux.HandleFunc("POST "+webcontract.RouteIdentityOperationCancel, handler.cancelIdentityOperation)
+	}
 	if handler.config.Sessions != nil {
 		handler.mux.HandleFunc("GET "+webcontract.RouteSessions, handler.listSessions)
 		handler.mux.HandleFunc("POST "+webcontract.RouteSessions, handler.createSession)
@@ -886,6 +904,16 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 
 func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if handler.config.IdentityAccounts != nil {
+		// One original deadline covers stored-purpose lookup, committed consume,
+		// provider exchange and proof recording. No stage can renew it.
+		ctx, cancel := context.WithTimeout(request.Context(), identityAccountTimeout)
+		defer cancel()
+		request = request.WithContext(ctx)
+		if handler.dispatchIdentityCallback(w, request) {
+			return
+		}
+	}
 	http.SetCookie(w, clearCookie(LoginBindingCookieName, true))
 	callback := webcontract.OIDCCallback{
 		Code: request.URL.Query().Get("code"), State: request.URL.Query().Get("state"),

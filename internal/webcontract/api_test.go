@@ -84,6 +84,10 @@ func TestStableErrorEnvelopeStatusMapping(t *testing.T) {
 		webcontract.ErrorNotFound, webcontract.ErrorConflict,
 		webcontract.ErrorPayloadTooLarge, webcontract.ErrorRateLimited,
 		webcontract.ErrorTemporarilyUnavailable,
+		webcontract.ErrorStaleRevision, webcontract.ErrorProofRequired,
+		webcontract.ErrorProofUnavailable, webcontract.ErrorLastMethod,
+		webcontract.ErrorProviderUnavailable, webcontract.ErrorExpired,
+		webcontract.ErrorOutcomeUnavailable,
 	} {
 		if code.HTTPStatus() == 0 {
 			t.Fatalf("code %q has no HTTP status", code)

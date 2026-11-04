@@ -52,6 +52,12 @@ sequenceDiagram
 | `GET` | `/api/web/v1/me` | Return the current identity and active tenant |
 | `GET` | `/api/web/v1/tenants` | Return the caller's active memberships |
 | `POST` | `/api/web/v1/active-tenant` | Rotate the Web session into another authorized tenant |
+| `GET` | `/api/web/v1/account/login-methods` | Optional joined service: current two-provider own-method view, without idle refresh |
+| `POST` | `/api/web/v1/account/identity-operations` | Optional joined service: explicitly start link/unlink with current CSRF and revision |
+| `GET` | `/api/web/v1/account/identity-operations/{operation_id}` | Pure same-user retained outcome, including after relogin; missing outcome is 410 |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/continue` | Current original operation binding; return only the exact pending phase authorization URL |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/confirm` | Explicit atomic confirmation; replacement cookies only for a newly committed session, never receipt replay |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/cancel` | Explicit current-scope cancellation; no guessed provider result |
 | `GET`, `POST` | `/api/web/v1/sessions` | Page active/archived sessions or create one idempotently |
 | `GET` | `/api/web/v1/sessions/{session_id}` | Open bounded participant-authorized session metadata |
 | `GET` | `/api/web/v1/sessions/{session_id}/events` | Page ordered canonical event payloads after authorization |

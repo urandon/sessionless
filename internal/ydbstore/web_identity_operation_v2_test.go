@@ -182,7 +182,7 @@ func (c *identityOperationConnV2) ExecContext(ctx context.Context, statement str
 		}
 		raw, ok := values[10].(string)
 		var event domain.WebSecurityAuditEvent
-		if !ok || json.Unmarshal([]byte(raw), &event) != nil || event.Validate() != nil || event.Action != domain.WebSecurityIdentityOperationStopped || event.RequestID != "identity-stop-"+string(f.digest) {
+		if !ok || json.Unmarshal([]byte(raw), &event) != nil || event.Validate() != nil || (event.Action != domain.WebSecurityIdentityOperationStopped && event.Action != domain.WebSecurityIdentityProofFailed) || event.RequestID != "identity-stop-"+string(f.digest) {
 			return nil, errors.New("identity stop audit is not exact typed content-free DATA")
 		}
 		want := []any{identityRowsV2ExpectedBucket(event.RequestID), event.OccurredAt, event.RequestID, string(event.Action), string(event.Provider), "", string(event.TenantID), string(event.UserID), int64(event.MembershipSecurityVersion), event.ReasonCode, raw, values[11]}

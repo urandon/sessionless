@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // Private read-only DATA. No browser, subject, cookie, proof, secret or successor
@@ -19,16 +20,21 @@ type identityOperationOutcomeViewV2 struct {
 	BeforeRevision domain.AuthRevisionV2
 	AfterRevision  *domain.AuthRevisionV2
 	CompletedAt    *time.Time
+	TargetProvider domain.IdentityProvider
+	AllowedActions []ports.IdentityAccountActionV2
 }
 
 type identityOutcomeReadV2 struct {
 	OperationDigest domain.SecretDigest
 	SessionDigest   domain.SecretDigest
+	OperationCookie string
+	Service         *identityAccountServiceV2 // Optional private projection owner; never GET authority.
 }
 
 func identityOperationOutcomeView(operation domain.IdentityOperationV2, at time.Time) identityOperationOutcomeViewV2 {
 	view := identityOperationOutcomeViewV2{Kind: operation.Kind, Phase: operation.Phase, ExpiresAt: operation.ExpiresAt}
 	if operation.Pending != nil {
+		view.TargetProvider = operation.Pending.TargetProvider
 		view.BeforeRevision = operation.Pending.Scope.ExpectedRevision
 		if !at.Before(operation.ExpiresAt) {
 			view.Outcome = domain.IdentityOutcomeExpiredV2
@@ -58,7 +64,7 @@ func (store *Store) readIdentityOperationOutcomeV2(ctx context.Context, request 
 	}
 	err = store.identityAuthorityTxV2(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = empty
-		session, _, err := authorizeWebSessionV2(ctx, q, request.SessionDigest, domain.TenantPermissionRead, q.at)
+		session, member, err := authorizeWebSessionV2(ctx, q, request.SessionDigest, domain.TenantPermissionRead, q.at)
 		if err != nil {
 			return err
 		}
@@ -87,6 +93,15 @@ func (store *Store) readIdentityOperationOutcomeV2(ctx context.Context, request 
 			return nil
 		}
 		result = identityOperationOutcomeView(operation, q.at)
+		if request.Service != nil {
+			if err := identityAccountCopiesV2(q); err != nil {
+				return err
+			}
+			result.AllowedActions, err = request.Service.outcomeActions(ctx, q, request.OperationCookie, operation, session, member)
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -108,6 +123,46 @@ const (
 
 func (store *Store) cancelIdentityOperationV2(ctx context.Context, request identityPhaseRequestV2, config identityConfigurationV2) (identityOperationOutcomeViewV2, error) {
 	return store.stopIdentityOperationV2(ctx, request, config, identityOperationCancelV2)
+}
+
+// Called only after the owning negative transaction authenticates its exact
+// original scope (and, for proof failure, its consumed/scrubbed child).
+func (store *Store) writeIdentityStopInTxV2(ctx context.Context, q *ownedAuthorityQuery, operation domain.IdentityOperationV2, outcome domain.IdentityOperationOutcomeV2, action domain.WebSecurityAuditAction, provider domain.IdentityProvider) (identityOperationOutcomeViewV2, error) {
+	var empty identityOperationOutcomeViewV2
+	if operation.Validate() != nil || operation.Pending == nil || provider.Validate() != nil {
+		return empty, domain.ErrMembershipDenied
+	}
+	if action == domain.WebSecurityIdentityOperationStopped {
+		if outcome != domain.IdentityOutcomeCancelledV2 && outcome != domain.IdentityOutcomeExpiredV2 {
+			return empty, domain.ErrMembershipDenied
+		}
+	} else if action == domain.WebSecurityIdentityProofFailed {
+		if outcome != domain.IdentityOutcomeProofUnavailableV2 && outcome != domain.IdentityOutcomeProviderUnavailableV2 {
+			return empty, domain.ErrMembershipDenied
+		}
+	} else {
+		return empty, domain.ErrMembershipDenied
+	}
+	if q.budget.materialized(q.callback, identityStopMaterialBytesV2) != nil {
+		return empty, domain.ErrMembershipDenied
+	}
+	terminal, err := operation.Terminalize(outcome, nil, q.at)
+	if err != nil {
+		return empty, err
+	}
+	scope := operation.Pending.Scope
+	event := domain.WebSecurityAuditEvent{RequestID: "identity-stop-" + string(operation.OperationDigest), Action: action, Provider: provider, TenantID: scope.TenantID, UserID: scope.UserID, MembershipSecurityVersion: scope.MembershipSecurityVersion, ReasonCode: string(outcome), OccurredAt: q.at}
+	prepared, err := prepareWebSecurityAuditEvent(event)
+	if err != nil {
+		return empty, err
+	}
+	if err := writeIdentityOperationV2(ctx, q, terminal); err != nil {
+		return empty, err
+	}
+	if err := writePreparedWebSecurityAuditEvent(ctx, q, prepared, store.operationalRetention); err != nil {
+		return empty, err
+	}
+	return identityOperationOutcomeView(terminal, q.at), nil
 }
 
 func (store *Store) expireIdentityOperationV2(ctx context.Context, request identityPhaseRequestV2, config identityConfigurationV2) (identityOperationOutcomeViewV2, error) {
@@ -149,7 +204,10 @@ func (store *Store) stopIdentityOperationV2(ctx context.Context, request identit
 		if operation.Receipt != nil {
 			// Current same-user retry can observe the immutable existing result;
 			// no original browser fact is reconstructed after privacy pruning.
-			if operation.Receipt.UserID != current.UserID || operation.Receipt.BeforeRevision != request.ExpectedRevision || q.at.Before(operation.Receipt.CompletedAt) {
+			// A legitimate relogin can have advanced beyond BeforeRevision. The
+			// current authenticated revision must cover, never predate, the
+			// original result; there is no pending cancellation effect to replay.
+			if operation.Receipt.UserID != current.UserID || operation.Receipt.BeforeRevision > current.ExpectedRevision || operation.Receipt.AfterRevision != nil && *operation.Receipt.AfterRevision > current.ExpectedRevision || q.at.Before(operation.Receipt.CompletedAt) {
 				return domain.ErrMembershipDenied
 			}
 			result = identityOperationOutcomeView(operation, q.at)
@@ -167,25 +225,10 @@ func (store *Store) stopIdentityOperationV2(ctx context.Context, request identit
 		} else if intent == identityOperationExpireV2 {
 			return domain.ErrMembershipDenied // before the sealed deadline, nothing expired
 		}
-		if q.budget.materialized(q.callback, identityStopMaterialBytesV2) != nil {
-			return domain.ErrMembershipDenied
-		}
-		terminal, err := operation.Terminalize(outcome, nil, q.at)
+		result, err = store.writeIdentityStopInTxV2(ctx, q, operation, outcome, domain.WebSecurityIdentityOperationStopped, operation.Pending.TargetProvider)
 		if err != nil {
 			return err
 		}
-		event := domain.WebSecurityAuditEvent{RequestID: "identity-stop-" + string(operation.OperationDigest), Action: domain.WebSecurityIdentityOperationStopped, Provider: operation.Pending.TargetProvider, TenantID: current.TenantID, UserID: current.UserID, MembershipSecurityVersion: current.MembershipSecurityVersion, ReasonCode: string(outcome), OccurredAt: q.at}
-		prepared, err := prepareWebSecurityAuditEvent(event)
-		if err != nil {
-			return err
-		}
-		if err := writeIdentityOperationV2(ctx, q, terminal); err != nil {
-			return err
-		}
-		if err := writePreparedWebSecurityAuditEvent(ctx, q, prepared, store.operationalRetention); err != nil {
-			return err
-		}
-		result = identityOperationOutcomeView(terminal, q.at)
 		return nil
 	})
 	if err != nil {

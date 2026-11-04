@@ -80,15 +80,38 @@ Official contracts: [Yandex code exchange](https://yandex.ru/dev/id/doc/ru/codes
 and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
 See [configuration and proof](web-bff.md#yandex-provider-configuration) and
 [development](development.md#yandex-id-login). Explicit dual-proof identity
-linking remains unfinished under [#172](https://gitcode.com/urandon/sessionless/issues/172)/#239;
-account settings remain #240.
+linking is tracked under [#172](https://gitcode.com/urandon/sessionless/issues/172)/#239;
+account settings and joined browser acceptance remain #240.
 
 The [dual-provider account-linking design](design/dual-provider-account-linking.md)
 under [#237](https://gitcode.com/urandon/sessionless/issues/237) specifies
 simultaneous-provider configuration, dual-proof linking and revision-fenced
-unlinking. Ordinary login/chooser source implements only the configuration and
-login part: it does not mount linking/settings routes or a V2 storage installer,
-perform migration, or authorize automatic account linking.
+unlinking. Ordinary provider configuration alone does not activate linking.
+The optional `IdentityAccountServiceV2` mounts the explicit account-operation
+routes only when a trusted caller supplies an already V2-configured Store and
+the identical immutable provider manifest. Normal startup supplies no such
+service; this is not a public partial V2 installer or migration path. Registered
+client compatibility, complete native acceptance and the separately authorized
+writer cutover remain rollout requirements. No automatic matching or merging
+of accounts, tenant enrollment or grants follow from either login provider.
+
+Account reads authenticate the current canonical session without refreshing
+idle activity. Link/unlink mutations require exact Origin, cookie/header CSRF
+equality, an opaque positive decimal-string revision and the original operation
+browser cookie; the owning transaction rechecks actual authority. The provider
+callback uses its stored closed purpose, never cookie presence or a LOGIN
+decoder fallback. A cross-provider top-level GET may omit the Strict CSRF
+cookie: the proof consume transaction derives that digest from the exact current
+original session and still requires its separate Lax operation binding.
+
+The original fifteen-second sensitive deadline includes purpose lookup, SQL,
+provider exchange and proof recording. Consumed challenges are scrubbed before
+exchange and never reset. Refresh reads a retained same-user outcome, including
+after legitimate relogin; it never exchanges a code, repeats confirmation or
+remints a lost replacement cookie. Known proof failure pruning and its closed,
+content-free audit are atomic; unknown storage/commit/cancellation results do
+not manufacture a receipt. Provider-unavailable does not mean an OAuth code was
+unused or can be exchanged again.
 
 ## Telegram OIDC flow
 

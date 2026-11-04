@@ -398,6 +398,15 @@ func (c *identityMaintenanceCell) Scan(v any) error {
 	case "Uint32", "Uint64":
 		var n uint64
 		switch x := v.(type) {
+		case uint32:
+			// The pinned table SDK preserves Uint32 in driver.Value. This
+			// exact physical type is valid for bucket columns, not a numeric
+			// coercion for a differently declared column.
+			if c.column.kind != "Uint32" {
+				c.bad = true
+				return nil
+			}
+			n = uint64(x)
 		case int64:
 			if x < 0 {
 				c.bad = true

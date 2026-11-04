@@ -33,11 +33,8 @@ func (store *Store) ReadRatedRunExplanationV1(ctx context.Context, sessionDigest
 	err = store.authTx(ctx, "run_explanation.rated_read_v1", func(sqlTx *sql.Tx) error {
 		pending = ports.RunExplanationReadOutcomeV1{}
 		query := explanationBudgetQuery{tx: sqlTx, budget: budget}
-		session, at, err := readExplanationSession(ctx, query, sessionDigest)
+		session, _, at, err := store.readExplanationAuthorization(ctx, query, sessionDigest, nil)
 		if err != nil {
-			return err
-		}
-		if _, err := readExplanationMembership(ctx, query, session, at); err != nil {
 			return err
 		}
 		identity, candidates, err := runexplanationrate.IdentityKeys(session.ActiveTenantID, session.UserID)

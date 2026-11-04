@@ -1160,6 +1160,47 @@ func maintenanceNativeConflict(t *testing.T, ctx context.Context, db, wrapped *s
 // The entire inventory MUST NOT touch shared test tables. The only namespace
 // adapter lives here: SQL bindings and native Describe point at one unique
 // directory; production retains fixed table names and its actual database.
+// Keep the concrete optional timestamp type at the real database/sql binder
+// boundary. A bare nil becomes YDB Void, not the intentionally NULL legacy
+// delete_after Timestamp. This must not replace NULL with a non-NULL sentinel.
+func maintenanceNativeSeedArgTest(column identityMaintenanceColumn, value driver.Value) any {
+	if value == nil && column.kind == "Timestamp" {
+		return nullableTime(nil)
+	}
+	if value != nil {
+		switch column.kind {
+		case "Uint32":
+			return uint32(value.(int64))
+		case "Uint64":
+			return uint64(value.(int64))
+		}
+	}
+	return value
+}
+
+func TestIdentityMaintenanceV1NativeSeedTypedNullTimestamp(t *testing.T) {
+	got := maintenanceNativeSeedArgTest(identityMaintenanceColumn{kind: "Timestamp"}, nil)
+	timestamp, typed := got.(*time.Time)
+	if !typed || timestamp != nil {
+		t.Fatalf("native NULL timestamp argument = %T(%v), want typed nil *time.Time", got, got)
+	}
+	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		kind  string
+		input driver.Value
+		want  any
+	}{
+		{kind: "Timestamp", input: at, want: at},
+		{kind: "Uint32", input: int64(7), want: uint32(7)},
+		{kind: "Uint64", input: int64(9), want: uint64(9)},
+		{kind: "Utf8", input: "original", want: "original"},
+	} {
+		if got := maintenanceNativeSeedArgTest(identityMaintenanceColumn{kind: test.kind}, test.input); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("native %s argument = %T(%v), want %T(%v)", test.kind, got, got, test.want, test.want)
+		}
+	}
+}
+
 func TestWebIdentityV2YDBMaintenanceIsolatedConversionAndRetirement(t *testing.T) {
 	if os.Getenv("SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE") != "1" {
 		t.Skip("explicit disposable CI identity gate not requested")
@@ -1313,15 +1354,7 @@ func TestWebIdentityV2YDBMaintenanceIsolatedConversionAndRetirement(t *testing.T
 				if col.name == "record" {
 					holders[i] = "CAST(" + holders[i] + " AS JsonDocument)"
 				}
-				args[i] = row[i]
-				if row[i] != nil {
-					switch col.kind {
-					case "Uint32":
-						args[i] = uint32(row[i].(int64))
-					case "Uint64":
-						args[i] = uint64(row[i].(int64))
-					}
-				}
+				args[i] = maintenanceNativeSeedArgTest(col, row[i])
 			}
 			if _, e := tx.ExecContext(ctx, "INSERT INTO "+table.name+" ("+strings.Join(names, ",")+") VALUES ("+strings.Join(holders, ",")+")", args...); e != nil {
 				t.Fatal(e)
@@ -1341,6 +1374,13 @@ func TestWebIdentityV2YDBMaintenanceIsolatedConversionAndRetirement(t *testing.T
 	}
 	if e := tx.Commit(); e != nil {
 		t.Fatal(e)
+	}
+	var originalRetention sql.NullTime
+	if e := db.QueryRowContext(ctx,
+		`SELECT delete_after FROM oidc_login_challenges WHERE shard_bucket = $1 AND state_digest = $2`,
+		uint32(setup.data["oidc_login_challenges"][0][0].(int64)), challenge,
+	).Scan(&originalRetention); e != nil || originalRetention.Valid {
+		t.Fatalf("native legacy challenge must retain actual SQL NULL delete_after: valid=%t err=%v", originalRetention.Valid, e)
 	}
 	maintenanceNativeConflict(t, ctx, db, wrapped, client, base, control, "point")
 	maintenanceNativeConflict(t, ctx, db, wrapped, client, base, control, "range")

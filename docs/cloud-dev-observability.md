@@ -1,6 +1,6 @@
 # Native observability YAML and operator runbook
 
-Version: 1.0.0, offline configuration tooling for
+Version: 1.0.1, offline configuration tooling for
 [#225](https://gitcode.com/urandon/sessionless/issues/225), under
 [#19](https://gitcode.com/urandon/sessionless/issues/19). Accepted design:
 [Wiki 0.1.1](https://gitcode.com/urandon/sessionless/wiki/Cloud-Dev-Observability-Design.md).
@@ -14,6 +14,48 @@ call a model or change execution/retry deadlines. Both real managed and attached
 MVP routes remain required. A deterministic fixture qualifies neither route.
 
 ## Editable source
+
+### Native log destination ownership
+
+[#243](https://gitcode.com/urandon/sessionless/issues/243) separates native log
+delivery from legacy log-group management. Cloud-dev requires the exact existing
+`runtime_log_group_id` in its private tfvars; no name lookup, default group,
+Monium-project substitution, data source or automatic creation is allowed.
+The operator owns the destination, retention and access verification. Remove the
+obsolete `log_retention` input: Terraform no longer promises to enforce it.
+The existing INFO stdout integration and write-only IAM remain unchanged for
+all containers and both gateways. This is not a new exporter or alert stack.
+
+The foundation's declarative `removed` block has `destroy = false`: an existing
+group is retained, not deleted/recreated. Review its exact `forget` plan action
+and unchanged destination wiring before apply. Never substitute `state rm`,
+`refresh=false`, a guessed ID, a logging-disabled revision or an OTLP ingestion
+endpoint as a Terraform management endpoint. Other resources still refresh.
+A new environment must first have an explicitly provisioned and verified native
+destination; this configuration does not bootstrap one through the failed API.
+
+Before the separately authorized handoff, verify a fresh benign native record
+is readable in the exact destination, along with its actual retention, ownership
+and cost. Old archive visibility is not delivery proof. The
+[provider migration guide](https://yandex.cloud/en/docs/monium/logs/logging-migration)
+describes the Logging-to-Monium bridge and 31-day Monium retention; it does not
+prove that this deployment still has the former seven-day policy. Do not silently
+increase raw-log retention or claim the unavailable management API is healthy.
+If these checks fail, leave the handoff/deployment unaccepted and resolve the
+specific delivery or policy gap; passing offline plans is not rollout evidence.
+
+The [Terraform removed contract](https://developer.hashicorp.com/terraform/language/block/removed)
+defines non-destruction; the pinned
+[1.15.5 orphan planner](https://github.com/hashicorp/terraform/blob/v1.15.5/internal/terraform/node_resource_plan_orphan.go)
+skips the provider refresh for an explicit forget. Regression verification must
+exercise that actual engine with a synthetic state, not a cloud credential.
+
+The alternatives are explicit: a compatible documented management endpoint may
+retain Terraform ownership if proven; folder-native routing changes destination
+and policy and is not a silent fallback. Direct bounded OTLP is deferred unless
+native delivery fails and a separate reviewed lifecycle/auth design is accepted.
+No authentication migration, application-data change or rollout permission is
+implied by this infrastructure handoff.
 
 Human-authorable policy lives in these files:
 

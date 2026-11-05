@@ -1,3 +1,7 @@
+variables {
+  runtime_log_group_id = "e2300000000000000000"
+}
+
 mock_provider "yandex" {
   mock_resource "yandex_iam_service_account" {
     defaults = { id = "service-account-test" }

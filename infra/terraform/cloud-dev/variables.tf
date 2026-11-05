@@ -236,9 +236,14 @@ variable "queue_max_receive_count" {
   type    = number
   default = 5
 }
-variable "log_retention" {
-  type    = string
-  default = "168h"
+variable "runtime_log_group_id" {
+  description = "Exact existing operator-owned native log destination. Terraform does not create it or control its retention."
+  type        = string
+  nullable    = false
+  validation {
+    condition     = can(regex("^[a-z0-9]{20}$", var.runtime_log_group_id))
+    error_message = "runtime_log_group_id must be an exact existing 20-character native log-group ID, not a name, project, URL or placeholder."
+  }
 }
 variable "deletion_protection" {
   description = "Protect state-bearing cloud resources. Disable only in a separately reviewed apply before destroy."

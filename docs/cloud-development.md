@@ -585,6 +585,14 @@ Never substitute manual recursive bucket deletion or a broad YDB cleanup.
 
 ### 8. Apply schema and complete environment
 
+Resolve and privately set the existing `runtime_log_group_id` before planning.
+Follow the [native log destination handoff](cloud-dev-observability.md#native-log-destination-ownership):
+the first updated plan retains the legacy group with a non-destructive `forget`
+action, rather than refreshing its unavailable management API. Other resources
+still refresh normally. Fresh native delivery/readability, actual retention and
+operator ownership must be verified before accepting that handoff; old archive
+visibility is insufficient. Remove the obsolete `log_retention` tfvars key.
+
 Use a short-lived operator IAM token only in the child process environment:
 
 ```sh

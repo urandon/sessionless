@@ -33,7 +33,15 @@ variable "ydb_storage_gib" { type = number }
 variable "queue_visibility_timeout_seconds" { type = number }
 variable "queue_retention_seconds" { type = number }
 variable "queue_max_receive_count" { type = number }
-variable "log_retention" { type = string }
+variable "runtime_log_group_id" {
+  description = "Exact existing operator-owned native log destination; delivery, retention and ownership require separate live verification."
+  type        = string
+  nullable    = false
+  validation {
+    condition     = can(regex("^[a-z0-9]{20}$", var.runtime_log_group_id))
+    error_message = "runtime_log_group_id must be an exact existing 20-character native log-group ID, not a name, project, URL or placeholder."
+  }
+}
 variable "deletion_protection" { type = bool }
 variable "github_oidc_audience" {
   description = "Audience requested by the trusted GitHub Actions workload."

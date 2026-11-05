@@ -55,6 +55,13 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 	if err != nil {
 		return errWorkerLocalExecution
 	}
+	var identityReads *ydbstore.WebIdentityReadModeV2
+	if localConfig.enabled {
+		identityReads, err = workerIdentityReadsFromEnvironment(os.LookupEnv)
+		if err != nil {
+			return errWorkerLocalExecution
+		}
+	}
 	signals := opssignal.NewWriter(os.Stdout)
 	var localExecution *workerLocalExecution
 	var localSearch *workerLocalSearchCredentials
@@ -115,6 +122,7 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 		return workerRuntimeError(localConfig.enabled, "create provider effect grant issuer", err)
 	}
 	storeOptions := localExecution.storeOptions()
+	storeOptions.WebIdentityReadsV2 = identityReads
 	storeOptions.AttemptEffectGrantIssuer = effectIssuer
 	state, err := ydbstore.New(ydb.DB, storeOptions)
 	if err != nil {
@@ -219,7 +227,7 @@ func run(ctx context.Context, logger *slog.Logger) (resultErr error) {
 		}
 		localRuntime, err = worker.NewLocalRuntime(worker.LocalRuntimeConfig{
 			Source: localExecution.source, Receipt: localExecution.receipt,
-			DB: ydb.DB, Blobs: blobs, Worker: managerConfig, SearchCredentials: searchCredentials,
+			DB: ydb.DB, Blobs: blobs, Worker: managerConfig, SearchCredentials: searchCredentials, WebIdentityReadsV2: identityReads,
 		}, systemClock{})
 		if err != nil {
 			return errWorkerLocalExecution

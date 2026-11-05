@@ -50,6 +50,12 @@ type localSearchWebSQL struct {
 	mu                           sync.Mutex
 	effects                      *compactionEffectSQL
 	web                          domain.WebSession
+	webV2                        *domain.WebSessionV2
+	identityV2                   domain.ExternalIdentityV2
+	identityReadsV2              int
+	identityAdvancePhase         string
+	identityAdvanced             bool
+	identityAdvanceError         error
 	credential                   domain.ProviderCredentialBindingV1
 	credentialReads              int
 	consentRecord, consentDigest string
@@ -93,6 +99,9 @@ func (tx *localSearchWebTx) Commit() error {
 		}
 		if len(current.States) == len(old.States)+1 && current.States[len(current.States)-1].Status == domain.WebSearchConsentPendingV1 {
 			tx.f.pending <- current.States[len(current.States)-1].Request
+		}
+		if len(current.States) == 1 && current.States[0].Status == domain.WebSearchConsentApprovedV1 && tx.f.identityAdvancePhase == "poll" {
+			tx.f.advanceIdentityRevisionV2()
 		}
 	}
 	var boundary chan time.Time
@@ -153,6 +162,36 @@ func (f *localSearchWebSQL) QueryContext(ctx context.Context, s string, args []d
 		return &explanationFixtureRows{values: append([]driver.Value(nil), v...)}, nil
 	}
 	values := localInstallationNamedValues(args)
+	if s == webIdentitySessionSQLV2 {
+		if f.count(ctx) != nil || f.webV2 == nil {
+			return nil, errors.New("SEARCH V2 session requires installed mode/bounded callback")
+		}
+		bucket, _ := webBucket(string(f.webV2.Session.SessionDigest))
+		if !reflect.DeepEqual(values, []driver.Value{int64(bucket), string(f.webV2.Session.SessionDigest)}) {
+			return row(nil)
+		}
+		raw, err := domain.EncodeWebSessionV2(*f.webV2)
+		if err != nil {
+			return nil, err
+		}
+		return row([]driver.Value{string(raw)})
+	}
+	if s == webIdentityRowSQLV2 {
+		if f.count(ctx) != nil || f.identityV2.Validate() != nil {
+			return nil, errors.New("SEARCH V2 identity requires exact current row/bounded callback")
+		}
+		identity := f.identityV2
+		bucket, _ := webBucket(identity.Subject.String())
+		if !reflect.DeepEqual(values, []driver.Value{int64(bucket), string(identity.Subject.Provider), identity.Subject.Subject}) {
+			return row(nil)
+		}
+		f.identityReadsV2++
+		raw, err := domain.EncodeExternalIdentityV2(identity)
+		if err != nil {
+			return nil, err
+		}
+		return row([]driver.Value{string(raw)})
+	}
 	// The negative-only Stop transaction reads the actual canonical actor
 	// records, not the current permission/scalar projection used by admission.
 	// Return only the SAME exact keys and bounded physical String prefix.
@@ -240,6 +279,9 @@ func (f *localSearchWebSQL) QueryContext(ctx context.Context, s string, args []d
 			return row(nil)
 		}
 		raw, err := json.Marshal(f.web)
+		if f.webV2 != nil {
+			raw, err = domain.EncodeWebSessionV2(*f.webV2)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -414,6 +456,22 @@ func (s *LocalSearchWebSeed) Empty() bool {
 }
 
 func NewLocalSearchWebSeed(t *testing.T, endpoint string, grantExpiry time.Time) *LocalSearchWebSeed {
+	return newLocalSearchWebSeed(t, endpoint, grantExpiry, nil)
+}
+
+func NewLocalSearchWebSeedWithIdentityV2(t *testing.T, endpoint string, grantExpiry time.Time, provider domain.IdentityProvider) *LocalSearchWebSeed {
+	t.Helper()
+	if provider != domain.IdentityProviderYandex && provider != domain.IdentityProviderTelegram {
+		t.Fatal("unknown V2 browser provider")
+	}
+	mode := &WebIdentityReadModeV2{Providers: []domain.IdentityProviderBindingV2{{Provider: domain.IdentityProviderYandex, Issuer: domain.YandexOAuthIssuer, ClientID: "owned-yandex-client", CallbackURI: "https://web.fixture.invalid/auth/login/callback"}, {Provider: domain.IdentityProviderTelegram, Issuer: "https://oauth.telegram.org", ClientID: "123456", CallbackURI: "https://web.fixture.invalid/auth/telegram/callback"}}}
+	if mode.Validate() != nil {
+		t.Fatal("invalid V2 SEARCH fixture binding")
+	}
+	return newLocalSearchWebSeed(t, endpoint, grantExpiry, mode)
+}
+
+func newLocalSearchWebSeed(t *testing.T, endpoint string, grantExpiry time.Time, mode *WebIdentityReadModeV2) *LocalSearchWebSeed {
 	t.Helper()
 	installation := NewLocalSearchSourceFixture(t, endpoint, grantExpiry)
 	original, p := installation.installation, installation.Receipt.Profile
@@ -449,7 +507,7 @@ func NewLocalSearchWebSeed(t *testing.T, endpoint string, grantExpiry time.Time)
 	db := sql.OpenDB(f)
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	options := Options{OwnedProfilePublicationVerifier: installation.Source, AttemptSpendingPublicationVerifier: installation.Source, OwnedAttemptEffectSourceVerifier: installation.Source, OwnedWebSearchResourceGrantCustody: installation.Source}
+	options := Options{WebIdentityReadsV2: mode.Clone(), OwnedProfilePublicationVerifier: installation.Source, AttemptSpendingPublicationVerifier: installation.Source, OwnedAttemptEffectSourceVerifier: installation.Source, OwnedWebSearchResourceGrantCustody: installation.Source}
 	store, err := New(db, options)
 	if err != nil {
 		t.Fatal(err)
@@ -496,7 +554,7 @@ func (s *LocalSearchWebSeed) AdmitManager(t *testing.T) *LocalSearchManagerSeed 
 	if err != nil || !found || loaded.Run.Status != domain.RunQueued || loaded.Attempt.Status != domain.AttemptCreated {
 		t.Fatalf("SEARCH actual queued readback found=%t err=%v SQL=%s", found, err, f.lastError)
 	}
-	seed := &LocalCanonicalSessionSeed{Source: s.Source, DB: s.DB, Options: s.Options, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, WorkerID: peer.worker}, peer: peer}
+	seed := &LocalCanonicalSessionSeed{owner: t, Source: s.Source, DB: s.DB, Options: s.Options, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, WorkerID: peer.worker}, peer: peer}
 	loopSeed := &LocalCanonicalLoopSeed{LocalCanonicalSessionSeed: seed, Payload: event.Payload, Event: event, loop: loop}
 	eventRows := [][]driver.Value{{f.rows["session_events"][0]}}
 	for _, raw := range f.priorRecords {
@@ -687,6 +745,84 @@ func (s *LocalSearchWebSeed) SetWebSessionData(t *testing.T, web domain.WebSessi
 	s.peer.mu.Lock()
 	s.peer.web = web
 	s.peer.mu.Unlock()
+}
+
+// Current browser records are controlled fixture DATA, not an OAuth/login
+// proof. The actual separate BFF and original worker MUST read these V2 bytes
+// and canonical forward identity through their original SQL owners.
+func (s *LocalSearchWebSeed) SetWebIdentityV2Data(t *testing.T, web domain.WebSession) {
+	t.Helper()
+	f := s.peer
+	enabled := false
+	if mode := s.Options.WebIdentityReadsV2; mode != nil {
+		for _, b := range mode.Providers {
+			enabled = enabled || b.Provider == web.AuthenticatedSubject.Provider
+		}
+	}
+	if !enabled || web.Validate() != nil || web.UserID != s.Owner || web.ActiveTenantID != s.Tenant {
+		t.Fatal("V2 browser DATA not scoped to fixture constructor")
+	}
+	cookie := domain.WebSessionV2{Version: 2, Session: web, IdentityRevision: 1}
+	identity := domain.ExternalIdentityV2{Version: 2, Subject: web.AuthenticatedSubject, UserID: s.Owner, State: domain.ExternalIdentityActiveV2, Revision: 1, CreatedAt: web.IssuedAt, UpdatedAt: web.IssuedAt}
+	var member domain.TenantMembership
+	if json.Unmarshal([]byte(f.rows["tenant_memberships"][0].(string)), &member) != nil || cookie.AuthorizeCurrent(identity, member, domain.TenantPermissionWrite, time.Now().UTC().Truncate(time.Microsecond)) != nil {
+		t.Fatal("V2 current browser/identity/member positive baseline invalid")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.web, f.webV2, f.identityV2 = web, &cookie, identity
+}
+
+func (f *localSearchWebSQL) advanceIdentityRevisionV2() {
+	if f.webV2 == nil || f.identityAdvanced || f.identityV2.Validate() != nil || f.identityV2.Revision != f.webV2.IdentityRevision {
+		f.identityAdvanceError = errors.New("identity revision change lacks exact original current baseline")
+		return
+	}
+	var member domain.TenantMembership
+	if json.Unmarshal([]byte(f.rows["tenant_memberships"][0].(string)), &member) != nil || f.webV2.AuthorizeCurrent(f.identityV2, member, domain.TenantPermissionWrite, f.at) != nil {
+		f.identityAdvanceError = errors.New("identity revision baseline is not current")
+		return
+	}
+	before := f.identityV2
+	next := before
+	next.Revision++
+	next.UpdatedAt = f.at
+	if next.Validate() != nil || next.Revision == before.Revision || !next.CreatedAt.Equal(before.CreatedAt) {
+		f.identityAdvanceError = errors.New("identity revision transition invalid")
+		return
+	}
+	f.identityV2, f.identityAdvanced = next, true
+}
+
+func (s *LocalSearchWebSeed) ArmIdentityRevisionAdvanceV2(t *testing.T, phase string) {
+	t.Helper()
+	f := s.peer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.webV2 == nil || f.identityAdvancePhase != "" || phase != "poll" && phase != "before_send" {
+		t.Fatal("invalid original identity revision barrier")
+	}
+	f.identityAdvancePhase = phase
+	if phase == "before_send" {
+		if f.effects == nil || f.effects.loopbackOperationSQL.afterOperationReservationCommit != nil {
+			t.Fatal("missing original operation commit seam")
+		}
+		f.effects.loopbackOperationSQL.afterOperationReservationCommit = func() {
+			var reserved domain.AttemptOperationReservationV1
+			if len(f.effects.operations) != 2 || json.Unmarshal([]byte(f.effects.operations[1][1].(string)), &reserved) != nil || reserved.Validate() != nil || reserved.Operation.Kind != domain.AttemptOperationWebSearchV1 {
+				f.identityAdvanceError = errors.New("identity change did not follow actual SEARCH reservation")
+				return
+			}
+			f.advanceIdentityRevisionV2()
+		}
+	}
+}
+
+func (s *LocalSearchWebSeed) WebIdentityV2Readback() (int, bool, error) {
+	f := s.peer
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.identityReadsV2, f.identityAdvanced, f.identityAdvanceError
 }
 
 func (s *LocalSearchWebSeed) ConsentStateData(t *testing.T) domain.WebSearchConsentStateV1 {

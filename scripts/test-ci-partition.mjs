@@ -219,7 +219,7 @@ function verify({ make, ci, release }) {
   assert.doesNotMatch(runtime, /^    (?:needs|permissions|env|services|container|defaults|strategy):/m, 'runtime is parallel, offline, inherits read-only policy');
   assert.equal(step(runtime, 'Checkout mirrored commit'), 'uses: actions/checkout@v6', 'exact runtime checkout');
   assert.deepEqual([...runtime.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
-    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages', ordinaryFailureSourceStep], 'exact runtime steps and MCP-before-Worker order');
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run additive offline MCP connected fixtures', 'Run connected-worker tests over all packages', ordinaryFailureSourceStep, offlineSearchStepName], 'exact runtime steps and original prerequisites before SEARCH');
   assert.equal(step(runtime, 'Run connected-worker tests over all packages'), 'run: make test-connected-worker-ci', 'complete worker connected invocation');
   assert.equal(step(runtime, ordinaryFailureSourceStep), 'run: make test-ordinary-ci-failure-source', 'complete ordinary failure/source invocation');
   assert.equal([...ci.matchAll(/\bmake test-ordinary-ci-failure-source\b/g)].length, 1, 'one required CI failure/source execution');
@@ -228,7 +228,7 @@ function verify({ make, ci, release }) {
   assert.deepEqual([...core.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
     ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Set up pinned Node.js', 'Set up pinned npm', 'Run repository CI contract'], 'core-only verification steps');
   assert.deepEqual([...local.matchAll(/^      - name: (.+)$/gm)].map(match => match[1]),
-    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run ordinary local-tail tests over all packages', offlineSearchStepName], 'exact local tail steps and SEARCH-after-tail order');
+    ['Checkout mirrored commit', coldGoStepName, 'Set up pinned Go', 'Run ordinary local-tail tests over all packages'], 'exact unchanged local tail steps');
   assert.match(ci, /^env:\n  GOCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-build\n  GOMODCACHE: \$\{\{ github.workspace \}\}\/\.git\/sessionless-go-cache\/go-mod\n/m, 'shared Go cache policy');
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
@@ -268,7 +268,7 @@ function verify({ make, ci, release }) {
   assert.equal(step(runtime, mcpStepName), 'run: make test-mcp-offline', 'required complete CI offline MCP invocation');
   assert.equal([...ci.matchAll(/^        run: make test-mcp-offline$/gm)].length, 1, 'one required CI offline MCP execution');
   assert.equal([...ci.matchAll(/\bmake test-mcp-offline\b/g)].length, 1, 'no alternate or duplicate CI MCP invocation');
-  assert.equal(step(local, offlineSearchStepName), 'run: make test-search-offline', 'required complete CI offline SEARCH invocation');
+  assert.equal(step(runtime, offlineSearchStepName), 'run: make test-search-offline', 'required complete CI offline SEARCH invocation');
   assert.equal([...ci.matchAll(/\bmake test-search-offline\b/g)].length, 1, 'one required CI offline SEARCH execution');
   assert.equal([...ci.matchAll(/\bmake ci-core-base\b/g)].length, 1, 'one complete CI core invocation');
   const offlineName = 'Run offline worker and egress security contracts';
@@ -1029,15 +1029,15 @@ for (const [name, changed] of [
   ['changed step timeout', offlineSearchStep.replace('        run:', '        timeout-minutes: 60\n        run:')],
   ['step environment', offlineSearchStep.replace('        run:', '        env:\n          YDB_CONNECTION_STRING: grpc://localhost:2136/local\n        run:')],
 ]) mutations.push([`offline SEARCH CI ${name}`, 'ci', offlineSearchStep, changed]);
-const localTailStep = '      - name: Run ordinary local-tail tests over all packages\n        run: make test-ordinary-ci-tail\n';
-mutations.push(['offline SEARCH CI precedes local tail', 'ci',
-  `${localTailStep}\n${offlineSearchStep}`, `${offlineSearchStep}\n${localTailStep}`, /exact local tail steps/]);
-mutations.push(['offline SEARCH CI returns to overloaded runtime', 'ci',
-  `  go-local:\n${job(original.ci, 'go-local')}`,
-  `  go-local:\n${job(original.ci, 'go-local').replace(offlineSearchStep, '')}`]);
-test('offline SEARCH cannot move back to runtime or another job', () => {
-  for (const destination of [ordinaryFailureSourceStep, 'Run connected-session tests over all packages', 'Run repository CI contract']) {
-    const command = destination === ordinaryFailureSourceStep ? 'test-ordinary-ci-failure-source' : destination === 'Run connected-session tests over all packages' ? 'test-connected-ci' : 'ci-core-base';
+const failureSourceStep = `      - name: ${ordinaryFailureSourceStep}\n        run: make test-ordinary-ci-failure-source\n`;
+mutations.push(['offline SEARCH CI precedes original runtime prerequisites', 'ci',
+  `${failureSourceStep}\n${offlineSearchStep}`, `${offlineSearchStep}\n${failureSourceStep}`, /exact runtime steps/]);
+mutations.push(['offline SEARCH CI leaves selected runtime', 'ci',
+  `  go-runtime:\n${job(original.ci, 'go-runtime')}`,
+  `  go-runtime:\n${job(original.ci, 'go-runtime').replace(offlineSearchStep, '')}`]);
+test('offline SEARCH cannot move out of its selected runtime job', () => {
+  for (const destination of ['Run ordinary local-tail tests over all packages', 'Run connected-session tests over all packages', 'Run repository CI contract']) {
+    const command = destination === 'Run ordinary local-tail tests over all packages' ? 'test-ordinary-ci-tail' : destination === 'Run connected-session tests over all packages' ? 'test-connected-ci' : 'ci-core-base';
     const anchor = `      - name: ${destination}\n        run: make ${command}\n`;
     const ci = original.ci.replace(offlineSearchStep, '').replace(anchor, anchor + '\n' + offlineSearchStep);
     assert.notEqual(ci, original.ci, `SEARCH move to ${destination} must be effective`);

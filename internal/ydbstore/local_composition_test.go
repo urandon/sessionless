@@ -179,6 +179,26 @@ func TestLocalOwnedStoreBootstrapInertThenSameStoreBurnAndPublication(t *testing
 	})
 }
 
+func TestLocalOwnedStoreBootstrapPreservesImmutableIdentityReadModeV2(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newLocalBootstrapFixture(t)
+		b, err := NewLocalOwnedStoreBootstrapV1(f.actual.source, f.bootstrap.prepare, f.bootstrap.operate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := runtimeOptionsV2()
+		mode := &WebIdentityReadModeV2{Providers: []domain.IdentityProviderBindingV2{original.Providers[0].Binding, original.Providers[1].Binding}}
+		s, err := b.CreateStore(f.store.db, Options{WebIdentityReadsV2: mode}, f.keeper)
+		if err != nil || s.webIdentityV2 == nil || s.localBootstrap != b || s.webIdentityV2.SensitiveOperationsEnabled || s.ownedAttemptEffectSourceVerifier != f.actual.source {
+			t.Fatal("bootstrap lost original owners or V2 read mode", err)
+		}
+		mode.Providers[0].ClientID = "changed-caller-mode"
+		if s.webIdentityV2.Providers[0].ClientID != "runtime-yandex" {
+			t.Fatal("bootstrap retained mutable mode")
+		}
+	})
+}
+
 func TestLocalOwnedStoreBootstrapCopiesForeignAndRepeatedInitializationDeny(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newLocalBootstrapFixture(t)

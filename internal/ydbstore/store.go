@@ -35,6 +35,9 @@ const harnessBindingCutoverID = "harness-binding-v2-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
+	// Immutable codec/current-identity selection only. No account service,
+	// provider proof, HMAC key, enrollment or external cutover is supplied here.
+	WebIdentityReadsV2          *WebIdentityReadModeV2
 	AttachedResourceGenerations *attachedresourcegeneration.Registry
 	// SessionDeletionBlobReader is installed by the trusted application, never
 	// supplied by a deletion request. Nil preserves retained-deletion denial.
@@ -86,6 +89,10 @@ func New(db *sql.DB, options Options) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("YDB database must not be nil")
 	}
+	identity, err := options.WebIdentityReadsV2.configuration()
+	if err != nil {
+		return nil, err
+	}
 	if options.IdempotencyRetention <= 0 {
 		options.IdempotencyRetention = defaultIdempotencyRetention
 	}
@@ -101,6 +108,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		options.AttemptOperationBodies = options.OwnedOperationResidualCustody
 	}
 	return &Store{
+		webIdentityV2:                      identity,
 		attachedResourceGenerations:        options.AttachedResourceGenerations,
 		sessionDeletionBlobReader:          options.SessionDeletionBlobReader,
 		db:                                 db,

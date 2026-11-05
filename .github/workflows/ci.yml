@@ -97,9 +97,6 @@ jobs:
       - name: Run ordinary local-tail tests over all packages
         run: make test-ordinary-ci-tail
 
-      - name: Run additive offline SEARCH connected fixtures
-        run: make test-search-offline
-
   go-connected:
     name: Go connected-session verification
     runs-on: ubuntu-latest
@@ -175,6 +172,9 @@ jobs:
 
       - name: Run ordinary failure and Source tests over all packages
         run: make test-ordinary-ci-failure-source
+
+      - name: Run additive offline SEARCH connected fixtures
+        run: make test-search-offline
 
   web-browser:
     name: Web browser and accessibility

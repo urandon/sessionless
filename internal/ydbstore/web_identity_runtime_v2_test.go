@@ -11,6 +11,34 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+func TestWebIdentityReadModeV2ImmutableConstructorWithoutProofService(t *testing.T) {
+	o := runtimeOptionsV2()
+	mode := &WebIdentityReadModeV2{Providers: []domain.IdentityProviderBindingV2{o.Providers[0].Binding, o.Providers[1].Binding}}
+	s, err := New(&sql.DB{}, Options{WebIdentityReadsV2: mode})
+	if err != nil || s.webIdentityV2 == nil || s.webIdentityV2.SensitiveOperationsEnabled {
+		t.Fatal("nonsecret V2 read constructor", err)
+	}
+	digest, err := WebIdentityManifestDigestV2(mode.Providers)
+	if err != nil || s.webIdentityV2.ManifestDigest != digest {
+		t.Fatal("reader and full runtime use different manifests")
+	}
+	mode.Providers[0].ClientID = "mutated"
+	if s.webIdentityV2.Providers[0].ClientID != "runtime-yandex" {
+		t.Fatal("caller mutated installed read mode")
+	}
+	if old, err := New(&sql.DB{}, Options{}); err != nil || old.webIdentityV2 != nil {
+		t.Fatal("nil reader mode changed V1")
+	}
+	for _, providers := range [][]domain.IdentityProviderBindingV2{nil, {}, {o.Providers[1].Binding, o.Providers[0].Binding}, {o.Providers[0].Binding, o.Providers[0].Binding}} {
+		if got, err := New(&sql.DB{}, Options{WebIdentityReadsV2: &WebIdentityReadModeV2{Providers: providers}}); err == nil || got != nil {
+			t.Fatal("malformed present reader mode published Store")
+		}
+	}
+	if got, service, err := NewWebIdentityRuntimeV2(&sql.DB{}, Options{WebIdentityReadsV2: mode}, o); err == nil || got != nil || service != nil {
+		t.Fatal("full runtime silently replaced contradictory read pins")
+	}
+}
+
 func runtimeOptionsV2() WebIdentityRuntimeOptionsV2 {
 	return WebIdentityRuntimeOptionsV2{
 		Providers: []IdentityAccountProviderV2{

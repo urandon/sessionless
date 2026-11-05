@@ -21,12 +21,13 @@ var ErrLocalRuntime = errors.New("local worker runtime unavailable")
 // opened from the original installation/receipt. All dependencies are borrowed;
 // there is no installer, resource discovery or model permission in this DATA.
 type LocalRuntimeConfig struct {
-	Source            *localoperator.Source
-	Receipt           ports.OwnedProfilePublicationReceiptV1
-	DB                *sql.DB
-	Blobs             ports.BlobStore
-	Worker            Config
-	SearchCredentials *providercredential.InvocationService
+	Source             *localoperator.Source
+	Receipt            ports.OwnedProfilePublicationReceiptV1
+	DB                 *sql.DB
+	Blobs              ports.BlobStore
+	Worker             Config
+	SearchCredentials  *providercredential.InvocationService
+	WebIdentityReadsV2 *ydbstore.WebIdentityReadModeV2
 }
 
 // LocalRuntime retains installation-level dependencies only. It never retains
@@ -58,6 +59,10 @@ func NewLocalRuntime(c LocalRuntimeConfig, clock ports.Clock) (*LocalRuntime, er
 		c.Worker.LocalOwnedSession != nil || c.Worker.ExecutionPreparer != nil || c.Worker.CredentialMode != CredentialDisabled || c.Worker.CredentialLifecycle != nil {
 		return nil, ErrLocalRuntime
 	}
+	if c.WebIdentityReadsV2 != nil && c.WebIdentityReadsV2.Validate() != nil {
+		return nil, ErrLocalRuntime
+	}
+	c.WebIdentityReadsV2 = c.WebIdentityReadsV2.Clone()
 	p := c.Receipt.Profile.Clone()
 	digest, err := p.Digest()
 	if err != nil || digest != c.Receipt.Digest || p.ValidateInitial() != nil || p.Resource.Kind != domain.ProviderResourceLocalEndpointV1 {
@@ -111,7 +116,7 @@ func (r *LocalRuntime) newLocalSession(ctx context.Context) (*providerloopsessio
 		Source: c.Source, DB: c.DB, Blobs: c.Blobs, Prepare: prepare, Operate: operate,
 		Backend: c.Receipt.Profile.Backend, Substrate: c.Receipt.Profile.Substrate,
 		SearchCredentials: c.SearchCredentials,
-		StoreOptions: ydbstore.Options{OwnedProfilePublicationVerifier: c.Source,
+		StoreOptions: ydbstore.Options{WebIdentityReadsV2: c.WebIdentityReadsV2, OwnedProfilePublicationVerifier: c.Source,
 			AttemptSpendingPublicationVerifier: c.Source, OwnedAttemptEffectSourceVerifier: c.Source},
 	})
 	if err != nil {

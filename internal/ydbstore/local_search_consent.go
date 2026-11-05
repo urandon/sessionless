@@ -227,6 +227,7 @@ func (p *localSearchConsentV1) readCurrentTx(ctx context.Context, q *ownedAuthor
 	}
 	var result domain.WebSearchConsentStateV1
 	entry, store := p.entry, p.entry.owner.store
+	mode := ownedConsentIdentityMode{config: store.webIdentityV2}
 	err := func() error {
 		result = domain.WebSearchConsentStateV1{}
 		if q.metadataCache == nil {
@@ -260,7 +261,7 @@ func (p *localSearchConsentV1) readCurrentTx(ctx context.Context, q *ownedAuthor
 		if err != nil {
 			return err
 		}
-		if state.Decision != nil && loadOwnedConsentActor(ctx, q, p.request, state.Decision.WebSessionDigest, &authority) != nil {
+		if state.Decision != nil && loadOwnedConsentActor(ctx, q, p.request, state.Decision.WebSessionDigest, &authority, mode) != nil {
 			return q.budget.deny()
 		}
 		if state.Status == domain.WebSearchConsentApprovedV1 {
@@ -289,6 +290,7 @@ func (p *localSearchConsentV1) readJoinedCurrentTx(ctx context.Context, q *owned
 		return deny()
 	}
 	entry, store := p.entry, p.entry.owner.store
+	mode := ownedConsentIdentityMode{config: store.webIdentityV2}
 	if q.currentParentStore != store || entry.owner.source.VerifyOwnedAttemptEffectSource(entry.source) != nil || store.validateCurrentOwnedAttemptParent(ctx, q, ownedAllocationParentRequest(entry.parent.Reservation), entry.parent) != nil {
 		return deny()
 	}
@@ -332,7 +334,7 @@ func (p *localSearchConsentV1) readJoinedCurrentTx(ctx context.Context, q *owned
 		DataClass: entry.parent.Authority.HarnessBinding.InputDataClass, ClaimState: domain.WebSearchConsentClaimActiveV1,
 		InvocationDeadline: entry.parent.Authority.InvocationDeadline, ActiveDeadline: entry.parent.Authority.Lease.AcquiredAt.Add(policy.Limits.MaxActiveDuration),
 		GrantExpiresAt: expiry, PolicyExpiresAt: policy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt, AllocationExpiresAt: entry.allocation.Window.ExpiresAt}
-	if authority.ValidateCurrent(p.request, q.at) != nil || (state.Decision != nil && loadOwnedConsentActor(ctx, q, p.request, state.Decision.WebSessionDigest, &authority) != nil) {
+	if authority.ValidateCurrent(p.request, q.at) != nil || (state.Decision != nil && loadOwnedConsentActor(ctx, q, p.request, state.Decision.WebSessionDigest, &authority, mode) != nil) {
 		return deny()
 	}
 	if state.Status == domain.WebSearchConsentApprovedV1 {

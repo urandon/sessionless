@@ -294,10 +294,11 @@ the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join all four Go verification jobs, preserving every original predecessor.
 Moving the unchanged Worker command does not increase a binary or job timeout.
-After the unchanged ordinary local-tail target, `go-local` runs
-`make test-search-offline` exactly once. It no longer follows Failure/Source in
-`go-runtime`; that job's original MCP, Worker and Failure/Source commands remain
-unchanged. Local/release `make test-connected`
+The dedicated `go-runtime` job runs `make test-search-offline` exactly once,
+after its unchanged MCP, Worker and Failure/Source commands. The ordinary
+local-tail job retains only its existing complete target. This placement
+preserves every command and predecessor without increasing either job's
+thirty-minute bound. Local/release `make test-connected`
 appends that same target after its unchanged normal selections and MCP gate.
 The SEARCH target checks three fixed overlay destinations are absent, including
 dangling symlinks, checks formatting of the three explicitly search-tagged test-support
@@ -322,9 +323,9 @@ it does not preserve the old aggregate resource ceiling or widen either binary
 limit. Package state is not shared across the executions.
 All eleven jobs, their existing prerequisites, cache controls and job timeouts
 remain unchanged. Actual complete target and exact-head eleven-job execution
-must demonstrate the expanded `go-local` job and unchanged `go-runtime` job each
+must demonstrate the unchanged `go-local` job and expanded `go-runtime` job each
 fit their existing thirty minutes, including action setup and compilation.
-The theoretical local-tail and SEARCH ceilings do not prove fit. Historical
+The theoretical runtime and SEARCH ceilings do not prove fit. Historical
 job timings, estimated headroom and the sum of separate focused tests are
 planning evidence, not qualification. Controlled SEARCH transport/identity/SQL evidence
 is not real-provider, native-YDB, browser/login, activation or full MVP proof.

@@ -3,10 +3,45 @@ package ydbstore
 import (
 	"database/sql"
 	"encoding/json"
+	"reflect"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+// WebIdentityReadModeV2 is trusted, nonsecret constructor DATA. It selects the
+// strict V2 cookie/current-identity language, not a proof service or a cutover
+// receipt. Nil in library options deliberately preserves pre-cutover V1.
+type WebIdentityReadModeV2 struct {
+	Providers []domain.IdentityProviderBindingV2
+}
+
+func (mode *WebIdentityReadModeV2) Clone() *WebIdentityReadModeV2 {
+	if mode == nil {
+		return nil
+	}
+	return &WebIdentityReadModeV2{Providers: append([]domain.IdentityProviderBindingV2(nil), mode.Providers...)}
+}
+
+func (mode *WebIdentityReadModeV2) Validate() error {
+	if mode == nil {
+		return ports.IdentityAccountUnavailableV2
+	}
+	_, err := WebIdentityManifestDigestV2(mode.Providers)
+	return err
+}
+
+func (mode *WebIdentityReadModeV2) configuration() (*identityConfigurationV2, error) {
+	if mode == nil {
+		return nil, nil
+	}
+	owned := mode.Clone()
+	digest, err := WebIdentityManifestDigestV2(owned.Providers)
+	if err != nil {
+		return nil, err
+	}
+	return &identityConfigurationV2{ManifestDigest: digest, Providers: owned.Providers}, nil
+}
 
 // WebIdentityRuntimeOptionsV2 is trusted process configuration, not request
 // data or evidence that an operator has retired old writers. Providers use the
@@ -59,15 +94,20 @@ func NewWebIdentityRuntimeV2(db *sql.DB, options Options, identityOptions WebIde
 	for i, provider := range identityOptions.Providers {
 		bindings[i] = provider.Binding
 	}
-	manifest, err := WebIdentityManifestDigestV2(bindings)
+	_, err := WebIdentityManifestDigestV2(bindings)
 	if err != nil {
 		return nil, nil, err
 	}
+	if options.WebIdentityReadsV2 != nil && (options.WebIdentityReadsV2.Validate() != nil || !reflect.DeepEqual(options.WebIdentityReadsV2.Providers, bindings)) {
+		return nil, nil, ports.IdentityAccountUnavailableV2
+	}
+	options.WebIdentityReadsV2 = &WebIdentityReadModeV2{Providers: bindings}
 	store, err := New(db, options)
 	if err != nil {
 		return nil, nil, ports.IdentityAccountUnavailableV2
 	}
-	store.webIdentityV2 = &identityConfigurationV2{ManifestDigest: manifest, Providers: bindings, SensitiveOperationsEnabled: identityOptions.SensitiveOperationsEnabled}
+	// Still inside construction: no pointer has escaped and there is no setter.
+	store.webIdentityV2.SensitiveOperationsEnabled = identityOptions.SensitiveOperationsEnabled
 	service, err := NewIdentityAccountServiceV2(store, IdentityAccountServiceOptionsV2{Providers: identityOptions.Providers, HMACKey: identityOptions.HMACKey})
 	if err != nil {
 		return nil, nil, err

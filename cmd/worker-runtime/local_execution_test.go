@@ -179,6 +179,31 @@ func workerLocalTestEnvironment() map[string]string {
 		"WEB_LOCAL_INSTALLATION_ROOT": "/private/operator/installation", "WEB_LOCAL_WORKER_EXECUTABLE": "/private/operator/worker-runtime", "WEB_LOCAL_PROFILE_RECEIPT_FILE": "/private/operator/receipt.json"}
 }
 
+func TestWorkerIdentityReadsRequireExplicitVersionBeforeDependencies(t *testing.T) {
+	for _, version := range []string{"1", "2"} {
+		t.Run(version, func(t *testing.T) {
+			env := map[string]string{"WEB_IDENTITY_VERSION": version, "WEB_IDENTITY_SENSITIVE_OPERATIONS": "false", "WEB_LOGIN_PROVIDERS": "yandex,telegram", "WEB_BASE_URL": "https://web.example.com", "YANDEX_LOGIN_CLIENT_ID": "worker-public-client", "TELEGRAM_OIDC_CLIENT_ID": "123456"}
+			lookup := func(k string) (string, bool) {
+				if strings.Contains(k, "SECRET") || strings.Contains(k, "HMAC") {
+					t.Fatal("worker reader requested secret")
+				}
+				v, ok := env[k]
+				return v, ok
+			}
+			mode, err := workerIdentityReadsFromEnvironment(lookup)
+			if err != nil || version == "1" && mode != nil || version == "2" && (mode == nil || mode.Validate() != nil) {
+				t.Fatal("valid explicit reader mode", err)
+			}
+			for _, bad := range []string{"", "3", " 2"} {
+				env["WEB_IDENTITY_VERSION"] = bad
+				if got, err := workerIdentityReadsFromEnvironment(lookup); err != errWorkerLocalExecution || got != nil {
+					t.Fatal("unknown/missing mode accepted")
+				}
+			}
+		})
+	}
+}
+
 // These are inert command denials, not successful boot/HTTP-batch evidence.
 // Genuine receipt intake and fresh per-delivery Manager execution have their
 // existing controlled Source/Store and connected Runtime tests respectively.

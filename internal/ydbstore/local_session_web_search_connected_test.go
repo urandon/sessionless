@@ -241,6 +241,17 @@ func (b *searchLoopBlobs) RequireBlobAbsent(ctx context.Context, tenant domain.T
 	return nil
 }
 
+// The revision-only scenarios consume already-current controlled browser DATA;
+// they must never accidentally launch another ordinary Telegram login.
+type searchLoopNoTelegramLogin struct{}
+
+func (searchLoopNoTelegramLogin) AuthorizationURL(context.Context, ports.OIDCAuthorizationRequest) (string, error) {
+	return "", errors.New("unexpected Telegram login in consent consumer fixture")
+}
+func (searchLoopNoTelegramLogin) ExchangeAndVerify(context.Context, ports.OIDCTokenRequest) (domain.OIDCIdentityClaims, error) {
+	return domain.OIDCIdentityClaims{}, errors.New("unexpected Telegram exchange in consent consumer fixture")
+}
+
 func newSearchLoopWebHandler(t *testing.T, seed *ydbstore.LocalSearchWebSeed, blobs ports.BlobStore, auth *localTextWebAuth) http.Handler {
 	t.Helper()
 	path := filepath.Join(seed.Installation.Root, "search-web-receipt.json")
@@ -261,6 +272,7 @@ func newSearchLoopWebHandler(t *testing.T, seed *ydbstore.LocalSearchWebSeed, bl
 	if err != nil {
 		t.Fatal(err)
 	}
+	options.WebIdentityReadsV2 = seed.Options.WebIdentityReadsV2.Clone()
 	consentStore, err := ydbstore.New(seed.NewBFFDatabase(t), options)
 	if err != nil || consentStore == seed.Store {
 		t.Fatal("independent BFF DATA reader/Store", err)
@@ -277,7 +289,11 @@ func newSearchLoopWebHandler(t *testing.T, seed *ydbstore.LocalSearchWebSeed, bl
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := webbff.New(webbff.Config{BaseURL: localTextWebOrigin, RedirectURI: localTextWebOrigin + webcontract.RouteLoginCallback, ObjectStorageOrigin: "https://objects.fixture.invalid", OAuthProvider: &localTextWebIdentity{subject: "owner-subject", auth: auth}, OAuthClientID: localTextWebOAuthClient, Store: auth, Sessions: sessions, API: api, IDs: localTextWebIDs{}, Clock: localManagerClock{}, SearchConsents: consentStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	providers := []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderYandex, OAuthProvider: &localTextWebIdentity{subject: "owner-subject", auth: auth}, OAuthClientID: localTextWebOAuthClient}}
+	if seed.Options.WebIdentityReadsV2 != nil {
+		providers = append(providers, webbff.LoginProviderConfig{Provider: domain.IdentityProviderTelegram, OIDCProvider: searchLoopNoTelegramLogin{}, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "123456", AllowedAlgorithms: []string{"RS256"}, MaxClockSkew: domain.IdentityProofClockSkewV2}})
+	}
+	h, err := webbff.New(webbff.Config{BaseURL: localTextWebOrigin, ObjectStorageOrigin: "https://objects.fixture.invalid", LoginProviders: providers, Store: auth, Sessions: sessions, API: api, IDs: localTextWebIDs{}, Clock: localManagerClock{}, SearchConsents: consentStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,47 +307,70 @@ func newSearchLoopWebHandler(t *testing.T, seed *ydbstore.LocalSearchWebSeed, bl
 // uses the same private constructor/run/close path as public RunOnce; this is
 // not literal public RunOnce, native YDB, real DNS or endpoint qualification.
 func TestLocalSessionWebSearchOfflineNormalQueuedApproved(t *testing.T) {
-	runLocalSessionWebSearchOffline(t, 1, "", "", false, time.Time{})
+	runLocalSessionWebSearchOffline(t, 1, "", "", false, time.Time{}, "")
 }
 
 func TestLocalSessionWebSearchOfflineTwoProductiveAttemptsSameSource(t *testing.T) {
-	runLocalSessionWebSearchOffline(t, 2, "", "", false, time.Time{})
+	runLocalSessionWebSearchOffline(t, 2, "", "", false, time.Time{}, "")
 }
 
 func TestLocalSessionWebSearchOfflineActiveBorrowKeepsOriginalGeneration(t *testing.T) {
-	runLocalSessionWebSearchOffline(t, 1, "", "", true, time.Time{})
+	runLocalSessionWebSearchOffline(t, 1, "", "", true, time.Time{}, "")
 }
 
 func TestLocalSessionWebSearchOfflineCurrentAuthorityDeniesBeforeSend(t *testing.T) {
 	for _, mode := range []string{"membership", "session", "claim_fence", "search_authority_revoked"} {
-		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, mode, "", false, time.Time{}) })
+		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, mode, "", false, time.Time{}, "") })
 	}
 }
 
 func TestLocalSessionWebSearchOfflineSourceAndCallerClosureBeforeSend(t *testing.T) {
 	for _, mode := range []string{"source_closed", "caller_cancelled"} {
-		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, mode, "", false, time.Time{}) })
+		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, mode, "", false, time.Time{}, "") })
 	}
 }
 
 func TestLocalSessionWebSearchOfflineFailureTails(t *testing.T) {
 	for _, mode := range []string{domain.SearchConsentStoppedV4, domain.SearchRejectedBeforeSendV4, domain.SearchServiceErrorV4, domain.SearchOutcomeUnknownV4, domain.ModelAfterSearchFailureV4} {
-		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, "", mode, false, time.Time{}) })
+		t.Run(mode, func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, "", mode, false, time.Time{}, "") })
 	}
 }
 
 func TestLocalSessionWebSearchOfflinePendingExpiryIsStoredStop(t *testing.T) {
-	runLocalSessionWebSearchOffline(t, 1, "", domain.SearchConsentStoppedV4, false, time.Now().UTC().Truncate(time.Microsecond).Add(20*time.Second))
+	runLocalSessionWebSearchOffline(t, 1, "", domain.SearchConsentStoppedV4, false, time.Now().UTC().Truncate(time.Microsecond).Add(20*time.Second), "")
 }
 
 func TestLocalSessionWebSearchOfflineDeniedAtExpiryBoundaryRemainsDenied(t *testing.T) {
-	runLocalSessionWebSearchOffline(t, 1, "boundary_deny", domain.SearchConsentStoppedV4, false, time.Now().UTC().Truncate(time.Microsecond).Add(20*time.Second))
+	runLocalSessionWebSearchOffline(t, 1, "boundary_deny", domain.SearchConsentStoppedV4, false, time.Now().UTC().Truncate(time.Microsecond).Add(20*time.Second), "")
 }
 
-func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutation, failureMode string, rotateCurrentCredential bool, grantExpiry time.Time) {
+func TestLocalSessionWebSearchOfflineNormalQueuedApprovedIdentityV2(t *testing.T) {
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
+		t.Run(string(provider), func(t *testing.T) { runLocalSessionWebSearchOffline(t, 1, "", "", false, time.Time{}, provider) })
+	}
+}
+
+func TestLocalSessionWebSearchOfflineIdentityV2RevisionChangeDeniesSearch(t *testing.T) {
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
+		t.Run(string(provider), func(t *testing.T) {
+			for _, phase := range []string{"poll", "before_send"} {
+				t.Run(phase, func(t *testing.T) {
+					runLocalSessionWebSearchOffline(t, 1, "identity_"+phase, "", false, time.Time{}, provider)
+				})
+			}
+		})
+	}
+}
+
+func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutation, failureMode string, rotateCurrentCredential bool, grantExpiry time.Time, identityProvider domain.IdentityProvider) {
 	t.Helper()
 	model, search := newSearchLoopPeer(t, true, attempts, failureMode), newSearchLoopPeer(t, false, attempts, failureMode)
-	seed := ydbstore.NewLocalSearchWebSeed(t, model.server.URL+"/v1", grantExpiry)
+	var seed *ydbstore.LocalSearchWebSeed
+	if identityProvider == "" {
+		seed = ydbstore.NewLocalSearchWebSeed(t, model.server.URL+"/v1", grantExpiry)
+	} else {
+		seed = ydbstore.NewLocalSearchWebSeedWithIdentityV2(t, model.server.URL+"/v1", grantExpiry, identityProvider)
+	}
 	var pendingBoundary <-chan time.Time
 	if authorityMutation == "boundary_deny" {
 		pendingBoundary = seed.ObserveFinalPendingPoll(t)
@@ -344,7 +383,16 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 	auth := newTextWebAuth(seed.Tenant, seed.Owner)
 	h := newSearchLoopWebHandler(t, seed, blobs, auth)
 	cookie, csrf := localTextWebLogin(t, h)
-	seed.SetWebSessionData(t, auth.sessions[domain.DigestSecret(cookie.Value)])
+	web := auth.sessions[domain.DigestSecret(cookie.Value)]
+	if identityProvider != "" {
+		// Existing-current browser identity is controlled DATA; provider-login
+		// compatibility remains the independent identity/browser native matrix.
+		web.AuthenticatedSubject.Provider = identityProvider
+		auth.sessions[web.SessionDigest] = web
+		seed.SetWebIdentityV2Data(t, web)
+	} else {
+		seed.SetWebSessionData(t, web)
+	}
 	path := "/api/web/v1/sessions/" + string(seed.Session) + "/messages"
 	ref, err := domain.NewCredentialSecretRef("synthetic-controlled-search-reference")
 	if err != nil {
@@ -356,7 +404,7 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 	var mutationErr error
 	var cancelBorrow context.CancelFunc
 	mutated := false
-	if authorityMutation != "" && authorityMutation != "boundary_deny" {
+	if authorityMutation != "" && authorityMutation != "boundary_deny" && !strings.HasPrefix(authorityMutation, "identity_") {
 		secrets.beforeBorrow = func() error {
 			if mutated {
 				mutationErr = errors.New("current authority mutation repeated")
@@ -416,9 +464,13 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 		q := &localManagerQueue{message: ports.ReceivedMessage{Envelope: queuecontract.Envelope{Schema: queuecontract.SchemaV1, MessageID: "normal-search-delivery", Kind: queuecontract.KindDispatchRun, TenantID: seed.Tenant, SubjectID: string(m.Loaded.Run.ID), EnqueuedAt: m.Loaded.Job.CreatedAt}}}
 		retryError = nil
 		if runtime == nil {
-			runtime, err = worker.NewLocalRuntime(worker.LocalRuntimeConfig{Source: seed.Source, Receipt: seed.OriginalReceipt(), DB: seed.DB, Blobs: blobs, SearchCredentials: credentials, Worker: worker.Config{ScratchRoot: t.TempDir(), WorkerID: m.Claim.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, ProjectionWakePublisher: wakes, DeliveryWakePublisher: wakes, RetryObserver: func(err error) { retryError = err }}}, localManagerClock{})
+			identityReads := seed.Options.WebIdentityReadsV2.Clone()
+			runtime, err = worker.NewLocalRuntime(worker.LocalRuntimeConfig{Source: seed.Source, Receipt: seed.OriginalReceipt(), DB: seed.DB, Blobs: blobs, SearchCredentials: credentials, WebIdentityReadsV2: identityReads, Worker: worker.Config{ScratchRoot: t.TempDir(), WorkerID: m.Claim.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, ProjectionWakePublisher: wakes, DeliveryWakePublisher: wakes, RetryObserver: func(err error) { retryError = err }}}, localManagerClock{})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if identityReads != nil {
+				identityReads.Providers[0].Issuer = "https://changed-after-runtime-construction.invalid"
 			}
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -487,6 +539,9 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 			t.Fatalf("separate BFF exact original pending view status=%d body=%s SQL=%s", view.Code, view.Body.String(), seed.LastError())
 		}
 		choice := "approve"
+		if strings.HasPrefix(authorityMutation, "identity_") {
+			seed.ArmIdentityRevisionAdvanceV2(t, strings.TrimPrefix(authorityMutation, "identity_"))
+		}
 		if failureMode == domain.SearchConsentStoppedV4 {
 			choice = "deny"
 		}
@@ -677,6 +732,35 @@ func runLocalSessionWebSearchOffline(t *testing.T, attempts int, authorityMutati
 			}
 			if !objectsUnchanged {
 				t.Fatal("terminal redelivery replaced or erased original retained body bytes")
+			}
+			cancel()
+			return
+		}
+		if strings.HasPrefix(authorityMutation, "identity_") {
+			reads, advanced, advanceErr := seed.WebIdentityV2Readback()
+			reservations, observations := m.OperationReadback(t)
+			final := m.TerminalSnapshot(t)
+			wantOps, wantKeys := 1, 0
+			validOwner := retryError != nil && result.outcome == worker.OutcomeRetried && q.ack == 0 && q.retry == 1 && final.Finalizations == 0 && !final.Run.Status.Terminal() && !m.StorageReleased() && len(final.Events) == 0
+			if authorityMutation == "identity_before_send" {
+				wantOps, wantKeys = 2, 1
+				// The original reserve committed before this CURRENT identity
+				// change. Invoke truthfully records a zero-send rejection, and the
+				// existing closed failure owner—not a fabricated consent stop—ACKs.
+				validOwner = retryError == nil && result.outcome == worker.OutcomeFailed && q.ack == 1 && q.retry == 0 && final.Finalizations == 1 && final.Run.Status == domain.RunFailed && final.Run.TerminalFailure != nil && final.Run.TerminalFailure.Stop == domain.SearchRejectedBeforeSendV4 && final.Run.TerminalFailure.Cleanup == "joined_retained" && m.StorageReleased() && len(final.Events) == 3
+				if len(reservations) != 2 || len(observations) != 2 || reservations[1].Operation.Kind != domain.AttemptOperationWebSearchV1 || reservations[1].Operation.Debit.AmountMicrounits != 10000 || observations[1].Outcome != domain.AttemptOperationRejectedBeforeSendV1 || observations[1].Reason != domain.AttemptOperationReasonTransportUnknownV1 || observations[1].Usage.State != domain.AttemptOperationUsageUnknownV1 {
+					t.Fatal("identity pre-send denial lost original charged SEARCH rejection")
+				}
+			}
+			if !advanced || advanceErr != nil || reads < 3 || result.err != nil || !validOwner || model.calls.Load() != 1 || search.calls.Load() != 0 || len(secrets.returned) != wantKeys || len(reservations) != wantOps || len(observations) != wantOps || observations[0].Outcome != domain.AttemptOperationCompletedV1 || blobs.deletes != 0 || blobs.absences != 0 {
+				t.Fatalf("V2 revision barrier failed provider=%s phase=%s advanced=%t/%v reads=%d outcome=%s err=%v retry=%v ops=%d observations=%d MODEL=%d SEARCH=%d keys=%d SQL=%s", identityProvider, authorityMutation, advanced, advanceErr, reads, result.outcome, result.err, retryError, len(reservations), len(observations), model.calls.Load(), search.calls.Load(), len(secrets.returned), seed.LastError())
+			}
+			for _, raw := range secrets.returned {
+				for _, b := range raw {
+					if b != 0 {
+						t.Fatal("revision-denied borrow not cleared")
+					}
+				}
 			}
 			cancel()
 			return

@@ -1,6 +1,7 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.13, terminal consent-stop scheduling within the original cleanup
+Version: 0.2.14, immutable identity-read configuration across the original BFF
+and worker owners. Terminal consent-stop scheduling retains the original cleanup
 deadline. The 0.2.12 explicit local worker credential-backend assembly startup
 contract below supplies the existing encrypted backend without discovering keys
 or changing its wire. The 0.2.11 wait limits below
@@ -950,6 +951,34 @@ the closed key/cap/integrity rules, no writes/deletes, cleanup/read races and
 revocation during body I/O. A synthetic pending row is reader-seam evidence,
 not the genuine MODEL producer; the joined bridge still requires original
 pending creation, authenticated decision and the same-claim continuation.
+
+#### Immutable identity language across BFF and worker
+
+The Web process and original worker must explicitly select compatible identity
+record semantics. A V2 BFF approval cannot be consumed by a worker that still
+decodes V1 cookies. Do not infer a mode from JSON, retry a failed V2 parse as V1,
+or pass an already-authorized browser snapshot across transaction owners.
+
+Trusted constructor DATA `WebIdentityReadModeV2` carries only the ordered public
+provider bindings. Derive its manifest through `WebIdentityManifestDigestV2`;
+validate and deep-copy before the Runtime or Store escapes. The worker forwards
+it through the existing `StoreOptions` into the original bootstrap-created Store.
+No second Store, setter, reload, login/proof service, client secret or HMAC key is
+needed. Nil library options deliberately select pre-cutover V1; the selected local
+worker command parses exact `WEB_IDENTITY_VERSION` before opening dependencies.
+V2 requires the same enabled-provider, HTTPS Web origin, client-ID and issuer pins
+as the BFF. This DATA neither grants database read-only permissions nor proves
+schema/data cutover or old-writer retirement.
+
+Both private polling and joined reserve/before-send callbacks use that SAME
+Store's immutable mode and actual current forward-identity/revision checks.
+Keep every original actor, membership, claim, Source and budget check. Prove both
+providers through genuine queued V2 approval and continuation, with independent
+revision-only mutations at polling and pre-send and unchanged V1 controls.
+Pre-reservation denial stays unreserved/reconcile-only. A post-reservation denial
+retains its charged, truthful rejected-before-send observation and original
+terminal/cleanup owner; it must not become an uncharged retry or HTTP send.
+These controlled checks do not prove live OAuth, native YDB or profile activation.
 
 ## Adapter and network boundary
 

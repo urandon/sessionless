@@ -1221,6 +1221,18 @@ OFF is not evidence that old directly invokable revisions have stopped.
 
 Writer inventory for this rollout:
 
+For an explicitly selected owner-local worker, `WEB_IDENTITY_VERSION=2` also
+selects strict V2 consent consumption in its original per-invocation Store.
+Provide the same nonsecret `WEB_LOGIN_PROVIDERS`, `WEB_BASE_URL`, selected
+`YANDEX_LOGIN_CLIENT_ID` / `TELEGRAM_OIDC_CLIENT_ID` and optional fixed
+`TELEGRAM_OIDC_ISSUER` pins as the BFF, plus the existing exact sensitive-operation
+flag required by the shared version parser. No OAuth secret, proof adapter or
+HMAC key is needed for the worker's identity reader. Public library constructors
+use validated, copied `WebIdentityReadModeV2` through the existing Store options;
+nil deliberately retains pre-cutover V1. Neither choice is inferred from stored
+cookies. This does not enable local execution, grant database permissions,
+configure a cloud worker or establish the required external cutover.
+
 | Writer/consumer | V2 disposition |
 | --- | --- |
 | Ordinary resolver/login/challenge/session/switch/logout | Existing strict V2 branches through the one new Store; no V1 fallback or automatic membership |

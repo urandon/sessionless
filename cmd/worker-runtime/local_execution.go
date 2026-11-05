@@ -13,11 +13,33 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
+	"gitcode.com/urandon/sessionless/internal/webauthconfig"
 	"gitcode.com/urandon/sessionless/internal/worker"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 var errWorkerLocalExecution = errors.New("owner-local worker runtime unavailable")
+
+// The local worker shares the explicit deployment codec and public client pins,
+// not the BFF's login/proof adapters, secrets or sensitive-operation authority.
+func workerIdentityReadsFromEnvironment(lookup func(string) (string, bool)) (*ydbstore.WebIdentityReadModeV2, error) {
+	c, err := webauthconfig.RuntimeFromEnvironment(lookup)
+	if err != nil {
+		return nil, errWorkerLocalExecution
+	}
+	if c.Version == "1" {
+		return nil, nil
+	}
+	bindings, err := webauthconfig.ReadBindingsFromEnvironment(lookup)
+	if err != nil {
+		return nil, errWorkerLocalExecution
+	}
+	mode := &ydbstore.WebIdentityReadModeV2{Providers: bindings}
+	if mode.Validate() != nil {
+		return nil, errWorkerLocalExecution
+	}
+	return mode, nil
+}
 
 type workerLocalExecutionConfig struct {
 	enabled                           bool

@@ -17,6 +17,11 @@ test('native destination is explicit and only the old owned group is retained', 
   assert.match(readFileSync(join(repo, 'infra/terraform/modules/foundation/outputs.tf'), 'utf8'), /output "log_group_id" \{ value = var\.runtime_log_group_id \}/);
   assert.doesNotMatch(readFileSync(join(repo, 'infra/terraform/cloud-dev/variables.tf'), 'utf8'), /variable "log_retention"/);
   assert.doesNotMatch(readFileSync(join(repo, 'scripts/cloud-terraform.sh'), 'utf8'), /-refresh=false|state rm.*logging/);
+  const workflow = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  const terraformJob = workflow.match(/^  terraform:\n([\s\S]*?)(?=^  [a-z][a-z-]*:|$(?![\s\S]))/m)?.[1];
+  assert.ok(terraformJob, 'Terraform CI job must remain present');
+  assert.match(terraformJob, /uses: hashicorp\/setup-terraform@v4\n\s+with:\n\s+terraform_version: 1\.15\.5\n(?:\s*#.*\n)*\s+terraform_wrapper: false\n/,
+    'isolated tests require the actual pinned CLI, not the Actions output wrapper');
 });
 
 function command(binary, args, cwd, env, timeout = 10000) {

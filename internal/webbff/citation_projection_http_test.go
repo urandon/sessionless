@@ -73,7 +73,7 @@ func TestCitedHistoryHTTPRefreshAndSafeWholePageFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := webbff.New(webbff.Config{BaseURL: "https://web.dev.sessionless.triborg.dev", RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}, Provider: fakeProvider{subject: subject.Subject}, Store: auth, Sessions: sessions, IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	h, err := webbff.New(webbff.Config{BaseURL: "https://web.dev.sessionless.triborg.dev", LoginProviders: []webbff.LoginProviderConfig{{Provider: domain.IdentityProviderTelegram, OIDCProvider: fakeProvider{subject: subject.Subject}, OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}}}}, Store: auth, Sessions: sessions, IDs: fixedIDs{}, Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

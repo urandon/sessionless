@@ -53,8 +53,13 @@ revision live in `external_identities`; `external_identities_by_user` projects
 at most two active methods. Immutable unlinked-subject ownership tombstones
 have no operational TTL and are not account erasure. `web_sessions` snapshot
 the authenticating identity revision; every authorization consumer rechecks it.
-The explicit V2 domain/row helpers and private operation transaction remain
-unmounted source components, not a serving-mode installation. The machine
+`NewWebIdentityRuntimeV2` now constructs the immutable Store/account service
+pair used by explicit V2 `cmd/web-bff` startup. It performs no SQL or cutover;
+the existing tables/readers remain authoritative. Sensitive OFF preserves V2
+login/revision checks/receipts, not a V1 rollback. Legacy enrollment, bootstrap
+and Telegram-chat writers are retired in V2; command guards do not retire old
+revisions/private invokers. See the [writer inventory](../development.md#immutable-identity-runtime-and-retired-writers).
+The machine
 registry lists these source consumers and retains the original CREATE lineage.
 Forward migrations [00130](../../migrations/ydb/00130_add_identity_challenge_delete_after.sql)
 and [00131](../../migrations/ydb/00131_set_identity_challenge_delete_after_ttl.sql)
@@ -63,13 +68,45 @@ physical TTL from `expires_at` to this column. Original `00053` is unchanged.
 There remain 105 historical CREATEs and 101 effective active tables; these two
 ALTERs add neither an account registry nor a challenge/receipt table.
 
+The operator-only `web_identity_maintenance_v2.go` consumer uses these SAME four
+identity/reverse/challenge/Web-cookie tables plus read-only existing migration
+metadata. `identity-maintenance.v1` inventories all fixed buckets before an
+exact prepared user/row CAS under separately verified writer freeze; it neither
+installs V2 nor records a new global cutover grant. Coherent V1 conversion
+projects only legacy JSON timestamps to their already-persisted physical
+microsecond facts, preserving owner/subject and reverse timestamps. Existing
+V2 rows/tombstones remain strict and unchanged; V1 challenges retire only by
+exact deletion, V1 cookies by exact immutable-time revocation. Progress/candidate
+files are operator artifacts, not new database entities, ownership authority or
+evidence of TTL erasure. Unknown deletion attribution stays unknown.
+
 V1 challenge writes set `delete_after` to their original expiry without changing
 their JSON contract or authorizing a V2 fallback. V2 pending operations and
 proof/login challenges retain their original at-most-ten-minute deadline. Only
 a terminal transaction that strips subjects, proofs and secret bindings from
 the JSON AND physical scalar columns may retain a minimal receipt until
-creation plus 24 hours. Consumed proof challenges must clear physical PKCE/nonce too.
+creation plus 24 hours. Consumed login and proof challenges clear physical
+PKCE/nonce as well as their JSON secrets. The private
+[`web_login_challenge_v2.go`](../../internal/ydbstore/web_login_challenge_v2.go)
+adapter reuses the same strict physical challenge reader/writer and existing
+login ports; it is not a V1 fallback, linking proof or public activation. Initial
+carrier timestamps are converted once to UTC microseconds (expiry rounds down,
+never renews); stored physical/JSON times must still match exactly on every read.
 Existing audit tables retain content-free events under their original policy.
+
+The private [`web_identity_outcome_v2.go`](../../internal/ydbstore/web_identity_outcome_v2.go)
+owner reads minimal operation status under current same-user authorization,
+including after legitimate relogin with sensitive operations disabled. Reads do
+not refresh activity, prune records, extend retention or recover a lost cookie.
+A logically expired pending row reports expiry without inventing a stored
+receipt. Explicit cancellation and SQL-clock expiry require the original
+scope, browser, CSRF, revision and trusted configuration. They atomically prune
+the existing operation row and append a typed content-free security event via
+the canonical audit writer. Unknown authorization or storage failures produce
+no terminal receipt; identity, membership, cookie and child-proof rows remain
+unchanged. Negative receipts have no successor revision and retain only until
+original creation plus 24 hours. This reuses the existing challenge and security
+audit tables; it is not a public handler or a serving-mode installation.
 
 The registry's `delete_after` retention is the intended effective SOURCE schema,
 not evidence of applied DDL or runtime enablement. NULL old cells do not expire
@@ -79,6 +116,32 @@ remain separately authorized work. No bounded retained-data backfill or cutover
 executor is delivered by this storage description, and no old identity may be
 silently reactivated. Keep V2 serving disabled until the complete transition and
 all transactional authorization consumers are independently verified.
+
+The private compute-choice LIST transaction can select the V2 cookie contract
+and point-read the authenticating forward identity before membership, Session,
+limiter and candidate reads. The existing compute-choice resource budget owns
+that read and charges its returned prefix before decoding. Default V1 mode
+remains unchanged. This source reader adds no durable state, public serving
+installation or SEND authority; persisted CSRF-column correspondence is not
+verification of a presented CSRF token.
+
+The private V2 explanation-read integration reuses the canonical cookie and
+identity codecs inside each original direct/rated resource transaction. It
+checks the authenticating identity's exact active revision before resource reads
+or rate probes/debits. Membership and participant checks remain required. One
+additional bounded identity point read shares the existing aggregate twenty-
+statement budget and three-second deadline; no activity, identity or membership
+row is refreshed. These two explanation readers do not establish the complete
+V2 cutover; the other consumers still require their own integrations.
+
+The private consent integration selects the V2 cookie and authenticating
+identity inside each owning transaction: discovery, pre-body intent, final
+read/decision and receipt consumption before SEARCH reservation or send.
+The original shared resource budget charges the existing bounded row helpers;
+there is no activity refresh, new table or public installation. Negative-only
+reconciliation distinguishes observed canonical identity removal/revision from
+malformed or unavailable data. Pending requests remain browser-cookie-free.
+This is a consumer integration, not acceptance of the complete V2 cutover.
 
 An authenticated exact-query consent view is transient private data derived
 from the existing consent state and its immutable scoped argument body. It has

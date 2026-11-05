@@ -21,7 +21,7 @@ func TestLocalCompactionEffectBeforeSendRejoinsCurrentRun(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := preparedCompactionEffectFixture(t, false)
+				f, g, engine := preparedCompactionEffectFixture(t, false, localRuntimeActualPrebuild{})
 				reserved, err := f.store.ReserveAttemptOperation(t.Context(), ports.ReserveAttemptOperationRequestV1{Operation: g.operation})
 				if err != nil || reserved.Status != ports.AttemptOperationReservedV1 || reserved.Capability == nil || reserved.Capability.Validate() != nil || engine.writes != 1 {
 					t.Fatalf("genuine factory -> actual public Reserve: err=%v status=%v capability=%t writes=%d", err, reserved.Status, reserved.Capability != nil, engine.writes)

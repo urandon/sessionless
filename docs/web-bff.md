@@ -2,8 +2,8 @@
 
 ## Boundary
 
-`web-bff` is a same-origin Go backend-for-frontend. The selected Yandex OAuth or
-legacy Telegram OIDC adapter proves an external identity; it does not grant
+`web-bff` is a same-origin Go backend-for-frontend. Each explicitly enabled
+Yandex OAuth or Telegram OIDC adapter proves an external identity; it does not grant
 tenant access. Every authenticated
 request is authorized against a current Sessionless tenant membership stored in
 YDB. Browser-provided tenant IDs are selectors only.
@@ -19,7 +19,9 @@ sequenceDiagram
     participant YDB
     participant Yandex as Yandex ID OAuth
 
-    Browser->>BFF: GET /auth/login/start
+    Browser->>BFF: GET /auth/login/methods from /login chooser
+    BFF-->>Browser: Configured methods and fixed form paths
+    Browser->>BFF: POST /auth/login/yandex/start (Origin + form)
     BFF->>YDB: Store one-time browser/provider/client-bound PKCE challenge
     BFF-->>Browser: Secure browser-binding cookie + 303
     Browser->>Yandex: Authorization Code + S256 PKCE request
@@ -41,13 +43,21 @@ sequenceDiagram
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz`, `/readyz`, `/version` | Process health and build metadata |
-| `GET` | `/auth/login/start` | Create a one-time login challenge for the deployment-selected provider |
-| `GET` | `/auth/login/callback` | Consume the challenge, verify the selected identity, and create a membership-authorized Web session |
-| `GET` | `/auth/telegram/start`, `/auth/telegram/callback` | Legacy aliases mounted only when Telegram is selected; existing Telegram callback registration is preserved |
+| `GET` | `/login` | Browser login chooser; no implicit provider redirect |
+| `GET` | `/auth/login/methods` | Read configured methods without DB/provider calls; `{methods:[{provider,label,start_path}]}` |
+| `POST` | `/auth/login/yandex/start`, `/auth/login/telegram/start` | Exact-Origin bounded form; create a challenge for that enabled fixed provider only |
+| `GET` | `/auth/login/callback` | Consume a Yandex/client/browser-bound challenge and verify the Yandex account |
+| `GET` | `/auth/telegram/callback` | Consume a Telegram/client/browser-bound challenge and verify Telegram OIDC claims |
 | `POST` | `/auth/logout` | Revoke the current Web session |
 | `GET` | `/api/web/v1/me` | Return the current identity and active tenant |
 | `GET` | `/api/web/v1/tenants` | Return the caller's active memberships |
 | `POST` | `/api/web/v1/active-tenant` | Rotate the Web session into another authorized tenant |
+| `GET` | `/api/web/v1/account/login-methods` | Optional joined service: current two-provider own-method view, without idle refresh |
+| `POST` | `/api/web/v1/account/identity-operations` | Optional joined service: explicitly start link/unlink with current CSRF and revision |
+| `GET` | `/api/web/v1/account/identity-operations/{operation_id}` | Pure same-user retained outcome, including after relogin; missing outcome is 410 |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/continue` | Current original operation binding; return only the exact pending phase authorization URL |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/confirm` | Explicit atomic confirmation; replacement cookies only for a newly committed session, never receipt replay |
+| `POST` | `/api/web/v1/account/identity-operations/{operation_id}/cancel` | Explicit current-scope cancellation; no guessed provider result |
 | `GET`, `POST` | `/api/web/v1/sessions` | Page active/archived sessions or create one idempotently |
 | `GET` | `/api/web/v1/sessions/{session_id}` | Open bounded participant-authorized session metadata |
 | `GET` | `/api/web/v1/sessions/{session_id}/events` | Page ordered canonical event payloads after authorization |
@@ -67,12 +77,20 @@ sequenceDiagram
 | `GET` | `/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | Create a short-lived capability for one canonical attachment |
 | `GET` | `/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}` | Create a short-lived capability for one exact worker artifact |
 
-Mutation routes require an exact `Origin` match and a double-submit CSRF value
+Authenticated mutation routes require an exact `Origin` match and a double-submit CSRF value
 whose digest must also match the current server-side session. Switching tenants
 always revokes the previous session and rotates both opaque values. Cookies use
 the `__Host-` prefix, `Secure`, `HttpOnly` where applicable, `Path=/`, and no
 `Domain` attribute. The default idle lifetime is 12 hours and the absolute
 lifetime is seven days.
+
+Login starts precede a Web session: they require exact `Origin` and a bounded
+`application/x-www-form-urlencoded` body containing only one optional local
+`return_to`, not an authenticated-session CSRF token or a browser-selected
+provider field. Old GET starts `/auth/login/start` and `/auth/telegram/start`
+are removed, not aliases. Methods discovery returns at most two configured
+entries in canonical order, with labels exactly `Yandex` and `Telegram` and
+fixed start paths; it does not create a challenge or select a fallback.
 
 Browser code cannot supply raw frontend coordinates. On message submission the
 server creates or verifies the binding `(web, session_id)` for the authorized
@@ -109,8 +127,9 @@ audit-storage detail is reflected to the browser.
 
 ## Telegram provider configuration
 
-This compatibility path remains the default when `WEB_LOGIN_PROVIDER` is empty
-or `telegram`; the MVP independently selects `yandex`. The implementation
+Include `telegram` in the explicit `WEB_LOGIN_PROVIDERS` list to enable this
+path; there is no default or compatibility selection. Its callback stays
+`WEB_BASE_URL` plus `/auth/telegram/callback`. The implementation
 follows Telegram's OIDC Authorization Code flow with PKCE
 `S256`. The production defaults are:
 
@@ -130,7 +149,8 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 
 ## Yandex provider configuration
 
-`WEB_LOGIN_PROVIDER=yandex` selects Authorization Code OAuth with S256 PKCE.
+Including `yandex` in `WEB_LOGIN_PROVIDERS` enables Authorization Code OAuth
+with S256 PKCE.
 Register exactly `WEB_BASE_URL` plus `/auth/login/callback` and request only
 `login:info`. The pinned defaults are `https://oauth.yandex.ru/authorize`,
 `https://oauth.yandex.ru/token` and `https://login.yandex.ru/info?format=json`.
@@ -159,7 +179,9 @@ and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
 | `WEB_PORT` | BFF listen port |
 | `PORT` | Serverless platform listen port; takes precedence over `WEB_PORT` when set |
 | `WEB_OBJECT_STORAGE_ORIGIN` | Exact browser-facing capability origin; required with the Web API, HTTPS except loopback HTTP in `local` |
-| `WEB_LOGIN_PROVIDER` | `yandex` for the independent MVP path; empty or `telegram` preserves existing deployments |
+| `WEB_LOGIN_PROVIDERS` | Required exact ordered value `yandex`, `telegram`, or `yandex,telegram`; no default, spaces, duplicates or reversed list |
+| `WEB_IDENTITY_VERSION` | Required exact `1` before cutover or `2` after the separately accepted writer/data transition; never auto-detected |
+| `WEB_IDENTITY_SENSITIVE_OPERATIONS` | Required exact `true`/`false` in V2; V1 permits absent or `false` only. OFF preserves V2 login/currentness/receipts, denying new changes |
 | `YANDEX_LOGIN_CLIENT_ID` | Registered Yandex application client ID, required when selected |
 | `YANDEX_LOGIN_CLIENT_SECRET` | Private Yandex client secret, required when selected |
 | `YANDEX_LOGIN_AUTHORIZATION_ENDPOINT`, `YANDEX_LOGIN_TOKEN_ENDPOINT`, `YANDEX_LOGIN_INFO_ENDPOINT` | Optional local-loopback fixture overrides; public endpoints are pinned by default |
@@ -184,10 +206,31 @@ and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
 The client secret must be injected into the process environment from an OS
 secret store locally and Lockbox in Yandex Cloud. It must not be present in
 Terraform state, container arguments, images, DSNs, repository files, or logs.
-The existing Lockbox key `oidc-client-secret` remains a generic storage key for
-the selected login secret: it maps to the Yandex or Telegram environment variable
-according to the explicit deployment selector. This is not an OIDC assertion
-about Yandex. The secret loader and Terraform must use the same provider.
+Lockbox `yandex-login-client-secret` maps only to `YANDEX_LOGIN_CLIENT_SECRET`;
+`telegram-oidc-client-secret` maps only to `TELEGRAM_OIDC_CLIENT_SECRET`. Both
+are required when both providers are enabled; there is no old shared
+`oidc-client-secret` fallback. The secret loader's `WEB_LOGIN_PROVIDERS` and
+Terraform `web_login_providers` must select the same exact list. Presence of
+retired `WEB_LOGIN_PROVIDER` is rejected even when empty; remove it rather than
+setting it to an empty value.
+
+Before a separately authorized deployment, remove the old environment/TF
+settings, complete every enabled client's registration and exact callback,
+create a new provider-specific Web secret version outside Terraform, and pin
+the approved image/revision and secret version together. Co-land gateway,
+chooser/UI and BFF discovery/POST changes. See the
+[operator migration](development.md#ordinary-login-provider-configuration).
+These source/runbook changes do not register clients or deploy secrets. Ordinary
+login does not complete dual-proof linking (#172/#239) or settings (#240), and
+never links equal provider subjects/emails or creates tenant membership.
+
+Normal V2 startup now mounts the paired account service, using the same Store,
+actual ordinary/proof adapters and existing identity HMAC key. It is not a
+cutover attestation. Before serving V2, follow the
+[immutable runtime/writer inventory](development.md#immutable-identity-runtime-and-retired-writers)
+and all-ingress maintenance procedure. Legacy bootstrap/enrollment and Telegram
+chat writers are explicitly retired, not silently converted. Turning sensitive
+operations OFF never restores V1 readers or erases existing receipts.
 
 `oidc-fake` is a Go-only local fixture. It uses the `OIDC_FIXTURE_*` variables,
 generates one ephemeral RSA key per process, supports one-time authorization
@@ -272,8 +315,10 @@ transport identifier becoming a product identity.
 Yandex sign-in does not reuse that Telegram mapping merely because subject
 strings or emails match. A new Yandex identity requires its own invitation or
 audited bootstrap membership. Late linking two authenticated login methods to
-one user is [post-MVP #172](https://gitcode.com/urandon/sessionless/issues/172),
-not implicit inheritance and not a pilot release gate.
+one user remains explicit dual-proof work under
+[#172](https://gitcode.com/urandon/sessionless/issues/172)/#239, with settings
+under #240. Ordinary login/chooser delivery does not complete those flows or
+permit implicit inheritance.
 
 ## Audited cloud-development bootstrap
 
@@ -388,6 +433,49 @@ composition. Fixture-only producer authority is not
 an authentic model/search producer or permission to activate a profile.
 
 ## Verification
+
+### Account settings browser boundary
+
+`Account` opens `/account/login-methods`. The page reads the optional account
+service, displays exactly the server's two provider rows and advisory actions,
+and keeps identity revisions as decimal strings, including values above 2^53.
+An unconfigured service displays an unavailable state; ordinary login remains
+independent. The page does not enable the service or bypass its V2 cutover.
+
+Start, each provider continuation, final confirmation and cancellation are
+separate explicit actions. Reload and **Refresh status** issue GETs only. The
+sole optional local query is one opaque `operation_id`; malformed, duplicate
+or additional selectors are rejected before account requests. Provider codes,
+state, nonce, cookies and authorization URLs are not stored in local URLs,
+browser storage or rendered errors. Provider navigation uses only the pinned
+server continuation after an explicit click, with no-referrer policy. The
+browser validates response shapes and bounds for presentation, not authority.
+
+An unknown mutation response never implies failure or permission to replay.
+Read the retained same-user outcome; if a replacement cookie was lost, sign in
+again through a remaining method, return to the exact operation, then read.
+The fixed ordinary sign-in link carries only this allowlisted local settings
+path and opaque selector in `return_to`, so the exact receipt read survives
+sign-in navigation without retaining any provider protocol payload.
+An `outcome_unavailable` 410 is neither a success receipt nor proof of failure.
+Unlink names the server-selected remaining method and warns that other Web
+sessions must sign in again. No account merge or Telegram messaging enrollment
+is part of this flow.
+
+With the optional service configured, successful logout or tenant rotation
+clears the old operation's browser binding using its original cookie
+attributes. Rotation clears it even if a subsequent response projection read
+fails. Authorization/CSRF failures, unknown Store replies and an ordinary new
+login do not clear it speculatively. This is not operation cancellation,
+retention erasure or a guarantee that a lost HTTP response reached a browser.
+The nil-service profile retains its previous cookie behavior.
+
+Component and controlled-route Playwright checks cover rendering, keyboard
+focus, 320-pixel/200-percent-text accessibility, explicit navigation, request
+ordering and GET-only recovery. These are presentation evidence, **not** the
+genuine browser/BFF/disposable-YDB continuity acceptance required by #240.
+Actual provider registration/compatibility, joined data/resource readback and
+the separately admitted deployment/cutover remain distinct rollout gates.
 
 Credential-free unit tests cover the complete local authorization-code flow,
 PKCE, one-time code use, Telegram RS256 verification, Yandex account/client

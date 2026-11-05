@@ -114,7 +114,7 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 			})
 			server.Start()
 			blobs := &cleanupSessionBlobs{terminalSessionBlobs: &terminalSessionBlobs{sessionCompactionBlobs: newSessionCompactionBlobs()}}
-			old := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", blobs, ydbstore.LocalCompactionConnectedLimits{InputTokens: 8192, NetworkOperation: 5 * time.Second})
+			old := ydbstore.NewLocalTerminalPublicationSessionConnectedSeed(t, server.URL+"/v1", blobs, nonExpiryCompactionConnectedLimits(8192))
 			completeSQL := old.InstallTerminalCompletionSQL(t)
 			blobs.seed = old
 			a, err := providerloopsession.NewLocalV1(t.Context(), providerloopsession.LocalConfigV1{Source: old.Source, DB: old.DB, StoreOptions: old.Options, Prepare: old.Prepare, Operate: old.Operate, Backend: old.Backend, Substrate: old.Substrate, Blobs: blobs})
@@ -129,16 +129,36 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 			if _, err = a.Start(t.Context(), old.Request); err != nil {
 				t.Fatal("original A start", err)
 			}
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
 				if i == steps-1 {
 					peer.mu.Lock()
 					peer.modelText = scenario.terminalText
 					peer.mu.Unlock()
 				}
-				if result, e := a.RunModelStep(t.Context()); e != nil || !result.Model.SendAttempted {
-					t.Fatalf("A step%d err=%v attempted=%t", i, e, result.Model.SendAttempted)
+				result, e := a.RunModelStep(t.Context())
+				if e != nil || !result.Model.SendAttempted {
+					compactionSent, compactionOutcome := false, domain.AttemptOperationOutcomeV1("")
+					var compactionRemaining time.Duration
+					if result.Compaction != nil {
+						compactionSent = result.Compaction.SendAttempted
+						compactionOutcome = result.Compaction.Observation.Observation.Outcome
+						if result.Compaction.Observation.Version != 0 {
+							compactionRemaining = time.Until(result.Compaction.Observation.Reservation.Operation.Deadline)
+						}
+					}
+					t.Fatalf("A step%d err=%v model_attempted=%t model_outcome=%s compaction_present=%t compaction_attempted=%t compaction_outcome=%s compaction_deadline_remaining=%s", i, e, result.Model.SendAttempted, result.Model.Observation.Observation.Outcome, result.Compaction != nil, compactionSent, compactionOutcome, compactionRemaining)
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
 			}
+			wantKinds := []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1}
+			if steps == 3 {
+				wantKinds = []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1}
+			}
+			assertOriginalCompactionActiveBudget(t, old.LocalSessionConnectedSeed, observed, wantKinds)
 			h, p := prepareTerminalPublication(t, a, blobs.terminalSessionBlobs)
 			if err = h.PublishOutput(t.Context()); err != nil {
 				t.Fatal("A retained publication", err)

@@ -22,39 +22,59 @@ import (
 const maxWebMemberships = uint64(200)
 
 func (store *Store) RecordWebSecurityEvent(ctx context.Context, event domain.WebSecurityAuditEvent) error {
-	if err := event.Validate(); err != nil {
-		return err
-	}
-	bucket, err := webBucket(event.RequestID)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(event)
+	prepared, err := prepareWebSecurityAuditEvent(event)
 	if err != nil {
 		return err
 	}
 	return store.authTx(ctx, "web_auth.record_security_event", func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`UPSERT INTO web_security_audit_events
+		return writePreparedWebSecurityAuditEvent(ctx, tx, prepared, store.operationalRetention)
+	})
+}
+
+// Preparation remains before the public method's transaction, preserving its
+// invalid-input/no-I/O behavior. The identity stop owner uses this same writer
+// inside its already-authorized original transaction, never a nested authTx.
+type preparedWebSecurityAuditEvent struct {
+	bucket  uint32
+	event   domain.WebSecurityAuditEvent
+	payload string
+}
+
+func prepareWebSecurityAuditEvent(event domain.WebSecurityAuditEvent) (preparedWebSecurityAuditEvent, error) {
+	if err := event.Validate(); err != nil {
+		return preparedWebSecurityAuditEvent{}, err
+	}
+	bucket, err := webBucket(event.RequestID)
+	if err != nil {
+		return preparedWebSecurityAuditEvent{}, err
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return preparedWebSecurityAuditEvent{}, err
+	}
+	return preparedWebSecurityAuditEvent{bucket: bucket, event: event, payload: string(payload)}, nil
+}
+
+func writePreparedWebSecurityAuditEvent(ctx context.Context, tx stateSQLExecutor, prepared preparedWebSecurityAuditEvent, retention time.Duration) error {
+	event := prepared.event
+	_, err := tx.ExecContext(ctx,
+		`UPSERT INTO web_security_audit_events
 			 (shard_bucket, occurred_at, request_id, action, provider,
 			  subject_fingerprint, tenant_id, user_id,
 			  membership_security_version, reason_code, record, expire_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			         CAST($11 AS JsonDocument), $12)`,
-			bucket, event.OccurredAt, event.RequestID, event.Action, event.Provider,
-			event.SubjectFingerprint, event.TenantID, event.UserID,
-			event.MembershipSecurityVersion, event.ReasonCode, string(payload),
-			event.OccurredAt.Add(store.operationalRetention),
-		)
-		return err
-	})
+		prepared.bucket, event.OccurredAt, event.RequestID, event.Action, event.Provider,
+		event.SubjectFingerprint, event.TenantID, event.UserID,
+		event.MembershipSecurityVersion, event.ReasonCode, prepared.payload,
+		event.OccurredAt.Add(retention),
+	)
+	return err
 }
 
 func (store *Store) CreateLoginChallenge(ctx context.Context, challenge domain.OIDCLoginChallenge) error {
 	if store.webIdentityV2 != nil {
-		// Purpose-tagged V2 login persistence must replace this writer before
-		// serving V2 can be installed. Never create a mixed V1 challenge.
-		return domain.ErrMembershipDenied
+		return store.createLoginChallengeServingV2(ctx, challenge)
 	}
 	if err := challenge.Validate(); err != nil {
 		return err
@@ -89,7 +109,7 @@ func (store *Store) ConsumeLoginChallenge(
 	at time.Time,
 ) (result domain.OIDCLoginChallenge, err error) {
 	if store.webIdentityV2 != nil {
-		return result, domain.ErrMembershipDenied
+		return store.consumeLoginChallengeServingV2(ctx, stateDigest, browserBindingSecret)
 	}
 	if err := stateDigest.Validate("oidc_challenge.state_digest"); err != nil {
 		return result, err

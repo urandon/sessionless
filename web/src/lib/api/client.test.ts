@@ -1,9 +1,294 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError, CanonicalApiClient } from './client';
+import { ApiError, CanonicalApiClient, parseLoginMethods } from './client';
 import { barrier, explanation } from '../run-explanation/test-fixtures';
 
+describe('CanonicalApiClient account identity methods', () => {
+  const revision = '9007199254740993';
+  const operationId = 'opaque:operation-1';
+  const rows = {
+    revision,
+    methods: [
+      {
+        provider: 'yandex',
+        linked: true,
+        current: true,
+        enabled: true,
+        method_handle: 'own-yandex',
+        allowed_actions: [],
+      },
+      {
+        provider: 'telegram',
+        linked: false,
+        current: false,
+        enabled: true,
+        allowed_actions: ['link'],
+      },
+    ],
+  };
+  const pending = {
+    operation_id: operationId,
+    kind: 'link',
+    phase: 'source_proof',
+    target_provider: 'telegram',
+    before_revision: revision,
+    expires_at: '2026-11-04T12:10:00Z',
+    allowed_actions: ['continue', 'cancel'],
+  };
+  const terminal = {
+    operation_id: operationId,
+    kind: 'link',
+    phase: 'terminal',
+    before_revision: revision,
+    after_revision: '9007199254740994',
+    outcome: 'linked',
+    expires_at: pending.expires_at,
+    completed_at: '2026-11-04T12:01:00Z',
+    allowed_actions: [],
+  };
+  function continuation(): string {
+    const params = new URLSearchParams({
+      client_id: '100000',
+      redirect_uri: `${globalThis.location.origin}/auth/telegram/callback`,
+      response_type: 'code',
+      state: 'state',
+      code_challenge: 'A'.repeat(43),
+      code_challenge_method: 'S256',
+      scope: 'openid profile',
+      max_age: '0',
+      nonce: 'nonce',
+    });
+    return `https://oauth.telegram.org/auth?${params}`;
+  }
+  it('uses canonical no-store reads, no mutation CSRF, and exact owned outcome binding', async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(rows))
+      .mockResolvedValueOnce(Response.json(pending));
+    const csrf = vi.fn();
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: csrf });
+    expect(await client.getAccountLoginMethods()).toEqual(rows);
+    expect(await client.getIdentityOperationOutcome(operationId)).toEqual(pending);
+    expect(request.mock.calls.map(([path]) => path)).toEqual([
+      '/api/web/v1/account/login-methods',
+      '/api/web/v1/account/identity-operations/opaque%3Aoperation-1',
+    ]);
+    expect(csrf).not.toHaveBeenCalled();
+    for (const [, options] of request.mock.calls) {
+      expect(options).toMatchObject({
+        method: 'GET',
+        cache: 'no-store',
+        redirect: 'error',
+        credentials: 'same-origin',
+        referrerPolicy: 'no-referrer',
+      });
+      expect(new Headers(options?.headers).has('X-Sessionless-CSRF')).toBe(false);
+    }
+  });
+  it('sends each explicit mutation once with a STRING revision and current CSRF; never submits a confirmation as continuation', async () => {
+    const cancelled = { ...terminal, outcome: 'cancelled', after_revision: undefined };
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(pending))
+      .mockResolvedValueOnce(Response.json({ authorization_url: continuation() }))
+      .mockResolvedValueOnce(Response.json(terminal))
+      .mockResolvedValueOnce(Response.json(cancelled));
+    const csrf = vi.fn().mockReturnValue('current-csrf');
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: csrf });
+    await client.startIdentityOperation({
+      kind: 'link',
+      target_provider: 'telegram',
+      expected_revision: revision,
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await client.continueIdentityOperation(operationId, revision);
+    expect(request).toHaveBeenCalledTimes(2);
+    await client.confirmIdentityOperation(operationId, revision);
+    await client.cancelIdentityOperation(operationId, revision);
+    expect(csrf).toHaveBeenCalledTimes(4);
+    expect(request.mock.calls.map(([path]) => String(path).split('/').at(-1))).toEqual([
+      'identity-operations',
+      'continue',
+      'confirm',
+      'cancel',
+    ]);
+    for (const [, options] of request.mock.calls) {
+      expect(options).toMatchObject({
+        method: 'POST',
+        cache: 'no-store',
+        redirect: 'error',
+        credentials: 'same-origin',
+        referrerPolicy: 'no-referrer',
+      });
+      expect(new Headers(options?.headers).get('X-Sessionless-CSRF')).toBe('current-csrf');
+      expect(JSON.parse(String(options?.body)).expected_revision).toBe(revision);
+    }
+  });
+  it('parses minimal outcome 410 as a view, but not unknown 503, malformed 410 or a known expired error envelope', async () => {
+    const absent = {
+      operation_id: operationId,
+      outcome: 'outcome_unavailable',
+      allowed_actions: [],
+    };
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(absent, { status: 410 }))
+      .mockResolvedValueOnce(Response.json(absent, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ ...absent, phase: 'terminal' }, { status: 410 }))
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { code: 'expired', message: 'private upstream', request_id: 'safe-request' } },
+          { status: 410 },
+        ),
+      );
+    const client = new CanonicalApiClient({ fetch: request });
+    expect(await client.getIdentityOperationOutcome(operationId)).toEqual(absent);
+    for (let i = 0; i < 2; i += 1)
+      await expect(client.getIdentityOperationOutcome(operationId)).rejects.toMatchObject({
+        code: 'temporarily_unavailable',
+        status: 503,
+      });
+    await expect(client.getIdentityOperationOutcome(operationId)).rejects.toMatchObject({
+      code: 'expired',
+      status: 410,
+      message: 'Login methods are unavailable.',
+    });
+  });
+  it('bounds bytes/MIME, rejects crossed views and does not report a pending confirm response as success', async () => {
+    for (const response of [
+      new Response(' '.repeat(8193), { headers: { 'Content-Type': 'application/json' } }),
+      new Response(JSON.stringify(rows), { headers: { 'Content-Type': 'text/html' } }),
+      Response.json({ ...pending, operation_id: 'foreign-operation' }),
+      Response.json({ ...pending, subject: 'private' }),
+    ]) {
+      const client = new CanonicalApiClient({
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(response),
+      });
+      await expect(client.getIdentityOperationOutcome(operationId)).rejects.toMatchObject({
+        code: 'temporarily_unavailable',
+      });
+    }
+    const client = new CanonicalApiClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(pending)),
+      readCSRFToken: () => 'csrf',
+    });
+    await expect(client.confirmIdentityOperation(operationId, revision)).rejects.toMatchObject({
+      code: 'temporarily_unavailable',
+    });
+  });
+  it('rejects invalid selectors/revisions and missing CSRF before fetch and never retries an unknown mutation', async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error('private provider/network details'));
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: () => 'csrf' });
+    expect(() => client.getIdentityOperationOutcome('../foreign')).toThrow();
+    expect(() => client.continueIdentityOperation(operationId, '01')).toThrow();
+    expect(request).not.toHaveBeenCalled();
+    await expect(
+      client.startIdentityOperation({
+        kind: 'link',
+        target_provider: 'telegram',
+        expected_revision: revision,
+      }),
+    ).rejects.toMatchObject({
+      code: 'temporarily_unavailable',
+      message: 'Login methods are unavailable.',
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await expect(
+      new CanonicalApiClient({
+        fetch: request,
+        readCSRFToken: () => undefined,
+      }).cancelIdentityOperation(operationId, revision),
+    ).rejects.toMatchObject({ code: 'csrf_failed' });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('aborts discarded scope before reads/mutations and bounds a stalled body without retry', async () => {
+    const request = vi.fn<typeof fetch>();
+    const csrf = vi.fn();
+    const aborted = new AbortController();
+    aborted.abort();
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: csrf });
+    await expect(client.getAccountLoginMethods(aborted.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await expect(
+      client.confirmIdentityOperation(operationId, revision, aborted.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(request).not.toHaveBeenCalled();
+    expect(csrf).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn();
+      const response = new Response(new ReadableStream({ cancel }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const stalled = vi.fn<typeof fetch>().mockResolvedValue(response);
+      const outcome = new CanonicalApiClient({ fetch: stalled })
+        .getAccountLoginMethods()
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(await outcome).toMatchObject({ code: 'temporarily_unavailable' });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stalled).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('CanonicalApiClient', () => {
+  it('reads bounded closed login metadata without effects or CSRF', async () => {
+    const methods = [
+      { provider: 'yandex', label: 'Yandex', start_path: '/auth/login/yandex/start' },
+      { provider: 'telegram', label: 'Telegram', start_path: '/auth/login/telegram/start' },
+    ];
+    const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ methods }));
+    const csrf = vi.fn();
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: csrf });
+    expect(await client.getLoginMethods()).toEqual({ methods });
+    expect(request).toHaveBeenCalledWith(
+      '/auth/login/methods',
+      expect.objectContaining({
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        redirect: 'error',
+      }),
+    );
+    expect(csrf).not.toHaveBeenCalled();
+  });
+  it('denies malformed/foreign/duplicate methods without a default provider', () => {
+    const valid =
+      '{"methods":[{"provider":"telegram","label":"Telegram","start_path":"/auth/login/telegram/start"}]}';
+    expect(parseLoginMethods(valid).methods).toHaveLength(1);
+    for (const raw of [
+      valid.replace('"methods":', '"methods":[],"methods":'),
+      valid.replace('"label":', '"label":"Telegram","label":'),
+      valid.replace('"telegram"', '"foreign"'),
+      valid.replace('/auth/login/telegram/start', 'https://outside.example'),
+      valid.replace('"Telegram"', '"Yandex"'),
+      valid.replace('"methods"', '"Methods"'),
+      '{"methods":[]}',
+      '{"methods":[null]}',
+    ])
+      expect(() => parseLoginMethods(raw)).toThrow();
+  });
+  it('rejects metadata errors, wrong MIME and oversized bytes without parsing private error text', async () => {
+    for (const response of [
+      new Response('private-error', { status: 503 }),
+      new Response('{}', { headers: { 'Content-Type': 'text/html' } }),
+      new Response('x'.repeat(4097), { headers: { 'Content-Type': 'application/json' } }),
+    ]) {
+      const client = new CanonicalApiClient({
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(response),
+      });
+      await expect(client.getLoginMethods()).rejects.toMatchObject({
+        code: 'temporarily_unavailable',
+        message: 'Sign-in methods are unavailable. Please try again.',
+      });
+    }
+  });
   it('forwards one captured signal to message/archive/upload/commit/capability requests and rejects already discarded scope before fetch', async () => {
     const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({}));
     const readCSRFToken = vi.fn().mockReturnValue('csrf');

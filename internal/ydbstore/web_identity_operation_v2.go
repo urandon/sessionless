@@ -17,7 +17,7 @@ const identityOperationRowSQLV2 = `SELECT SUBSTRING(CAST(record AS String),0,819
 // This private configuration is supplied by the trusted installation, never
 // reconstructed from an operation or browser request. It does not fence other
 // deployment revisions: the design's freeze/drain/exclusive-writer cutover is
-// still mandatory. No serving caller or V2 mode is installed by this file.
+// still mandatory. NewWebIdentityRuntimeV2 installs it before publication.
 type identityConfigurationV2 struct {
 	ManifestDigest             domain.SecretDigest
 	Providers                  []domain.IdentityProviderBindingV2
@@ -52,9 +52,23 @@ type identityConfirmationV2 struct {
 }
 
 type identityConfirmationResultV2 struct {
-	Receipt domain.IdentityOperationReceiptV2
-	Session domain.WebSessionV2
+	Receipt   domain.IdentityOperationReceiptV2
+	Session   domain.WebSessionV2
+	Operation domain.IdentityOperationV2
 }
+
+// Keep the original fail-closed denial classification for private callers,
+// while the joined service can distinguish unknown storage/budget outcomes
+// from an authenticated known negative. No underlying backend detail escapes.
+type identityStoreUnavailableV2 struct{}
+
+func (identityStoreUnavailableV2) Error() string { return "identity storage temporarily unavailable" }
+func (identityStoreUnavailableV2) Unwrap() error { return domain.ErrMembershipDenied }
+
+type identityRevisionMismatchV2 struct{}
+
+func (identityRevisionMismatchV2) Error() string { return "identity revision changed" }
+func (identityRevisionMismatchV2) Unwrap() error { return domain.ErrMembershipDenied }
 
 // Reuse the existing bounded statement/materialization accounting, not a new
 // authorization engine. This entrypoint establishes its own original five-
@@ -70,7 +84,7 @@ func (store *Store) identityAuthorityTxV2(ctx context.Context, fn func(context.C
 	defer release()
 	budget := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
 	if budget.check() != nil {
-		return domain.ErrMembershipDenied
+		return identityStoreUnavailableV2{}
 	}
 	err := retry.DoTx(ctx, store.db, func(ctx context.Context, tx *sql.Tx) error {
 		callback, err := budget.begin()
@@ -81,10 +95,13 @@ func (store *Store) identityAuthorityTxV2(ctx context.Context, fn func(context.C
 		query := &ownedAuthorityQuery{tx: tx, budget: budget, callback: callback}
 		returned, scanErr := scanOwnedCurrentRow(query.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`), &query.at)
 		if budget.materialized(callback, returned) != nil || scanErr != nil {
-			return callbackError{err: domain.ErrMembershipDenied}
+			return callbackError{err: identityStoreUnavailableV2{}}
 		}
 		query.at = query.at.UTC()
 		if err := fn(ctx, query); err != nil {
+			if budget.check() != nil {
+				return callbackError{err: identityStoreUnavailableV2{}}
+			}
 			return callbackError{err: err}
 		}
 		if ctx.Err() != nil {
@@ -93,7 +110,7 @@ func (store *Store) identityAuthorityTxV2(ctx context.Context, fn func(context.C
 		return budget.check()
 	}, retry.WithIdempotent(true), retry.WithBudget(budget), retry.WithTxOptions(&sql.TxOptions{Isolation: sql.LevelSerializable}))
 	if ctx.Err() != nil || budget.check() != nil {
-		return domain.ErrMembershipDenied
+		return identityStoreUnavailableV2{}
 	}
 	var callback callbackError
 	if errors.As(err, &callback) {
@@ -102,7 +119,7 @@ func (store *Store) identityAuthorityTxV2(ctx context.Context, fn func(context.C
 	if err != nil {
 		// An ambiguous backend result is never a fresh permission or proof that
 		// nothing committed. Recovery reads the exact retained receipt instead.
-		return domain.ErrMembershipDenied
+		return identityStoreUnavailableV2{}
 	}
 	return nil
 }
@@ -180,12 +197,18 @@ func (store *Store) confirmIdentityOperationV2(ctx context.Context, request iden
 	var result identityConfirmationResultV2
 	err = store.identityAuthorityTxV2(ctx, func(ctx context.Context, query *ownedAuthorityQuery) error {
 		result = empty
+		if err := identityAccountCopiesV2(query); err != nil {
+			return err
+		}
 		operation, found, err := readIdentityOperationV2(ctx, query, request.OperationDigest)
 		if err != nil || !found {
 			return domain.ErrMembershipDenied
 		}
 		session, membership, err := authorizeWebSessionV2(ctx, query, request.SessionDigest, domain.TenantPermissionRead, query.at)
-		if err != nil || session.Session.CSRFTokenDigest != request.CSRFDigest {
+		if err != nil {
+			return err
+		}
+		if session.Session.CSRFTokenDigest != request.CSRFDigest {
 			return domain.ErrMembershipDenied
 		}
 		if operation.Receipt != nil {
@@ -195,7 +218,11 @@ func (store *Store) confirmIdentityOperationV2(ctx context.Context, request iden
 			// A current same-user repeated confirm may read the exact result. It
 			// cannot restore the old cookie or synthesize its lost replacement.
 			result.Receipt = *operation.Receipt
+			result.Operation = operation
 			return nil
+		}
+		if request.ExpectedRevision != session.IdentityRevision {
+			return identityRevisionMismatchV2{}
 		}
 		if !config.SensitiveOperationsEnabled {
 			return domain.ErrMembershipDenied
@@ -207,7 +234,7 @@ func (store *Store) confirmIdentityOperationV2(ctx context.Context, request iden
 			AuthenticatedSubject: session.Session.AuthenticatedSubject, TenantID: session.Session.ActiveTenantID,
 			MembershipSecurityVersion: membership.SecurityVersion, BrowserBindingDigest: request.BrowserBindingDigest,
 			ConfigurationDigest: config.ManifestDigest, ExpectedRevision: session.IdentityRevision}
-		if request.ExpectedRevision != session.IdentityRevision || operation.ValidateCurrentScope(current, query.at) != nil || operation.ValidateConfirm(query.at) != nil {
+		if operation.ValidateCurrentScope(current, query.at) != nil || operation.ValidateConfirm(query.at) != nil {
 			return domain.ErrMembershipDenied
 		}
 		pending := operation.Pending
@@ -295,7 +322,7 @@ func (store *Store) confirmIdentityOperationV2(ctx context.Context, request iden
 		if err := writeIdentityOperationV2(ctx, query, terminal); err != nil {
 			return err
 		}
-		result = identityConfirmationResultV2{Receipt: *terminal.Receipt, Session: next}
+		result = identityConfirmationResultV2{Receipt: *terminal.Receipt, Session: next, Operation: terminal}
 		return nil
 	})
 	if err != nil {

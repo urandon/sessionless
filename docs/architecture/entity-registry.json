@@ -1542,25 +1542,31 @@
       "knownRefs": {
         "readers": {
           "paths": [
+            "internal/ydbstore/compute_choice_identity_v2.go",
             "internal/ydbstore/operations.go",
+            "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 7
+          "total": 12
         },
         "writers": {
           "paths": [
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go"
           ],
-          "total": 5
+          "total": 6
         }
       },
       "entityGroup": "canonical-operational",
@@ -1595,13 +1601,15 @@
           "paths": [
             "internal/ydbstore/operations.go",
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 7
+          "total": 9
         },
         "writers": {
           "paths": [
@@ -2218,18 +2226,24 @@
         "readers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
-            "internal/ydbstore/web_identity_proof_v2.go"
+            "internal/ydbstore/web_identity_outcome_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
+            "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 3
+          "total": 6
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
-            "internal/ydbstore/web_identity_proof_v2.go"
+            "internal/ydbstore/web_identity_outcome_v2.go",
+            "internal/ydbstore/web_identity_proof_v2.go",
+            "internal/ydbstore/web_login_challenge_v2.go"
           ],
-          "total": 3
+          "total": 6
         }
       },
       "entityGroup": "identity-web",
@@ -3975,14 +3989,16 @@
             "internal/ydbstore/owned_admission_principal.go",
             "internal/ydbstore/owned_authority_canonical.go",
             "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_resolver_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 12
+          "total": 14
         },
         "writers": {
           "paths": [
@@ -4135,9 +4151,10 @@
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/web_auth.go"
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_outcome_v2.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "audit-evidence",
@@ -4169,25 +4186,30 @@
           "paths": [
             "internal/ydbstore/compute_choice_auth.go",
             "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/run_explanation_identity_v2.go",
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
+            "internal/ydbstore/web_identity_outcome_v2.go",
             "internal/ydbstore/web_identity_proof_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_search_consent_authority.go",
+            "internal/ydbstore/web_search_consent_identity_v2.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
             "internal/ydbstore/web_search_consent_store.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 10
+          "total": 14
         },
         "writers": {
           "paths": [
             "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_identity_maintenance_v2.go",
             "internal/ydbstore/web_identity_operation_v2.go",
             "internal/ydbstore/web_identity_rows_v2.go",
             "internal/ydbstore/web_session_serving_v2.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "identity-web",

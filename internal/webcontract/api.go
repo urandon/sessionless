@@ -17,9 +17,11 @@ import (
 
 const (
 	RouteLogin                     = "/login"
-	RouteOIDCStart                 = "/auth/telegram/start"
+	RouteLoginMethods              = "/auth/login/methods"
+	RouteLoginProviderStart        = "/auth/login/{provider}/start"
+	RouteYandexLoginStart          = "/auth/login/yandex/start"
+	RouteTelegramLoginStart        = "/auth/login/telegram/start"
 	RouteOIDCCallback              = "/auth/telegram/callback"
-	RouteLoginStart                = "/auth/login/start"
 	RouteLoginCallback             = "/auth/login/callback"
 	RouteLogout                    = "/auth/logout"
 	RouteMe                        = "/api/web/v1/me"
@@ -70,6 +72,13 @@ const (
 	ErrorPayloadTooLarge        ErrorCode = "payload_too_large"
 	ErrorRateLimited            ErrorCode = "rate_limited"
 	ErrorTemporarilyUnavailable ErrorCode = "temporarily_unavailable"
+	ErrorStaleRevision          ErrorCode = "stale_revision"
+	ErrorProofRequired          ErrorCode = "proof_required"
+	ErrorProofUnavailable       ErrorCode = "proof_unavailable"
+	ErrorLastMethod             ErrorCode = "last_method"
+	ErrorProviderUnavailable    ErrorCode = "provider_unavailable"
+	ErrorExpired                ErrorCode = "expired"
+	ErrorOutcomeUnavailable     ErrorCode = "outcome_unavailable"
 )
 
 type Error struct {
@@ -94,18 +103,20 @@ func (code ErrorCode) HTTPStatus() int {
 		return http.StatusBadRequest
 	case ErrorUnauthenticated:
 		return http.StatusUnauthorized
-	case ErrorAccessDenied, ErrorCSRFFailed:
+	case ErrorAccessDenied, ErrorCSRFFailed, ErrorProofUnavailable:
 		return http.StatusForbidden
 	case ErrorNotFound:
 		return http.StatusNotFound
-	case ErrorConflict:
+	case ErrorConflict, ErrorStaleRevision, ErrorProofRequired, ErrorLastMethod:
 		return http.StatusConflict
 	case ErrorPayloadTooLarge:
 		return http.StatusRequestEntityTooLarge
 	case ErrorRateLimited:
 		return http.StatusTooManyRequests
-	case ErrorTemporarilyUnavailable:
+	case ErrorTemporarilyUnavailable, ErrorProviderUnavailable:
 		return http.StatusServiceUnavailable
+	case ErrorExpired, ErrorOutcomeUnavailable:
+		return http.StatusGone
 	default:
 		return 0
 	}
@@ -117,6 +128,16 @@ type ErrorEnvelope struct {
 
 type OIDCStartRequest struct {
 	ReturnTo string `json:"return_to,omitempty"`
+}
+
+// Public configuration metadata only; never client/issuer/subject/credentials.
+type LoginMethod struct {
+	Provider  domain.IdentityProvider `json:"provider"`
+	Label     string                  `json:"label"`
+	StartPath string                  `json:"start_path"`
+}
+type LoginMethods struct {
+	Methods []LoginMethod `json:"methods"`
 }
 
 func (request OIDCStartRequest) Validate() error {

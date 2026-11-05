@@ -18,7 +18,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
-	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
 	"gitcode.com/urandon/sessionless/internal/localcontrolplane"
 	"gitcode.com/urandon/sessionless/internal/opssignal"
@@ -28,14 +27,10 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
-	"gitcode.com/urandon/sessionless/internal/telegramoidc"
 	"gitcode.com/urandon/sessionless/internal/webapi"
 	"gitcode.com/urandon/sessionless/internal/webbff"
-	"gitcode.com/urandon/sessionless/internal/webcontract"
 	"gitcode.com/urandon/sessionless/internal/webstatic"
-	"gitcode.com/urandon/sessionless/internal/yandexoauth"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 const component = "web-bff"
@@ -90,7 +85,12 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	baseURL := os.Getenv("WEB_BASE_URL")
 	environment := envOrDefault("SESSIONLESS_ENVIRONMENT", "cloud-dev")
 	allowLocal := environment == "local"
-	login, err := webLoginFromEnvironment(os.Getenv, baseURL, allowLocal)
+	login, err := webLoginFromEnvironment(os.LookupEnv, baseURL, allowLocal)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
+	identity, err := webIdentityFromEnvironment(os.LookupEnv, login, baseURL, identityKey)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -147,7 +147,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	storeOptions.AttachedResourceGenerations = generations
-	store, err := ydbstore.New(ydb.DB, storeOptions)
+	store, identityAccounts, err := identity.newStore(ydb.DB, storeOptions, identityKey)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -176,7 +176,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	sessions, err := sessionapi.New(sessionapi.Config{
 		OpsSignals: signals,
 		CursorKey:  []byte(os.Getenv("SESSION_API_CURSOR_HMAC_KEY")),
-		IDKey:      []byte(os.Getenv("SESSION_API_ID_HMAC_KEY")),
+		IDKey:      identityKey,
 	}, store, blobs, systemClock{})
 	if err != nil {
 		closeYDB()
@@ -201,7 +201,6 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
-	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
 	var harnessBinder ports.HarnessBinder
 	var resources ports.WebResourceStore = store
 	if local != nil {
@@ -267,12 +266,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	}
 	backend, err := webbff.New(webbff.Config{
 		OpsSignals: signals,
-		BaseURL:    baseURL, RedirectURI: login.redirectURI,
+		BaseURL:    baseURL, LoginProviders: login.providers, IdentityAccounts: identityAccounts,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
 		AllowLoopbackObjectStorage: allowLocal,
-		OIDCPolicy:                 login.policy, Provider: login.oidc,
-		OAuthProvider: login.oauth, OAuthClientID: login.clientID,
-		Store: store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
+		Store:                      store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
 		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
 		SearchConsents: searchConsents,
 		Logger:         logger, Build: buildinfo.Current(component),
@@ -291,46 +288,6 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	return handler, closeYDB, nil
-}
-
-type webLoginConfig struct {
-	redirectURI string
-	clientID    string
-	policy      domain.OIDCVerificationPolicy
-	oidc        ports.OIDCProvider
-	oauth       ports.OAuthIdentityProvider
-}
-
-// Provider selection is deployment authority, never browser input. Missing
-// selected credentials fail closed, rather than falling back to Telegram.
-func webLoginFromEnvironment(getenv func(string) string, baseURL string, local bool) (webLoginConfig, error) {
-	selected := getenv("WEB_LOGIN_PROVIDER")
-	if selected == "" {
-		selected = "telegram"
-	} // Preserve existing deployed configuration.
-	switch selected {
-	case "yandex":
-		redirect := baseURL + webcontract.RouteLoginCallback
-		p, err := yandexoauth.New(yandexoauth.Config{
-			ClientID: getenv("YANDEX_LOGIN_CLIENT_ID"), ClientSecret: getenv("YANDEX_LOGIN_CLIENT_SECRET"), RedirectURI: redirect,
-			AuthorizationEndpoint: getenv("YANDEX_LOGIN_AUTHORIZATION_ENDPOINT"), TokenEndpoint: getenv("YANDEX_LOGIN_TOKEN_ENDPOINT"), InfoEndpoint: getenv("YANDEX_LOGIN_INFO_ENDPOINT"), AllowLoopbackProvider: local,
-		})
-		return webLoginConfig{redirectURI: redirect, clientID: getenv("YANDEX_LOGIN_CLIENT_ID"), oauth: p}, err
-	case "telegram":
-		value := func(name, fallback string) string {
-			if v := getenv(name); v != "" {
-				return v
-			}
-			return fallback
-		}
-		redirect := baseURL + webcontract.RouteOIDCCallback
-		p, err := telegramoidc.New(telegramoidc.Config{
-			Issuer: value("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer), AuthorizationEndpoint: value("TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT", telegramoidc.DefaultAuthorizationEndpoint), TokenEndpoint: value("TELEGRAM_OIDC_TOKEN_ENDPOINT", telegramoidc.DefaultTokenEndpoint), JWKSURL: value("TELEGRAM_OIDC_JWKS_URL", telegramoidc.DefaultJWKSURL), ClientID: getenv("TELEGRAM_OIDC_CLIENT_ID"), ClientSecret: getenv("TELEGRAM_OIDC_CLIENT_SECRET"), RedirectURI: redirect, AllowedAlgorithms: []string{"RS256"}, AllowLoopbackProvider: local,
-		})
-		return webLoginConfig{redirectURI: redirect, oidc: p, policy: domain.OIDCVerificationPolicy{Issuer: value("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer), Audience: getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"}, MaxClockSkew: 30 * time.Second}}, err
-	default:
-		return webLoginConfig{}, errors.New("WEB_LOGIN_PROVIDER must be yandex or telegram")
-	}
 }
 
 func envBool(name string) bool {

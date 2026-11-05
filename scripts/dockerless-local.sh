@@ -78,6 +78,10 @@ configure_paths() {
 configure_environment() {
 	APP_ENV=${APP_ENV:-local}
 	SESSIONLESS_ENVIRONMENT=${SESSIONLESS_ENVIRONMENT:-local}
+	# Explicit documented pre-cutover stand; preserve empty/invalid overrides
+	# for the canonical application validator instead of normalizing them.
+	WEB_IDENTITY_VERSION=${WEB_IDENTITY_VERSION-1}
+	WEB_IDENTITY_SENSITIVE_OPERATIONS=${WEB_IDENTITY_SENSITIVE_OPERATIONS-false}
 	LOG_LEVEL=${LOG_LEVEL:-debug}
 	YDB_GRPC_PORT=${YDB_GRPC_PORT:-2136}
 	YDB_MONITORING_PORT=${YDB_MONITORING_PORT:-8765}
@@ -151,6 +155,7 @@ configure_environment() {
 		''|*[!0-9]*|0) fail 'DOCKERLESS_LOG_MAX_BYTES must be a positive integer' ;;
 	esac
 	export APP_ENV SESSIONLESS_ENVIRONMENT LOG_LEVEL
+	export WEB_IDENTITY_VERSION WEB_IDENTITY_SENSITIVE_OPERATIONS
 	export YDB_CONNECTION_STRING YDB_ANONYMOUS_CREDENTIALS
 	export S3_ENDPOINT S3_REGION S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_FORCE_PATH_STYLE
 	export QUEUE_ENDPOINT QUEUE_REGION QUEUE_ACCESS_KEY_ID QUEUE_SECRET_ACCESS_KEY
@@ -489,8 +494,13 @@ start_web_bff() {
 	# An explicit leaf command: ordinary stand/E2E startup stays unchanged.
 	# Login configuration, membership and operator profiles are never invented.
 	test "$SESSIONLESS_ENVIRONMENT" = local || fail 'native Web startup requires SESSIONLESS_ENVIRONMENT=local'
-	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDER:-}" || \
-		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDER'
+	test "${WEB_LOGIN_PROVIDER+x}" != x || fail 'remove WEB_LOGIN_PROVIDER; configure WEB_LOGIN_PROVIDERS explicitly'
+	test -n "${WEB_BASE_URL:-}" && test -n "${WEB_LOGIN_PROVIDERS:-}" || \
+		fail 'native Web startup requires explicit WEB_BASE_URL and WEB_LOGIN_PROVIDERS'
+	case "$WEB_LOGIN_PROVIDERS" in
+		yandex|telegram|yandex,telegram) ;;
+		*) fail 'WEB_LOGIN_PROVIDERS must be yandex, telegram, or yandex,telegram' ;;
+	esac
 	web_port=${WEB_PORT:-8083}
 	case "$web_port" in
 		''|0*|*[!0-9]*) fail 'WEB_PORT must be a decimal port between 1 and 65535' ;;

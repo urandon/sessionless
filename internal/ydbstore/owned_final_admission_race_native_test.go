@@ -259,7 +259,7 @@ func TestOwnedFinalAdmissionYDBColdOriginalJobCollisionRollsBack(t *testing.T) {
 	// Job or treat missing final history as permission to overwrite the old Job.
 	err = g.f.store.Transact(g.ctx, g.run.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
-		for _, table := range []string{"attempt_execution_admissions_by_session_v1", "attempt_execution_admissions_v1", "quota_expiry", "quota_expiry_v2", "quota_reservations", "subscription_scheduler_slots", "tenant_scheduler_counters", "audit_events"} {
+		for _, table := range []string{"attempt_execution_admissions_by_session_v1", "attempt_execution_admissions_v1", "quota_expiry_v2", "quota_reservations", "subscription_scheduler_slots", "tenant_scheduler_counters", "audit_events"} {
 			if _, err := tx.sqlTx.ExecContext(g.ctx, "DELETE FROM "+table+" WHERE tenant_id=$1", g.run.TenantID); err != nil {
 				return err
 			}

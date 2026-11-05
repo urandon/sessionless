@@ -12,6 +12,60 @@ import (
 
 var webTestTime = time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
 
+func TestWebSecurityIdentityOperationStoppedAction(t *testing.T) {
+	for _, reason := range []string{"cancelled", "expired"} {
+		event := domain.WebSecurityAuditEvent{RequestID: "identity-stop-test", Action: domain.WebSecurityIdentityOperationStopped, Provider: domain.IdentityProviderYandex, TenantID: "tenant-test", UserID: "user-test", MembershipSecurityVersion: 1, ReasonCode: reason, OccurredAt: webTestTime}
+		if err := event.Validate(); err != nil {
+			t.Fatalf("typed content-free identity stop reason=%s: %v", reason, err)
+		}
+		event.Action = domain.WebSecurityAuditAction("web.identity.unknown")
+		if err := event.Validate(); err == nil {
+			t.Fatal("unknown security action accepted")
+		}
+		event.Action, event.ReasonCode = domain.WebSecurityIdentityOperationStopped, "linked"
+		if err := event.Validate(); err == nil {
+			t.Fatal("identity stop audit claimed a positive mutation")
+		}
+		event.ReasonCode, event.SubjectFingerprint = reason, domain.DigestSecret("unnecessary-subject")
+		if err := event.Validate(); err == nil {
+			t.Fatal("identity stop audit retained unnecessary subject DATA")
+		}
+	}
+}
+
+func TestWebSecurityIdentityProofFailedAction(t *testing.T) {
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
+		for _, reason := range []string{"proof_unavailable", "provider_unavailable"} {
+			event := domain.WebSecurityAuditEvent{RequestID: "identity-proof-failure-test", Action: domain.WebSecurityIdentityProofFailed, Provider: provider, TenantID: "tenant-test", UserID: "user-test", MembershipSecurityVersion: 1, ReasonCode: reason, OccurredAt: webTestTime}
+			if err := event.Validate(); err != nil {
+				t.Fatalf("valid redacted %s/%s audit: %v", provider, reason, err)
+			}
+			for _, test := range []struct {
+				name   string
+				mutate func(*domain.WebSecurityAuditEvent)
+			}{
+				{"missing_tenant", func(v *domain.WebSecurityAuditEvent) { v.TenantID = "" }},
+				{"missing_user", func(v *domain.WebSecurityAuditEvent) { v.UserID = "" }},
+				{"missing_membership_revision", func(v *domain.WebSecurityAuditEvent) { v.MembershipSecurityVersion = 0 }},
+				{"unknown_provider", func(v *domain.WebSecurityAuditEvent) { v.Provider = "foreign" }},
+				{"private_subject", func(v *domain.WebSecurityAuditEvent) { v.SubjectFingerprint = domain.DigestSecret("must-not-retain") }},
+				{"positive_mutation", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "linked" }},
+				{"cancel_not_proof_failure", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "cancelled" }},
+				{"upstream_detail", func(v *domain.WebSecurityAuditEvent) { v.ReasonCode = "upstream_detail" }},
+				{"old_action_stays_closed", func(v *domain.WebSecurityAuditEvent) { v.Action = domain.WebSecurityIdentityOperationStopped }},
+			} {
+				t.Run(string(provider)+"/"+reason+"/"+test.name, func(t *testing.T) {
+					changed := event
+					test.mutate(&changed)
+					if changed.Validate() == nil {
+						t.Fatal("invalid proof-failure audit accepted")
+					}
+				})
+			}
+		}
+	}
+}
+
 func externalSubject(id string) domain.ExternalSubject {
 	return domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: id}
 }

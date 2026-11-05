@@ -265,6 +265,11 @@ jobs:
       - name: Prove exact four legacy-index existing and missing retirement
         run: make ready-expiry-retirement-ydb-gate
 
+      - name: Prove V2 consent identity at reservation and before-send
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make web-consent-identity-v2-ydb-gate
+
       - name: Run YDB integration suite
         run: make ydb-integration
 
@@ -442,6 +447,9 @@ jobs:
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.15.5
+          # Tests use an isolated environment and consume raw CLI JSON; no
+          # action wrapper outputs are used by this job.
+          terraform_wrapper: false
 
       - name: Validate infrastructure contract
         run: make terraform-ci

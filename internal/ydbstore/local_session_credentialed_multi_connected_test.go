@@ -17,7 +17,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // This is a bounded local scripted model, not model/MCP qualification. It sees
@@ -135,7 +135,9 @@ func TestLocalSessionCredentialedConnectedCompactionThenModelOneMaterialization(
 	endpoint := server.URL + "/v1"
 	// Measure once using the exact installed inputs and original Source's
 	// retained calibration; this creates NO runtime operation or credential use.
-	measure, measureBlobs, measureCredentials, _, _ := newCredentialedConnectedSessionConfiguredAt(t, endpoint, historical, ydbstore.LocalCompactionConnectedLimits{MCPModelDescription: description, NetworkOperation: 5 * time.Second})
+	measurementLimits := nonExpiryCompactionConnectedLimits(0)
+	measurementLimits.MCPModelDescription = description
+	measure, measureBlobs, measureCredentials, _, _ := newCredentialedConnectedSessionConfiguredAt(t, endpoint, historical, measurementLimits)
 	beforeMeasure := measure.Stats()
 	ordinary, generation, rebuilt := measure.LocalCompactionFixtureRequests(t, measureBlobs)
 	ceilings := configuredinference.ContextFitCeilingsV1{InputTokens: measure.Profile.Limits.MaxInputTokens, OutputTokens: measure.Profile.Limits.MaxOutputTokens, TotalTokens: measure.Profile.ModelWindowTokens}
@@ -164,7 +166,9 @@ func TestLocalSessionCredentialedConnectedCompactionThenModelOneMaterialization(
 		t.Fatal("calibration DATA preparation produced runtime/credential effects")
 	}
 	// Fresh original intake: only narrow the declared ceiling before any seal.
-	seed, blobs, credentials, secret, session := newCredentialedConnectedSessionConfiguredAt(t, endpoint, historical, ydbstore.LocalCompactionConnectedLimits{InputTokens: input, MCPModelDescription: description, NetworkOperation: 5 * time.Second})
+	runtimeLimits := nonExpiryCompactionConnectedLimits(input)
+	runtimeLimits.MCPModelDescription = description
+	seed, blobs, credentials, secret, session := newCredentialedConnectedSessionConfiguredAt(t, endpoint, historical, runtimeLimits)
 	initial, summary, next := seed.LocalCompactionFixtureRequests(t, blobs)
 	ceilings = configuredinference.ContextFitCeilingsV1{InputTokens: input, OutputTokens: seed.Profile.Limits.MaxOutputTokens, TotalTokens: seed.Profile.ModelWindowTokens}
 	if _, e = seed.Source.FitContext(initial, ceilings); !errors.Is(e, configuredinference.ErrContextNoFit) {
@@ -213,6 +217,7 @@ func TestLocalSessionCredentialedConnectedCompactionThenModelOneMaterialization(
 		t.Fatalf("actual producer sizes differ from measured DATA: actual=(%d,%d) measured=(%d,%d)", len(wires[0]), len(wires[1]), len(summary.Body()), len(next.Body()))
 	}
 	compaction, model := result.Compaction.Observation, result.Model.Observation
+	assertOriginalCompactionActiveBudget(t, seed, []ports.AuthenticatedAttemptOperationObservationV1{compaction, model}, []domain.AttemptOperationKindV1{domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 	pred, _ := compaction.Observation.Digest()
 	aggregate, e := compaction.Reservation.AggregateDebit.Add(model.Reservation.Operation.Debit)
 	if e != nil || compaction.Reservation.Operation.Sequence != 1 || compaction.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1 || model.Reservation.Operation.Sequence != 2 || model.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || model.Reservation.Operation.PredecessorObservationDigest != pred || model.Reservation.Operation.Scope != compaction.Reservation.Operation.Scope || model.Reservation.AggregateDebit != aggregate || model.Reservation.RegisteredAllocationDigest != compaction.Reservation.RegisteredAllocationDigest || seed.Operate.VerifyAttemptOperationObservation(compaction) != nil || seed.Operate.VerifyAttemptOperationObservation(model) != nil || !reflect.DeepEqual(seed.PersistedObservation(t), model.Observation) {

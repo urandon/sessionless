@@ -47,4 +47,4 @@ output "queue_provisioner_secret_id" { value = yandex_lockbox_secret.queue_provi
 output "queue_provisioner_secret_version_id" { value = yandex_iam_service_account_static_access_key.queue_provisioner.output_to_lockbox_version_id }
 output "scheduler_ymq_secret_id" { value = yandex_lockbox_secret.scheduler_ymq.id }
 output "scheduler_ymq_secret_version_id" { value = yandex_iam_service_account_static_access_key.scheduler_ymq.output_to_lockbox_version_id }
-output "log_group_id" { value = yandex_logging_group.application.id }
+output "log_group_id" { value = var.runtime_log_group_id }

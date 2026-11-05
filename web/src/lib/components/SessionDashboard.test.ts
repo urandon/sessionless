@@ -56,7 +56,7 @@ describe('SessionDashboard', () => {
 
     expect(await screen.findByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
       'href',
-      '/auth/login/start?return_to=%2F',
+      '/login',
     );
     expect(screen.queryByText(/Telegram/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Workspace')).not.toBeInTheDocument();

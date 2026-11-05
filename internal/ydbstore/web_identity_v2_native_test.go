@@ -19,7 +19,7 @@ import (
 // This gate exercises the real row primitives in the existing migrated,
 // disposable CI database. It does not prove the still separate public
 // operation/proof/audit/cookie protocol, nor enable V2 on a serving instance.
-func newWebIdentityV2NativeFixture(t *testing.T) (*sql.DB, context.Context, domain.ExternalIdentityV2, domain.WebSessionV2, domain.TenantMembership) {
+func webIdentityV2NativeDSN(t *testing.T) string {
 	t.Helper()
 	if os.Getenv("SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE") != "1" {
 		t.Skip("explicit disposable CI V2 identity gate not requested")
@@ -30,9 +30,15 @@ func newWebIdentityV2NativeFixture(t *testing.T) (*sql.DB, context.Context, doma
 		u.Query().Get("go_query_mode") != "data" || u.Query().Has("go_fake_tx") {
 		t.Fatal("requires disposable migrated CI loopback database with real data transactions")
 	}
+	return u.String()
+}
+
+func newWebIdentityV2NativeFixture(t *testing.T) (*sql.DB, context.Context, domain.ExternalIdentityV2, domain.WebSessionV2, domain.TenantMembership) {
+	t.Helper()
+	dsn := webIdentityV2NativeDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
-	client, err := ydbclient.Open(ctx, u.String())
+	client, err := ydbclient.Open(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -179,20 +179,21 @@ func (store *Store) loadOwnedConsentStopAuthority(ctx context.Context, q *ownedA
 	if allocation.current.State != domain.RegisteredPreparationActiveV1 {
 		a.ClaimState = domain.WebSearchConsentClaimLostV1
 	}
-	if err := loadOwnedConsentStopActor(ctx, q, state, &a); err != nil {
+	identityRevoked, err := loadOwnedConsentStopActor(ctx, q, state, &a, ownedConsentIdentityMode{config: store.webIdentityV2})
+	if err != nil {
 		return deny()
 	}
-	return a, revoked, nil
+	return a, revoked || identityRevoked, nil
 }
 
 // Structural reads of actual removed/expired actor facts are needed for a stop,
 // never for disclosure/approval/send. An absent current actor is revocation;
 // malformed or foreign row content denies instead of being treated as removal.
-func loadOwnedConsentStopActor(ctx context.Context, q *ownedAuthorityQuery, state domain.WebSearchConsentStateV1, a *domain.WebSearchConsentAuthorityV1) error {
+func loadOwnedConsentStopActor(ctx context.Context, q *ownedAuthorityQuery, state domain.WebSearchConsentStateV1, a *domain.WebSearchConsentAuthorityV1, mode ownedConsentIdentityMode) (bool, error) {
 	r := state.Request
 	bucket, err := webBucket(string(r.InitiatingUserID))
 	if err != nil {
-		return q.budget.deny()
+		return false, q.budget.deny()
 	}
 	for _, row := range []struct {
 		query  string
@@ -207,29 +208,33 @@ func loadOwnedConsentStopActor(ctx context.Context, q *ownedAuthorityQuery, stat
 			continue
 		}
 		if err != nil || decodeOwnedEffectCanonicalJSON(raw, row.target) != nil {
-			return q.budget.deny()
+			return false, q.budget.deny()
 		}
 	}
 	if a.Membership.UserID != "" && (a.Membership.UserID != r.InitiatingUserID || a.Membership.TenantID != r.Scope.TenantID || a.Membership.Validate() != nil || a.Membership.UpdatedAt.After(q.at)) {
-		return q.budget.deny()
+		return false, q.budget.deny()
 	}
 	if a.Participant.UserID != "" && (a.Participant.UserID != r.InitiatingUserID || a.Participant.SessionID != r.Scope.SessionID || a.Participant.TenantID != r.Scope.TenantID || a.Participant.Validate() != nil || a.Participant.UpdatedAt.After(q.at)) {
-		return q.budget.deny()
+		return false, q.budget.deny()
 	}
 	if state.Decision == nil {
-		return nil // no browser session exists for a pending worker request
+		return false, nil // no browser session exists for a pending worker request
 	}
 	digest := state.Decision.WebSessionDigest
-	bucket, err = webBucket(string(digest))
+	browser, found, err := mode.readSession(ctx, q, digest)
 	if err != nil {
-		return q.budget.deny()
+		return false, q.budget.deny()
 	}
-	raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, digest)
-	if err == sql.ErrNoRows {
-		return nil
+	if !found {
+		return false, nil
 	}
-	if err != nil || decodeOwnedEffectCanonicalJSON(raw, &a.WebSession) != nil || a.WebSession.SessionDigest != digest || a.WebSession.UserID != r.InitiatingUserID || a.WebSession.ActiveTenantID != r.Scope.TenantID || a.WebSession.Validate() != nil || a.WebSession.LastSeenAt.After(q.at) || (a.WebSession.RevokedAt != nil && a.WebSession.RevokedAt.After(q.at)) {
-		return q.budget.deny()
+	a.WebSession = browser.session
+	if a.WebSession.SessionDigest != digest || a.WebSession.UserID != r.InitiatingUserID || a.WebSession.ActiveTenantID != r.Scope.TenantID || a.WebSession.Validate() != nil || a.WebSession.LastSeenAt.After(q.at) || (a.WebSession.RevokedAt != nil && a.WebSession.RevokedAt.After(q.at)) {
+		return false, q.budget.deny()
 	}
-	return nil
+	revoked, err := browser.observedIdentityRevoked(q.at)
+	if err != nil {
+		return false, q.budget.deny()
+	}
+	return revoked, nil
 }

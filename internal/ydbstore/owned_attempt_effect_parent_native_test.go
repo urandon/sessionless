@@ -61,7 +61,7 @@ func nativeOwnedParentGraphFromFinal(t *testing.T, g nativeOwnedFinalGraph) nati
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		for _, table := range []string{"attempt_effect_reservations", "lease_expiry_v2", "lease_expiry", "lease_heads", "leases"} {
+		for _, table := range []string{"attempt_effect_reservations", "lease_expiry_v2", "lease_heads", "leases"} {
 			if _, err := store.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE tenant_id=$1", g.run.TenantID); err != nil {
 				t.Errorf("cleanup unique parent fixture table=%s: %v", table, err)
 			}

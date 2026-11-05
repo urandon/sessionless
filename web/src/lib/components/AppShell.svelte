@@ -16,6 +16,7 @@
     <nav aria-label="Primary navigation">
       <a href={resolve('/')}>Sessions</a>
       <a href={resolve('/workers')}>Workers</a>
+      <a href={resolve('/account/login-methods')}>Account</a>
     </nav>
   </header>
   <main id="main-content" tabindex="-1">

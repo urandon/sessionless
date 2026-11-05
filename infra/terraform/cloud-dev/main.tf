@@ -25,7 +25,7 @@ module "foundation" {
   queue_visibility_timeout_seconds = var.queue_visibility_timeout_seconds
   queue_retention_seconds          = var.queue_retention_seconds
   queue_max_receive_count          = var.queue_max_receive_count
-  log_retention                    = var.log_retention
+  runtime_log_group_id             = var.runtime_log_group_id
   deletion_protection              = var.deletion_protection
   github_oidc_audience             = var.github_oidc_audience
   github_oidc_subject              = var.github_oidc_subject
@@ -116,7 +116,9 @@ module "web" {
   scheduler_ymq_secret_id             = module.foundation.scheduler_ymq_secret_id
   scheduler_ymq_secret_version_id     = module.foundation.scheduler_ymq_secret_version_id
   telegram_oidc_client_id             = var.telegram_oidc_client_id
-  login_provider                      = var.web_login_provider
+  login_providers                     = var.web_login_providers
+  identity_version                    = var.web_identity_version
+  identity_sensitive_operations       = var.web_identity_sensitive_operations
   yandex_login_client_id              = var.yandex_login_client_id
   allowed_mcp_servers                 = var.web_allowed_mcp_servers
   max_upload_bytes                    = var.web_max_upload_bytes

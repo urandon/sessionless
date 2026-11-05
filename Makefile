@@ -475,12 +475,18 @@ web-auth-ydb-gate: prepare
 		-run '^(TestYandexLoginYDBFreshIdentityMembershipIsolationReplayAndRevocation|TestYandexLoginYDBClientAndProviderBindingDenials|TestYandexBootstrapYDBAtomicFirstIdentityAndNoLink)$$' ./test/ydbintegration
 
 .PHONY: web-identity-v2-ydb-gate
-# Closed V2 row primitives only; no serving mode or provider activation.
+# V2 row and joined HTTP/SQL fixtures; no real provider/deployment activation.
 web-identity-v2-ydb-gate: prepare
 	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
 	SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE=1 SESSIONLESS_WEB_IDENTITY_V2_YDB_DISPOSABLE=1 \
 		go test -race -count=3 -shuffle=on -timeout=5m \
 		-run '^TestWebIdentityV2YDB' ./internal/ydbstore
+
+.PHONY: web-consent-identity-v2-ydb-gate
+# Actual consent/operation joins in the existing disposable CI database only.
+web-consent-identity-v2-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 go test -v -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration -run '^TestWebSearchConsentIdentityV2YDB' ./internal/ydbstore
 
 local-integration: prepare
 	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
@@ -625,10 +631,11 @@ terraform-ci:
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
 	@plan_log=$$(mktemp "$${TMPDIR:-/tmp}/sessionless-web-plan.XXXXXX"); \
 	trap 'rm -f "$$plan_log"' EXIT HUP INT TERM; \
-	if ! $(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl -verbose -json >"$$plan_log"; then \
+	if ! $(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl -filter=native_logging.tftest.hcl -verbose -json >"$$plan_log"; then \
 		cat "$$plan_log"; exit 1; \
 	fi; \
-	./scripts/test-web-deployment-policy.sh --plan-json "$$plan_log"
+	./scripts/test-web-deployment-policy.sh --plan-json "$$plan_log" && \
+	NATIVE_LOG_TEST_PLAN_JSON="$$plan_log" node --test scripts/test-native-log-destination.mjs
 	sh scripts/test-cloud-preflight.sh
 	$(MAKE) budget-policy-test
 	$(MAKE) web-secret-load-test
@@ -663,6 +670,18 @@ partition-status: prepare
 
 partition-backfill: prepare
 	go run ./cmd/schema-backfill
+
+.PHONY: identity-maintenance identity-maintenance-test
+# Operator-only fixed identity inventory/CAS. No implicit apply or serving install.
+identity-maintenance: prepare
+	@go run ./cmd/identity-maintenance $(ARGS)
+
+identity-maintenance-test: prepare fmt-check
+	env -u YDB_CONNECTION_STRING \
+		SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE=0 SESSIONLESS_WEB_IDENTITY_V2_YDB_DISPOSABLE=0 \
+		SESSIONLESS_OWNED_CURRENT_YDB_GATE=0 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=0 \
+		GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GONOPROXY=none GOVCS='*:off' \
+		go test -race -count=1 -shuffle=on -timeout=90s -run '^TestIdentityMaintenance' ./cmd/identity-maintenance ./internal/ydbstore
 
 ready-expiry-repair: prepare
 	go run ./cmd/ready-expiry-repair $(ARGS)

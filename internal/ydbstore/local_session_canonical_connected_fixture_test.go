@@ -32,6 +32,7 @@ type LocalCanonicalSessionSeed struct {
 	Loaded    ports.WorkerJobState
 	Claim     ports.WorkerLeaseRequest
 	peer      *canonicalSessionSQL
+	owner     *testing.T
 }
 
 type LocalCanonicalSessionStats struct {
@@ -40,7 +41,34 @@ type LocalCanonicalSessionStats struct {
 }
 
 func (s *LocalCanonicalSessionSeed) Stats() LocalCanonicalSessionStats {
+	defer s.holdObserverConnection()()
 	return LocalCanonicalSessionStats{s.peer.parent.inserts, s.peer.parent.burnUpdates, s.peer.alloc.writes, s.peer.base.writes, len(s.peer.base.rows["leases"]) != 0}
+}
+
+// The fixture's sole connection remains occupied until database/sql's async
+// rollback has restored its scripted rows. Observe only while holding that
+// SAME current pool connection, not the caller's already-cancelled context.
+func (s *LocalCanonicalSessionSeed) holdObserverConnection() func() {
+	s.owner.Helper()
+	ctx, cancel := context.WithTimeout(s.owner.Context(), 5*time.Second)
+	conn, err := canonicalFixtureObserverConnection(ctx, s.DB)
+	if err != nil {
+		cancel()
+		s.owner.Fatalf("canonical fixture observer connection: %v", err)
+	}
+	return func() {
+		defer cancel()
+		if err := conn.Close(); err != nil {
+			s.owner.Errorf("canonical fixture observer connection close: %v", err)
+		}
+	}
+}
+
+func canonicalFixtureObserverConnection(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
+	if db == nil || db.Stats().MaxOpenConnections != 1 {
+		return nil, errors.New("canonical fixture observer requires its sole-connection pool")
+	}
+	return db.Conn(ctx)
 }
 func (s *LocalCanonicalSessionSeed) Now() time.Time {
 	return time.Now().UTC().Truncate(time.Microsecond)
@@ -175,5 +203,5 @@ func NewLocalCanonicalSessionSeed(t *testing.T, endpoint string) *LocalCanonical
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &LocalCanonicalSessionSeed{Source: actual.source, DB: db, Options: Options{OwnedAttemptEffectSourceVerifier: actual.source, OwnedProfilePublicationVerifier: actual.source, AttemptSpendingPublicationVerifier: actual.source}, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: scope.TenantID, RunID: scope.RunID, AttemptID: scope.AttemptID, LeaseID: peer.leaseID, WorkerID: peer.worker}, peer: peer}
+	return &LocalCanonicalSessionSeed{Source: actual.source, DB: db, Options: Options{OwnedAttemptEffectSourceVerifier: actual.source, OwnedProfilePublicationVerifier: actual.source, AttemptSpendingPublicationVerifier: actual.source}, Prepare: prepare, Operate: operate, Backend: loaded.Job.HarnessBinding.Backend, Substrate: *loaded.Job.SubstrateBinding, Loaded: loaded, Claim: ports.WorkerLeaseRequest{TenantID: scope.TenantID, RunID: scope.RunID, AttemptID: scope.AttemptID, LeaseID: peer.leaseID, WorkerID: peer.worker}, peer: peer, owner: t}
 }

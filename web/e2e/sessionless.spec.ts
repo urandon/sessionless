@@ -10,7 +10,7 @@ test.describe('authentication boundaries', () => {
 
     await expect(page.getByRole('heading', { name: 'Your sessions, in one place' })).toBeVisible();
     const signIn = page.getByRole('link', { name: 'Continue to sign in' });
-    await expect(signIn).toHaveAttribute('href', '/auth/login/start?return_to=%2F');
+    await expect(signIn).toHaveAttribute('href', '/login');
     await expect(page.getByText(/Telegram/)).toHaveCount(0);
     await expect(page.getByLabel('Workspace')).toHaveCount(0);
 
@@ -52,10 +52,10 @@ test.describe('authentication boundaries', () => {
     const signIn = page.getByRole('link', { name: 'Sign in' });
     await expect(signIn).toHaveAttribute('href', `/login?return_to=%2Fsessions%2F${sessionId}`);
     await signIn.click();
-    await expect(page.getByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
-      'href',
-      `/auth/login/start?return_to=%2Fsessions%2F${sessionId}`,
-    );
+    const form = page.locator('form[action="/auth/login/yandex/start"]');
+    await expect(form.getByRole('button', { name: 'Continue with Yandex' })).toBeVisible();
+    await expect(form.locator('input[name="return_to"]')).toHaveValue(`/sessions/${sessionId}`);
+    await expect(form).toHaveAttribute('method', 'POST');
   });
 
   for (const candidate of [
@@ -64,12 +64,15 @@ test.describe('authentication boundaries', () => {
     '/\\outside.example/path',
     '/sessions/unsafe\npath',
   ]) {
-    test(`uses the safe root return for ${JSON.stringify(candidate)}`, async ({ page }) => {
+    test(`uses the safe root return for ${JSON.stringify(candidate)}`, async ({
+      canonicalApi,
+      page,
+    }) => {
+      canonicalApi.auth = 'unauthenticated';
       await page.goto(`/login?return_to=${encodeURIComponent(candidate)}`);
-      await expect(page.getByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
-        'href',
-        '/auth/login/start?return_to=%2F',
-      );
+      const form = page.locator('form[action="/auth/login/yandex/start"]');
+      await expect(form.getByRole('button', { name: 'Continue with Yandex' })).toBeVisible();
+      await expect(form.locator('input[name="return_to"]')).toHaveValue('/');
     });
   }
 });

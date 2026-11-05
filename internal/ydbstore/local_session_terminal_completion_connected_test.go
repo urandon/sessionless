@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -21,7 +22,7 @@ func newCompletionSession(t *testing.T, twoCompactions bool) (*providerloopsessi
 	var limits []ydbstore.LocalCompactionConnectedLimits
 	if twoCompactions {
 		peer.modelText = strings.Repeat("x", 4096)
-		limits = []ydbstore.LocalCompactionConnectedLimits{{InputTokens: 8192, NetworkOperation: 5 * time.Second}}
+		limits = []ydbstore.LocalCompactionConnectedLimits{nonExpiryCompactionConnectedLimits(8192)}
 	}
 	server := httptest.NewUnstartedServer(peer)
 	server.Config.ReadHeaderTimeout = 10 * time.Second
@@ -59,12 +60,21 @@ func TestLocalSessionTerminalCompletionConnected(t *testing.T) {
 			if mode == "two_compactions" {
 				steps = 3
 			}
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
-				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
+				result, err := session.RunModelStep(t.Context())
+				if err != nil || !result.Model.SendAttempted {
 					t.Logf("original MODEL step%d: %v", i, err)
 					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original MODEL step%d: %v", i, err)
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
+			}
+			if steps == 3 {
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, p := prepareTerminalPublication(t, session, blobs.terminalSessionBlobs)
 			if err := h.PublishOutput(t.Context()); err != nil {
@@ -364,10 +374,19 @@ func TestLocalSessionTerminalCompletionPrecommitCurrentnessDenialsConnected(t *t
 			if two {
 				steps = 3
 			}
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
-				if _, err := session.RunModelStep(t.Context()); err != nil {
+				result, err := session.RunModelStep(t.Context())
+				if err != nil || !result.Model.SendAttempted {
 					t.Fatalf("original MODEL step%d: %v", i, err)
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
+			}
+			if two {
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, _ := prepareTerminalPublication(t, session, blobs.terminalSessionBlobs)
 			if err := h.PublishOutput(t.Context()); err != nil {

@@ -30,6 +30,18 @@ func TestMutationRequestsDoNotCarryTenantAuthority(t *testing.T) {
 	}
 }
 
+func TestLoginMethodsContainsOnlyPublicFixedMetadata(t *testing.T) {
+	value := webcontract.LoginMethods{Methods: []webcontract.LoginMethod{{Provider: "yandex", Label: "Yandex", StartPath: webcontract.RouteYandexLoginStart}, {Provider: "telegram", Label: "Telegram", StartPath: webcontract.RouteTelegramLoginStart}}}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"methods":[{"provider":"yandex","label":"Yandex","start_path":"/auth/login/yandex/start"},{"provider":"telegram","label":"Telegram","start_path":"/auth/login/telegram/start"}]}`
+	if string(raw) != want {
+		t.Fatalf("login metadata shape=%s", raw)
+	}
+}
+
 func TestPaginationContractsAreBounded(t *testing.T) {
 	t.Parallel()
 	if err := (webcontract.SessionListQuery{Limit: webcontract.MaxPageSize, Status: "active"}).Validate(); err != nil {
@@ -72,6 +84,10 @@ func TestStableErrorEnvelopeStatusMapping(t *testing.T) {
 		webcontract.ErrorNotFound, webcontract.ErrorConflict,
 		webcontract.ErrorPayloadTooLarge, webcontract.ErrorRateLimited,
 		webcontract.ErrorTemporarilyUnavailable,
+		webcontract.ErrorStaleRevision, webcontract.ErrorProofRequired,
+		webcontract.ErrorProofUnavailable, webcontract.ErrorLastMethod,
+		webcontract.ErrorProviderUnavailable, webcontract.ErrorExpired,
+		webcontract.ErrorOutcomeUnavailable,
 	} {
 		if code.HTTPStatus() == 0 {
 			t.Fatalf("code %q has no HTTP status", code)

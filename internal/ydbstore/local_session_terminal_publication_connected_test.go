@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -161,12 +162,14 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 		var limits []ydbstore.LocalCompactionConnectedLimits
 		if compact {
 			name, text, steps = "two_compactions", strings.Repeat("x", 4096), 3
-			limits = []ydbstore.LocalCompactionConnectedLimits{{InputTokens: 8192, NetworkOperation: 5 * time.Second}}
+			limits = []ydbstore.LocalCompactionConnectedLimits{nonExpiryCompactionConnectedLimits(8192)}
 		}
 		t.Run(name, func(t *testing.T) {
 			session, seed, peer, blobs := newTerminalPublicationSession(t, "", text, limits...)
+			var observed []ports.AuthenticatedAttemptOperationObservationV1
 			for i := 0; i < steps; i++ {
-				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
+				result, err := session.RunModelStep(t.Context())
+				if err != nil || !result.Model.SendAttempted {
 					peer.mu.Lock()
 					kinds, sizes, failure := append([]string(nil), peer.kinds...), append([]int(nil), peer.sizes...), peer.failure
 					peer.mu.Unlock()
@@ -175,6 +178,13 @@ func TestLocalSessionTerminalPublicationConnected(t *testing.T) {
 					t.Logf("compaction_failure: %s", localTerminalFailureDiagnostic(t, result, seed.LocalSessionConnectedSeed))
 					t.Fatalf("original step%d err=%v attempted=%t compaction=%t stats=%+v kinds=%v sizes=%v publication=%d/%d/%d peer=%s", i, err, result.Model.SendAttempted, result.Compaction != nil, seed.Stats(), kinds, sizes, w, c, r, failure)
 				}
+				if result.Compaction != nil {
+					observed = append(observed, result.Compaction.Observation)
+				}
+				observed = append(observed, result.Model.Observation)
+			}
+			if compact {
+				assertOriginalCompactionActiveBudget(t, seed.LocalSessionConnectedSeed, observed, []domain.AttemptOperationKindV1{domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1, domain.AttemptOperationCompactionV1, domain.AttemptOperationModelV1})
 			}
 			h, p := prepareTerminalPublication(t, session, blobs)
 			before, stats := seed.TerminalPublicationRun(t), seed.Stats()

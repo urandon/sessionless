@@ -276,9 +276,18 @@ func installPreparedFutureProxy(t *testing.T, f *compactionSourceFixture, op dom
 		f.queries.proxies = append(f.queries.proxies, append(append([]driver.Value{op.Sequence}, f.sql.row...), string(domain.RegisteredProxyProviderV1)))
 	}
 }
-func preparedCompactionEffectFixture(t *testing.T, prefix bool) (*compactionSourceFixture, *localCompactionGenerationV1, *compactionEffectSQL) {
+func preparedCompactionEffectFixture(t *testing.T, prefix bool, prebuild localRuntimeActualPrebuild) (*compactionSourceFixture, *localCompactionGenerationV1, *compactionEffectSQL) {
 	t.Helper()
-	f, source := prepareGenerationFixture(t)
+	// Select the declaration before the real Source, profile and authority are
+	// sealed. No operation deadline is refreshed after preparation or an effect.
+	prebuild.compiledCompaction = true
+	f := newCompactionSourceFixtureWithPrebuild(t, true, prebuild, true)
+	f.store.ownedProviderPriceCustody = localInvoiceRejectStandardCustody{}
+	source, err := f.entry.CaptureCompactionSource(t.Context())
+	if err != nil {
+		t.Fatalf("compiled original source capture: %v", err)
+	}
+	t.Cleanup(source.Clear)
 	if prefix {
 		source.Clear()
 		op := f.operation(t, 1)
@@ -315,7 +324,7 @@ func TestLocalCompactionEffectActualReserveAndBeforeSend(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := preparedCompactionEffectFixture(t, prefix)
+				f, g, engine := preparedCompactionEffectFixture(t, prefix, localRuntimeActualPrebuild{})
 				reserved, err := f.store.ReserveAttemptOperation(t.Context(), ports.ReserveAttemptOperationRequestV1{Operation: g.operation})
 				if err != nil || reserved.Status != ports.AttemptOperationReservedV1 || reserved.Capability == nil {
 					t.Fatalf("genuine factory -> actual reserve: %v statements=%d max=%d", err, engine.statements, engine.maxStatements)
@@ -391,7 +400,7 @@ func TestLocalCompactionEffectLostCommitCannotRetry(t *testing.T) {
 	for _, mode := range []string{"rollback", "persist"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := preparedCompactionEffectFixture(t, false)
+				f, g, engine := preparedCompactionEffectFixture(t, false, localRuntimeActualPrebuild{})
 				engine.loseCommit = mode
 				result, err := f.store.ReserveAttemptOperation(t.Context(), ports.ReserveAttemptOperationRequestV1{Operation: g.operation})
 				if err == nil || result.Capability != nil || engine.writes != 1 || engine.lostAcks != 1 || !g.reservationAttempted || g.reservation.Version != 0 {
@@ -420,7 +429,7 @@ func TestLocalCompactionEffectDenialsBeforeWrite(t *testing.T) {
 	for _, name := range []string{"copied_owner", "partial_owner", "foreign_operation", "changed_fit", "closed_source", "cancelled", "missing_future_proxy", "changed_run"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				f, g, engine := preparedCompactionEffectFixture(t, false)
+				f, g, engine := preparedCompactionEffectFixture(t, false, localRuntimeActualPrebuild{})
 				op := g.operation.Clone()
 				ctx := t.Context()
 				switch name {

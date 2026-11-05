@@ -24,6 +24,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramingress"
+	"gitcode.com/urandon/sessionless/internal/webauthconfig"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -77,6 +78,9 @@ func buildHandler(
 	ctx context.Context,
 	logger *slog.Logger,
 ) (http.Handler, func(), error) {
+	if err := requireTelegramIdentityWriter(os.LookupEnv); err != nil {
+		return nil, func() {}, err
+	}
 	info := buildinfo.Current(component)
 	attached, err := attachedControlConfigFromEnv(os.Getenv)
 	if err != nil {
@@ -157,6 +161,26 @@ func buildHandler(
 	}
 	ready = true
 	return controlapi.NewHandlerWithOptions(logger, info, options), closeYDB, nil
+}
+
+// The ordinary Telegram chat writer is explicitly retired after V2 cutover.
+// Attached-only/health control uses no Web identity writer and stays available.
+// This validates new process configuration, not retirement of older revisions.
+func requireTelegramIdentityWriter(lookup func(string) (string, bool)) error {
+	_, versionPresent := lookup("WEB_IDENTITY_VERSION")
+	webhook, _ := lookup("TELEGRAM_WEBHOOK_SECRET")
+	_, gatePresent := lookup("WEB_IDENTITY_SENSITIVE_OPERATIONS")
+	if !versionPresent && !gatePresent && webhook == "" {
+		return nil
+	}
+	config, err := webauthconfig.RuntimeFromEnvironment(lookup)
+	if err != nil {
+		return err
+	}
+	if config.Version == "2" && webhook != "" {
+		return errors.New("Telegram chat ingress is retired in identity version 2; remove its webhook configuration before startup")
+	}
+	return nil
 }
 
 // Telegram alone owns its bot identity and queues. Attached-only startup

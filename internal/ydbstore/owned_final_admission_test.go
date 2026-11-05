@@ -151,10 +151,12 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 		run.Status, attempt.Status, attempt.WorkerID = domain.RunCreated, domain.AttemptCreated, ""
 		if run.LocalCapacityAssociation != nil {
 			outbox.LocalCapacityAssociation = run.Clone().LocalCapacityAssociation
-			outbox.ContextWindow = s.Job.Clone().ContextWindow
-			outbox.Origin = s.Job.Clone().Origin
-			outbox.DeliveryChat, outbox.ReplyToMessageID = s.Job.DeliveryChat, s.Job.ReplyToMessageID
 		}
+		// Declared job DATA applies to both local and nonlocal pre-seal graphs;
+		// retaining template delivery fields would cross the supplied tenant.
+		outbox.ContextWindow = s.Job.Clone().ContextWindow
+		outbox.Origin = s.Job.Clone().Origin
+		outbox.DeliveryChat, outbox.ReplyToMessageID = s.Job.DeliveryChat, s.Job.ReplyToMessageID
 		outbox.ID, outbox.TenantID, outbox.RunID, outbox.AttemptID = domain.DispatchOutboxID("dispatch-"+string(run.ID)), run.TenantID, run.ID, attempt.ID
 		outbox.InputManifestID, outbox.ContextSnapshot, outbox.CredentialOwnerUserID = s.Job.InputManifestID, s.Job.ContextSnapshot, s.Job.CredentialOwnerUserID
 		outbox.CreatedAt, outbox.UpdatedAt = run.CreatedAt, run.CreatedAt

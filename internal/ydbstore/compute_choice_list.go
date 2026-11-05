@@ -116,7 +116,7 @@ func (store *Store) readRatedComputeChoiceAttachedPage(ctx context.Context, dige
 		}
 		defer attempt.Finish()
 		query := &computeChoiceQuery{tx: tx, budget: attempt}
-		auth, err := readComputeChoiceAuth(ctx, query, digest, sessionID)
+		auth, err := store.readComputeChoiceAuth(ctx, query, digest, sessionID)
 		if err != nil {
 			return err
 		}

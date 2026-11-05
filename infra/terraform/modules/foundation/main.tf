@@ -318,7 +318,7 @@ resource "yandex_lockbox_secret" "telegram" {
 resource "yandex_lockbox_secret" "web_bff" {
   folder_id           = yandex_resourcemanager_folder.environment.id
   name                = "${var.name_prefix}-web-bff"
-  description         = "Metadata only; Web OIDC and signing payload versions are loaded outside Terraform"
+  description         = "Metadata only; separate Yandex/Telegram login and signing payload versions are loaded outside Terraform"
   kms_key_id          = yandex_kms_symmetric_key.secrets.id
   deletion_protection = var.deletion_protection
   labels              = local.labels
@@ -399,10 +399,12 @@ resource "yandex_kms_symmetric_key_iam_member" "runtime_secret_decrypter" {
   member           = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
 }
 
-resource "yandex_logging_group" "application" {
-  folder_id        = yandex_resourcemanager_folder.environment.id
-  name             = "${var.name_prefix}-runtime"
-  description      = "Structured runtime, trigger, and gateway logs"
-  retention_period = var.log_retention
-  labels           = local.labels
+// The native destination is operator-owned. Retain the previously provisioned
+// group and its records; do not call its unavailable management API on refresh.
+// See docs/cloud-dev-observability.md#native-log-destination-ownership.
+removed {
+  from = yandex_logging_group.application
+  lifecycle {
+    destroy = false
+  }
 }

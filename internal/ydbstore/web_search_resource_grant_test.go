@@ -126,7 +126,8 @@ func (c *resourceConsentCustodyFixture) ReadWebSearchResourceGrant(ctx context.C
 	b.mu.Lock()
 	charged, active, callbacks := b.bytes, b.active, b.callbacks
 	b.mu.Unlock()
-	if active || callbacks != 1 || charged < c.f.intentBytes+4*cap {
+	observation := c.f.bodyObservations[b]
+	if observation == nil || active || callbacks != 1 || charged < observation.intentBytes+4*cap {
 		return nil, errors.New("V2 grant read must reserve original return/copy/parser/canonical budget before I/O")
 	}
 	if c.fault != nil {

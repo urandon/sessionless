@@ -43,6 +43,11 @@ func presealResourceConsentGrant(t *testing.T, p *domain.OwnedAgentProfileCurren
 
 func newResourceConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetup) (*privateConsentViewFixture, *resourceConsentCustodyFixture) {
 	t.Helper()
+	return newResourceConsentViewFixtureFromState(t, nil, setup...)
+}
+
+func newResourceConsentViewFixtureFromState(t *testing.T, state *ports.WorkerJobState, setup ...privateConsentGrantSetup) (*privateConsentViewFixture, *resourceConsentCustodyFixture) {
+	t.Helper()
 	configure := privateConsentGrantSetup(presealResourceConsentGrant)
 	if len(setup) > 1 {
 		t.Fatal("one resource grant setup is supported")
@@ -50,7 +55,7 @@ func newResourceConsentViewFixture(t *testing.T, setup ...privateConsentGrantSet
 	if len(setup) == 1 {
 		configure = setup[0]
 	}
-	f := newPrivateConsentViewFixture(t, configure)
+	f := newPrivateConsentViewFixtureFromState(t, state, configure)
 	// The existing original admission already seals a canonical ThroughSequence
 	// window. Seed its event DATA without rewriting any sealed job/source/parent.
 	var run domain.Run

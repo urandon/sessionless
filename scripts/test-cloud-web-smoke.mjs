@@ -10,7 +10,7 @@ const script = join(dirname(fileURLToPath(import.meta.url)), 'cloud-web-smoke.sh
 const check = join(dirname(script), 'cloud-web-login-check.mjs');
 const state = 'STATE_LEAK_MARKER', nonce = 'NONCE_LEAK_MARKER', token = 'IAM_LEAK_MARKER';
 const web = 'https://web.dev.example.invalid', container = 'https://container.example.invalid';
-const environment = provider => ({ CLOUD_WEB_URL: web, WEB_CONTAINER_URL: container, WEB_IMAGE_REF: `cr.yandex/registry/web-bff@sha256:${'a'.repeat(64)}`, WEB_PREPARED_INSTANCES:'0', WEB_CONCURRENCY:'1', WEB_LOGIN_PROVIDER:provider, YANDEX_LOGIN_CLIENT_ID:'yandex-client', TELEGRAM_OIDC_CLIENT_ID:'telegram-client', WEB_COLD_START_WAIT_SECONDS:'0' });
+const environment = provider => ({ CLOUD_WEB_URL: web, WEB_CONTAINER_URL: container, WEB_IMAGE_REF: `cr.yandex/registry/web-bff@sha256:${'a'.repeat(64)}`, WEB_PREPARED_INSTANCES:'0', WEB_CONCURRENCY:'1', WEB_LOGIN_PROVIDERS:provider, YANDEX_LOGIN_CLIENT_ID:'yandex-client', TELEGRAM_OIDC_CLIENT_ID:'telegram-client', WEB_COLD_START_WAIT_SECONDS:'0' });
 function authorization(provider) {
   const u = new URL(provider === 'yandex' ? 'https://oauth.yandex.ru/authorize' : 'https://oauth.telegram.org/auth');
   const values = { client_id:`${provider}-client`, redirect_uri:web+(provider === 'yandex' ? '/auth/login/callback' : '/auth/telegram/callback'), response_type:'code', scope:provider === 'yandex' ? 'login:info' : 'openid profile', state, code_challenge:Buffer.alloc(32,7).toString('base64url'), code_challenge_method:'S256' };
@@ -20,7 +20,10 @@ function authorization(provider) {
 }
 const headers = (status, entries) => `HTTP/2 ${status}\r\n${entries.map(([k,v])=>`${k}: ${v}`).join('\r\n')}\r\n\r\n`;
 function fixture(provider) {
-  return { login:headers(303,[['Cache-Control','no-store'],['Location',authorization(provider).href],['Set-Cookie',`login=${state}; Secure; HttpOnly`]]), root:headers(200,[['Strict-Transport-Security','max-age=31536000; includeSubDomains'],['X-Content-Type-Options','nosniff'],['Referrer-Policy','strict-origin-when-cross-origin'],['Cache-Control','no-store'],['Content-Security-Policy',"default-src 'self'; frame-ancestors 'none'"]]), me:headers(401,[['Cache-Control','no-store']]), version:'{"component":"web-bff"}', anonymous:'403', forbidden:'404' };
+  const modes = provider.split(',');
+  const logins = Object.fromEntries(modes.map(p => [p, headers(303,[['Cache-Control','no-store'],['Location',authorization(p).href],['Set-Cookie','login='+state+'; Secure; HttpOnly']])]));
+  const methods = {methods:modes.map(p=>({provider:p,label:p==='yandex'?'Yandex':'Telegram',start_path:'/auth/login/'+p+'/start'}))};
+  return {methods,logins,login:logins[modes[0]], root:headers(200,[['Strict-Transport-Security','max-age=31536000; includeSubDomains'],['X-Content-Type-Options','nosniff'],['Referrer-Policy','strict-origin-when-cross-origin'],['Cache-Control','no-store'],['Content-Security-Policy',"default-src 'self'; frame-ancestors 'none'"]]), me:headers(401,[['Cache-Control','no-store']]), version:'{"component":"web-bff"}',anonymous:'403',forbidden:'404'};
 }
 const fakeCurl = `#!/usr/bin/env node
 const fs=require('node:fs');const a=process.argv.slice(2), f=JSON.parse(fs.readFileSync(process.env.FIXTURE,'utf8'));const entry={client:'curl',argv:a};
@@ -33,7 +36,12 @@ if(u.host==='container.example.invalid')status=option('--config')?(f.privateStat
 else if(u.pathname==='/version')body=f.version;
 else if(u.pathname==='/'){h=f.root;body='<html></html>'}
 else if(u.pathname==='/api/web/v1/me'){h=f.me;status='401'}
-else if(u.pathname==='/auth/login/start'){h=f.login;status='303'}
+else if(u.pathname==='/auth/login/methods'){body=JSON.stringify(f.methods)}
+else if(u.pathname==='/auth/login/yandex/start'||u.pathname==='/auth/login/telegram/start'){
+ if(option('--request')!=='POST'||!a.includes('Origin: '+process.env.CLOUD_WEB_URL)||option('--data')!=='return_to=%2F')process.exit(9);
+ const provider=u.pathname.includes('/yandex/')?'yandex':'telegram';
+ h=process.env.WEB_LOGIN_PROVIDERS.includes(',')?f.logins[provider]:f.login;status='303';
+}
 else if(u.pathname==='/telegram/webhook'||u.pathname==='/api/not-allowed')status=f.forbidden;
 else if(u.pathname!=='/healthz'&&u.pathname!=='/readyz')process.exit(9);
 const fail=a.includes('--fail')||(option('--config')&&fs.readFileSync(option('--config'),'utf8').split('\\n').includes('fail'));
@@ -50,7 +58,8 @@ function run(t, provider='yandex', mutate=()=>{}, overrides={}) {
   const bin=join(dir,'bin'), scratch=join(dir,'scratch');mkdirSync(bin,{mode:0o700});mkdirSync(scratch,{mode:0o700});
   writeFileSync(join(bin,'curl'),fakeCurl,{mode:0o700});writeFileSync(join(bin,'yc'),fakeYC,{mode:0o700});symlinkSync(process.execPath,join(bin,'node'));
   const data=fixture(provider);mutate(data);const fixturePath=join(dir,'fixture.json'),trace=join(dir,'trace');writeFileSync(fixturePath,JSON.stringify(data),{mode:0o600});
-  const env={...process.env,...environment(provider),...overrides,PATH:`${bin}:/usr/bin:/bin`,TMPDIR:scratch,FIXTURE:fixturePath,TRACE:trace};
+  const env={...process.env,...environment(provider),PATH:`${bin}:/usr/bin:/bin`,TMPDIR:scratch,FIXTURE:fixturePath,TRACE:trace};
+  delete env.WEB_LOGIN_PROVIDER; Object.assign(env,overrides);
   const result=spawnSync('/bin/sh',[script],{env,encoding:'utf8',timeout:10000,maxBuffer:65536});
   assert.equal(result.error,undefined);const calls=readdirSync(dir).includes('trace')?readFileSync(trace,'utf8').trim().split('\n').map(JSON.parse):[];
   assert.deepEqual(readdirSync(scratch),[],'smoke must remove every owned temporary file');
@@ -59,13 +68,13 @@ function run(t, provider='yandex', mutate=()=>{}, overrides={}) {
   return {...result,calls};
 }
 
-for(const provider of ['yandex','telegram'])test(`selected ${provider} succeeds privately without redirect follow`,t=>{
+for(const provider of ['yandex','telegram','yandex,telegram'])test(`selected ${provider} succeeds privately without redirect follow`,t=>{
   const r=run(t,provider);assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/selected login/);
   const privateCall=r.calls.find(c=>c.configMode!==undefined);assert.equal(privateCall.configMode,0o600);assert.equal(privateCall.directoryMode,0o700);assert.equal(privateCall.privateAuthorization,true);
-  assert.equal(r.calls.filter(c=>c.client==='yc').length,1);assert.ok(r.calls.some(c=>c.argv.at(-1)===web+'/auth/login/start?return_to=%2F'));assert.ok(!r.calls.some(c=>c.argv.at(-1)?.includes('/auth/telegram/start')));
+  assert.equal(r.calls.filter(c=>c.client==='yc').length,1);assert.ok(r.calls.some(c=>c.argv.at(-1)===web+'/auth/login/methods')); for(const selected of provider.split(',')){const call=r.calls.find(c=>c.argv.at(-1)===web+'/auth/login/'+selected+'/start'); assert.ok(call);assert.ok(call.argv.includes('POST'));assert.ok(call.argv.includes('Origin: '+web));}assert.ok(!r.calls.some(c=>c.argv.at(-1)?.includes('/auth/telegram/start')));
 });
 for(const [name,env] of [
-  ['missing selector',{WEB_LOGIN_PROVIDER:''}],['unknown selector',{WEB_LOGIN_PROVIDER:'other'}],['missing Yandex client',{YANDEX_LOGIN_CLIENT_ID:''}],['missing Telegram client',{WEB_LOGIN_PROVIDER:'telegram',TELEGRAM_OIDC_CLIENT_ID:''}],['invalid client',{YANDEX_LOGIN_CLIENT_ID:'secret invalid'}],
+  ['missing selector',{WEB_LOGIN_PROVIDERS:''}],['legacy selector',{WEB_LOGIN_PROVIDER:'yandex'}],['empty legacy selector',{WEB_LOGIN_PROVIDER:''}],['reversed providers',{WEB_LOGIN_PROVIDERS:'telegram,yandex'}],['duplicate provider',{WEB_LOGIN_PROVIDERS:'yandex,yandex'}],['both missing Telegram',{WEB_LOGIN_PROVIDERS:'yandex,telegram',TELEGRAM_OIDC_CLIENT_ID:''}],['unknown selector',{WEB_LOGIN_PROVIDERS:'other'}],['missing Yandex client',{YANDEX_LOGIN_CLIENT_ID:''}],['missing Telegram client',{WEB_LOGIN_PROVIDERS:'telegram',TELEGRAM_OIDC_CLIENT_ID:''}],['invalid client',{YANDEX_LOGIN_CLIENT_ID:'secret invalid'}],
   ['wrong public origin',{CLOUD_WEB_URL:'https://other.example'}],['public query',{CLOUD_WEB_URL:web+'?secret=value'}],['public userinfo',{CLOUD_WEB_URL:'https://secret@web.dev.example.invalid'}],['public path',{CLOUD_WEB_URL:web+'/path'}],['public HTTP',{CLOUD_WEB_URL:'http://web.dev.example.invalid'}],['container query',{WEB_CONTAINER_URL:container+'?x=1'}],['container HTTP',{WEB_CONTAINER_URL:'http://container.example.invalid'}],
   ['nonhex digest',{WEB_IMAGE_REF:`cr.yandex/registry/web-bff@sha256:${'z'.repeat(64)}`}],['short digest',{WEB_IMAGE_REF:'cr.yandex/registry/web-bff@sha256:a'}],['image tag',{WEB_IMAGE_REF:'cr.yandex/registry/web-bff:latest'}],['prepared instances',{WEB_PREPARED_INSTANCES:'1'}],['large concurrency',{WEB_CONCURRENCY:'9'}],['invalid concurrency',{WEB_CONCURRENCY:'1x'}],['unbounded wait',{WEB_COLD_START_WAIT_SECONDS:'999'}],
 ])test(`preflight ${name} makes zero client calls`,t=>{const r=run(t,'yandex',()=>{},env);assert.equal(r.status,2);assert.equal(r.calls.length,0)});
@@ -85,7 +94,7 @@ for(const status of ['401','403'])test(`authenticated private invocation rejects
   assert.equal(r.calls.filter(c=>c.client==='curl').length,2,'must stop before public probes');
   assert.equal(r.calls.filter(c=>c.client==='yc').length,1);
 });
-for(const path of ['/healthz','/version','/','/api/web/v1/me','/auth/login/start','/api/not-allowed'])test(`curl failure at ${path} stays private and cleans up`,t=>{assert.equal(run(t,'yandex',f=>{f.curlFailure=path}).status,1)});
+for(const path of ['/healthz','/version','/','/api/web/v1/me','/auth/login/yandex/start','/api/not-allowed'])test(`curl failure at ${path} stays private and cleans up`,t=>{assert.equal(run(t,'yandex',f=>{f.curlFailure=path}).status,1)});
 test('validator does not expose malformed auth input or excessive stdin',()=>{
   for(const input of ['Location: ACCESS_LEAK_MARKER',Buffer.alloc(65537,65)]){
     const r=spawnSync(process.execPath,[check,'login'],{env:{...process.env,...environment('yandex')},input,encoding:'utf8',timeout:3000,maxBuffer:65536});assert.equal(r.status,1);assert.equal(r.stdout,'');assert.equal(r.stderr,'cloud Web smoke validation failed\n');
@@ -143,4 +152,15 @@ test('managed separate HSTS smoke succeeds and cleans owned files',t=>{
   assert.equal(r.status,0,r.stderr);
   const rootCall=r.calls.find(c=>c.client==='curl'&&c.argv.at(-1)===web+'/');
   assert.ok(rootCall.argv.includes('Accept: text/html'),'root probe must request HTML navigation');
+});
+
+for (const [name,change] of [
+ ['foreign provider',f=>{f.methods.methods[0].provider='foreign'}],
+ ['foreign path',f=>{f.methods.methods[0].start_path='https://evil.example/start'}],
+ ['duplicate method',f=>{f.methods.methods.push(f.methods.methods[0])}],
+ ['unknown field',f=>{f.methods.secret='must-not-be-public'}],
+]) test('metadata rejects '+name+' before authorization POST',t=>{
+ const result=run(t,'yandex',change);
+ assert.equal(result.status,1);
+ assert.ok(!result.calls.some(c=>c.argv.at(-1)?.includes('/auth/login/yandex/start')));
 });

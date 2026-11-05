@@ -33,13 +33,30 @@ variable "web_bff_secret_version_id" {
   description = "Non-secret Lockbox version ID loaded by scripts/cloud-web-secret-load.sh outside Terraform."
   type        = string
 }
-variable "web_login_provider" {
-  description = "Explicit Web login provider; selecting Yandex requires its separately registered OAuth application."
+variable "web_login_providers" {
+  description = "Explicit ordered Web login providers; selecting Yandex requires its separately registered OAuth application."
   type        = string
-  default     = "telegram"
   validation {
-    condition     = contains(["telegram", "yandex"], var.web_login_provider)
-    error_message = "web_login_provider must be telegram or yandex."
+    condition     = contains(["yandex", "telegram", "yandex,telegram"], var.web_login_providers)
+    error_message = "web_login_providers must be yandex, telegram, or yandex,telegram."
+  }
+}
+variable "web_identity_version" {
+  description = "Explicit Web identity codec; V2 requires separate all-writer/data cutover."
+  type        = string
+  default     = "1"
+  validation {
+    condition     = contains(["1", "2"], var.web_identity_version)
+    error_message = "web_identity_version must be exactly 1 or 2."
+  }
+}
+variable "web_identity_sensitive_operations" {
+  description = "Allow new link/unlink operations on the version-2 Web runtime."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.web_identity_sensitive_operations || var.web_identity_version == "2"
+    error_message = "Sensitive identity operations require web_identity_version 2."
   }
 }
 variable "yandex_login_client_id" {
@@ -47,7 +64,7 @@ variable "yandex_login_client_id" {
   type        = string
   default     = ""
   validation {
-    condition     = var.web_login_provider != "yandex" || (length(trimspace(var.yandex_login_client_id)) > 0 && var.yandex_login_client_id == trimspace(var.yandex_login_client_id))
+    condition     = !contains(split(",", var.web_login_providers), "yandex") || (length(trimspace(var.yandex_login_client_id)) > 0 && var.yandex_login_client_id == trimspace(var.yandex_login_client_id))
     error_message = "yandex_login_client_id must be non-empty and without surrounding whitespace when Yandex is selected."
   }
 }
@@ -56,7 +73,7 @@ variable "telegram_oidc_client_id" {
   type        = string
   default     = ""
   validation {
-    condition     = var.web_login_provider != "telegram" || can(regex("^[0-9]+$", var.telegram_oidc_client_id))
+    condition     = !contains(split(",", var.web_login_providers), "telegram") || can(regex("^[0-9]+$", var.telegram_oidc_client_id))
     error_message = "telegram_oidc_client_id must contain only decimal digits when Telegram is selected."
   }
 }
@@ -219,9 +236,14 @@ variable "queue_max_receive_count" {
   type    = number
   default = 5
 }
-variable "log_retention" {
-  type    = string
-  default = "168h"
+variable "runtime_log_group_id" {
+  description = "Exact existing operator-owned native log destination. Terraform does not create it or control its retention."
+  type        = string
+  nullable    = false
+  validation {
+    condition     = can(regex("^[a-z0-9]{20}$", var.runtime_log_group_id))
+    error_message = "runtime_log_group_id must be an exact existing 20-character native log-group ID, not a name, project, URL or placeholder."
+  }
 }
 variable "deletion_protection" {
   description = "Protect state-bearing cloud resources. Disable only in a separately reviewed apply before destroy."

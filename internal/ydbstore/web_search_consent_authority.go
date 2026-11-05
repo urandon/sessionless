@@ -121,13 +121,13 @@ func (store *Store) ownedConsentCurrentAuthorityData(ctx context.Context, q *own
 
 // Point reads are bounded BEFORE materialization, share the same statement/
 // byte budget and transaction clock, and never refresh browser activity.
-func loadOwnedConsentActor(ctx context.Context, q *ownedAuthorityQuery, r domain.WebSearchConsentRequestV1, digest domain.SecretDigest, a *domain.WebSearchConsentAuthorityV1) error {
-	bucket, err := webBucket(string(digest))
-	if err != nil || digest.Validate("owned_consent.web_session_digest") != nil {
+func loadOwnedConsentActor(ctx context.Context, q *ownedAuthorityQuery, r domain.WebSearchConsentRequestV1, digest domain.SecretDigest, a *domain.WebSearchConsentAuthorityV1, mode ownedConsentIdentityMode) error {
+	browser, found, err := mode.readSession(ctx, q, digest)
+	if err != nil || !found {
 		return q.budget.deny()
 	}
-	raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, digest)
-	if err != nil || decodeOwnedEffectCanonicalJSON(raw, &a.WebSession) != nil || a.WebSession.SessionDigest != digest || a.WebSession.UserID != r.InitiatingUserID || a.WebSession.ActiveTenantID != r.Scope.TenantID {
+	a.WebSession = browser.session
+	if a.WebSession.SessionDigest != digest || a.WebSession.UserID != r.InitiatingUserID || a.WebSession.ActiveTenantID != r.Scope.TenantID {
 		return q.budget.deny()
 	}
 	memberBucket, err := webBucket(string(r.InitiatingUserID))
@@ -147,7 +147,7 @@ func loadOwnedConsentActor(ctx context.Context, q *ownedAuthorityQuery, r domain
 			return q.budget.deny()
 		}
 	}
-	if a.ValidateActor(r, q.at) != nil {
+	if browser.authorizeWrite(a.Membership, q.at) != nil || a.ValidateActor(r, q.at) != nil {
 		return q.budget.deny()
 	}
 	return nil
@@ -174,7 +174,8 @@ func (store *Store) validateOwnedOperationConsent(ctx context.Context, q *ownedA
 		return q.budget.deny()
 	}
 	a, err := store.ownedConsentCurrentAuthority(ctx, q, parent, source, state.Request, evidence.grant)
-	if err != nil || loadOwnedConsentActor(ctx, q, state.Request, state.Decision.WebSessionDigest, &a) != nil || domain.ValidateWebSearchConsentReceiptV1(state, binding, a, q.at) != nil {
+	mode := ownedConsentIdentityMode{config: store.webIdentityV2}
+	if err != nil || loadOwnedConsentActor(ctx, q, state.Request, state.Decision.WebSessionDigest, &a, mode) != nil || domain.ValidateWebSearchConsentReceiptV1(state, binding, a, q.at) != nil {
 		return q.budget.deny()
 	}
 	return nil

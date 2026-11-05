@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
 )
 
 // Extends the original isolated Connector fixture with operation/audit rows.
@@ -25,6 +26,9 @@ type identityOperationSQLV2 struct {
 	digest                      domain.SecretDigest
 	at                          time.Time
 	commitReplyError            error
+	outcomeRollbackOnce         bool
+	outcomeRetryAdvance         time.Duration
+	outcomeAfterRollback        func(*identityOperationSQLV2)
 }
 
 type identityOperationConnV2 struct {
@@ -53,6 +57,17 @@ func (tx *identityOperationTxV2) Commit() error {
 	defer f.base.mu.Unlock()
 	if f.base.pending == nil || f.base.rangeOpen != 0 {
 		return errors.New("identity commit without complete original snapshot")
+	}
+	if f.outcomeRollbackOnce {
+		f.outcomeRollbackOnce = false
+		f.base.pending = nil
+		f.pendingOperation, f.pendingAudit = "", nil
+		f.base.rollbacks++
+		f.at = f.at.Add(f.outcomeRetryAdvance)
+		if f.outcomeAfterRollback != nil {
+			f.outcomeAfterRollback(f)
+		}
+		return retry.RetryableError(errors.New("controlled identity outcome serialization conflict"), retry.WithBackoff(retry.TypeNoBackoff))
 	}
 	f.base.durable = f.base.pending.clone()
 	f.operation, f.audit = f.pendingOperation, f.pendingAudit
@@ -127,10 +142,11 @@ func (c *identityOperationConnV2) QueryContext(ctx context.Context, statement st
 
 const identityOperationWriteSQLTestV2 = `UPSERT INTO oidc_login_challenges (shard_bucket,state_digest,browser_binding_digest,pkce_verifier,nonce,redirect_path, created_at,expires_at,consumed_at,record,delete_after) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument),$11)`
 const identityOperationAuditSQLTestV2 = `INSERT INTO audit_events (tenant_id,occurred_at,audit_event_id,actor_id,action,subject_kind,subject_id,outcome,metadata,expire_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS JsonDocument),$10)`
+const identityOperationSecurityAuditSQLTestV2 = `UPSERT INTO web_security_audit_events (shard_bucket, occurred_at, request_id, action, provider, subject_fingerprint, tenant_id, user_id, membership_security_version, reason_code, record, expire_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CAST($11 AS JsonDocument), $12)`
 
 func (c *identityOperationConnV2) ExecContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Result, error) {
 	normalized := identityRowsV2Statement(statement)
-	if normalized != identityOperationWriteSQLTestV2 && normalized != identityOperationAuditSQLTestV2 {
+	if normalized != identityOperationWriteSQLTestV2 && normalized != identityOperationAuditSQLTestV2 && normalized != identityOperationSecurityAuditSQLTestV2 {
 		return c.identityRowsV2Conn.ExecContext(ctx, statement, args)
 	}
 	f := c.f
@@ -160,6 +176,20 @@ func (c *identityOperationConnV2) ExecContext(ctx context.Context, statement str
 			return nil, errors.New("operation scalar privacy/key/retention mismatch")
 		}
 		f.pendingOperation = raw
+	} else if normalized == identityOperationSecurityAuditSQLTestV2 {
+		if len(values) != 12 {
+			return nil, errors.New("identity stop audit physical shape")
+		}
+		raw, ok := values[10].(string)
+		var event domain.WebSecurityAuditEvent
+		if !ok || json.Unmarshal([]byte(raw), &event) != nil || event.Validate() != nil || (event.Action != domain.WebSecurityIdentityOperationStopped && event.Action != domain.WebSecurityIdentityProofFailed) || event.RequestID != "identity-stop-"+string(f.digest) {
+			return nil, errors.New("identity stop audit is not exact typed content-free DATA")
+		}
+		want := []any{identityRowsV2ExpectedBucket(event.RequestID), event.OccurredAt, event.RequestID, string(event.Action), string(event.Provider), "", string(event.TenantID), string(event.UserID), int64(event.MembershipSecurityVersion), event.ReasonCode, raw, values[11]}
+		if !reflect.DeepEqual(values, want) {
+			return nil, errors.New("identity stop audit scalar/JSON correspondence")
+		}
+		f.pendingAudit = append(f.pendingAudit, values)
 	} else {
 		if len(values) != 10 || values[2] != "audit-identity-"+string(f.digest) || values[5] != "identity_operation" || values[6] != string(f.digest) || values[7] != "succeeded" {
 			return nil, errors.New("audit exact operation correlation mismatch")

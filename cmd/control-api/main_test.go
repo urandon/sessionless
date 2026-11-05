@@ -30,6 +30,43 @@ func TestAttachedControlConfigStrictFlag(t *testing.T) {
 	}
 }
 
+func TestTelegramIdentityWriterRetirementBeforeDependencies(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		env   map[string]string
+		valid bool
+	}{
+		{"health_no_identity", map[string]string{}, true},
+		{"v1_webhook", map[string]string{"WEB_IDENTITY_VERSION": "1", "TELEGRAM_WEBHOOK_SECRET": "synthetic-webhook"}, true},
+		{"unversioned_webhook", map[string]string{"TELEGRAM_WEBHOOK_SECRET": "synthetic-webhook"}, false},
+		{"v2_no_webhook", map[string]string{"WEB_IDENTITY_VERSION": "2", "WEB_IDENTITY_SENSITIVE_OPERATIONS": "false"}, true},
+		{"v2_webhook", map[string]string{"WEB_IDENTITY_VERSION": "2", "WEB_IDENTITY_SENSITIVE_OPERATIONS": "false", "TELEGRAM_WEBHOOK_SECRET": "synthetic-webhook"}, false},
+		{"unknown_version", map[string]string{"WEB_IDENTITY_VERSION": "3"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireTelegramIdentityWriter(func(k string) (string, bool) { v, ok := tc.env[k]; return v, ok })
+			if (err == nil) != tc.valid {
+				t.Fatalf("%s valid=%v err=%v", tc.name, tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestBuildHandlerRetiredTelegramWriterFailsBeforeOpeningDependencies(t *testing.T) {
+	t.Setenv("WEB_IDENTITY_VERSION", "2")
+	t.Setenv("WEB_IDENTITY_SENSITIVE_OPERATIONS", "false")
+	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "synthetic-webhook")
+	t.Setenv("YDB_CONNECTION_STRING", "invalid")
+	handler, cleanup, err := buildHandler(context.Background(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if cleanup != nil {
+		cleanup()
+	}
+	if handler != nil || err == nil || !strings.Contains(err.Error(), "Telegram chat ingress is retired") {
+		t.Fatalf("retired writer did not fail before DB: handler=%v err=%v", handler != nil, err)
+	}
+}
+
 func TestAttachedControlConfigDisabledIgnoresOptionalDependencies(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{"", "false"} {

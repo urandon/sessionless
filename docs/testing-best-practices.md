@@ -294,9 +294,9 @@ the committed embed placeholder suffices for compilation. No Go job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join all four Go verification jobs, preserving every original predecessor.
 Moving the unchanged Worker command does not increase a binary or job timeout.
-The dedicated `go-runtime` job runs `make test-search-offline` exactly once,
-after its unchanged MCP, Worker and Failure/Source commands. The ordinary
-local-tail job retains only its existing complete target. This placement
+The `go-local` job runs `make test-search-offline` exactly once, after its
+unchanged complete ordinary local-tail target. The dedicated `go-runtime` job
+retains its unchanged MCP, Worker and Failure/Source commands. This placement
 preserves every command and predecessor without increasing either job's
 thirty-minute bound. Local/release `make test-connected`
 appends that same target after its unchanged normal selections and MCP gate.
@@ -323,7 +323,7 @@ it does not preserve the old aggregate resource ceiling or widen either binary
 limit. Package state is not shared across the executions.
 All eleven jobs, their existing prerequisites, cache controls and job timeouts
 remain unchanged. Actual complete target and exact-head eleven-job execution
-must demonstrate the unchanged `go-local` job and expanded `go-runtime` job each
+must demonstrate the expanded `go-local` job and unchanged `go-runtime` job each
 fit their existing thirty minutes, including action setup and compilation.
 The theoretical runtime and SEARCH ceilings do not prove fit. Historical
 job timings, estimated headroom and the sum of separate focused tests are

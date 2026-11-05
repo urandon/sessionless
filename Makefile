@@ -618,10 +618,11 @@ terraform-ci:
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
 	@plan_log=$$(mktemp "$${TMPDIR:-/tmp}/sessionless-web-plan.XXXXXX"); \
 	trap 'rm -f "$$plan_log"' EXIT HUP INT TERM; \
-	if ! $(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl -verbose -json >"$$plan_log"; then \
+	if ! $(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl -filter=native_logging.tftest.hcl -verbose -json >"$$plan_log"; then \
 		cat "$$plan_log"; exit 1; \
 	fi; \
-	./scripts/test-web-deployment-policy.sh --plan-json "$$plan_log"
+	./scripts/test-web-deployment-policy.sh --plan-json "$$plan_log" && \
+	NATIVE_LOG_TEST_PLAN_JSON="$$plan_log" node --test scripts/test-native-log-destination.mjs
 	sh scripts/test-cloud-preflight.sh
 	$(MAKE) budget-policy-test
 	$(MAKE) web-secret-load-test

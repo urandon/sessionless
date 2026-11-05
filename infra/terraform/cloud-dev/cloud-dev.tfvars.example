@@ -1,4 +1,7 @@
 cloud_id          = "replace-cloud-id"
+# Resolve the existing native destination from the private operator inventory.
+# The invalid placeholder deliberately prevents accidental deployment.
+runtime_log_group_id = "replace-existing-log-group-id"
 base_domain       = "sessionless.example.com"
 artifact_bucket_name = "replace-globally-unique-sessionless-dev-bucket"
 artifact_cold_transition_days = 30

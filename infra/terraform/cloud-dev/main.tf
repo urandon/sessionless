@@ -25,7 +25,7 @@ module "foundation" {
   queue_visibility_timeout_seconds = var.queue_visibility_timeout_seconds
   queue_retention_seconds          = var.queue_retention_seconds
   queue_max_receive_count          = var.queue_max_receive_count
-  log_retention                    = var.log_retention
+  runtime_log_group_id             = var.runtime_log_group_id
   deletion_protection              = var.deletion_protection
   github_oidc_audience             = var.github_oidc_audience
   github_oidc_subject              = var.github_oidc_subject

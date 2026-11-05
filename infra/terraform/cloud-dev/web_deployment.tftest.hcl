@@ -43,6 +43,8 @@ run "yandex_login_web_module" {
   assert {
     condition = (
       yandex_serverless_container.web.image[0].environment["WEB_LOGIN_PROVIDERS"] == "yandex" &&
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_VERSION"] == "1" &&
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_SENSITIVE_OPERATIONS"] == "false" &&
       yandex_serverless_container.web.image[0].environment["YANDEX_LOGIN_CLIENT_ID"] == "yandex-client-test" &&
       !contains(keys(yandex_serverless_container.web.image[0].environment), "TELEGRAM_OIDC_CLIENT_ID") &&
       length([
@@ -462,10 +464,14 @@ run "both_login_web_module" {
     login_providers                     = "yandex,telegram"
     telegram_oidc_client_id             = "123456789"
     yandex_login_client_id              = "yandex-client-test"
+    identity_version                    = "2"
+    identity_sensitive_operations       = true
   }
   assert {
     condition = (
       yandex_serverless_container.web.image[0].environment["WEB_LOGIN_PROVIDERS"] == "yandex,telegram" &&
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_VERSION"] == "2" &&
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_SENSITIVE_OPERATIONS"] == "true" &&
       yandex_serverless_container.web.image[0].environment["YANDEX_LOGIN_CLIENT_ID"] == "yandex-client-test" &&
       yandex_serverless_container.web.image[0].environment["TELEGRAM_OIDC_CLIENT_ID"] == "123456789" &&
       length([
@@ -522,4 +528,106 @@ run "reject_both_missing_telegram_client" {
     yandex_login_client_id              = "yandex-client-test"
   }
   expect_failures = [var.telegram_oidc_client_id]
+}
+
+# A mock plan observes exact deployment DATA, not retirement of old writers or
+# permission to perform a real V2 cutover. Sensitive OFF must keep V2 selected.
+run "v2_login_sensitive_operations_off" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_providers                     = "yandex,telegram"
+    telegram_oidc_client_id             = "123456789"
+    yandex_login_client_id              = "yandex-client-test"
+    identity_version                    = "2"
+    identity_sensitive_operations       = false
+  }
+  assert {
+    condition = (
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_VERSION"] == "2" &&
+      yandex_serverless_container.web.image[0].environment["WEB_IDENTITY_SENSITIVE_OPERATIONS"] == "false" &&
+      yandex_serverless_container.web.image[0].environment["WEB_LOGIN_PROVIDERS"] == "yandex,telegram"
+    )
+    error_message = "Sensitive OFF must preserve V2 and both configured login methods rather than reverting to V1."
+  }
+}
+
+run "reject_unknown_identity_version" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_providers                     = "yandex,telegram"
+    telegram_oidc_client_id             = "123456789"
+    yandex_login_client_id              = "yandex-client-test"
+    identity_version                    = "3"
+    identity_sensitive_operations       = false
+  }
+  expect_failures = [var.identity_version]
+}
+
+run "reject_v1_sensitive_identity_operations" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_providers                     = "yandex,telegram"
+    telegram_oidc_client_id             = "123456789"
+    yandex_login_client_id              = "yandex-client-test"
+    identity_version                    = "1"
+    identity_sensitive_operations       = true
+  }
+  expect_failures = [var.identity_sensitive_operations]
 }

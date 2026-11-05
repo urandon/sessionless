@@ -41,6 +41,24 @@ variable "web_login_providers" {
     error_message = "web_login_providers must be yandex, telegram, or yandex,telegram."
   }
 }
+variable "web_identity_version" {
+  description = "Explicit Web identity codec; V2 requires separate all-writer/data cutover."
+  type        = string
+  default     = "1"
+  validation {
+    condition     = contains(["1", "2"], var.web_identity_version)
+    error_message = "web_identity_version must be exactly 1 or 2."
+  }
+}
+variable "web_identity_sensitive_operations" {
+  description = "Allow new link/unlink operations on the version-2 Web runtime."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.web_identity_sensitive_operations || var.web_identity_version == "2"
+    error_message = "Sensitive identity operations require web_identity_version 2."
+  }
+}
 variable "yandex_login_client_id" {
   description = "Non-secret Yandex OAuth client identifier registered for the Web hostname."
   type        = string

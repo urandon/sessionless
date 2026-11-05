@@ -67,3 +67,19 @@ func setGrantEnvironment(t *testing.T) {
 	t.Setenv("WEB_BOOTSTRAP_REASON", "initial Web access")
 	t.Setenv("YDB_CONNECTION_STRING", "grpcs://example.invalid/local")
 }
+
+func TestBootstrapIdentityWriterRetirementBeforeDependencies(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		version, gate string
+		valid         bool
+	}{
+		{"1", "false", true}, {"2", "false", false}, {"2", "true", false}, {"", "false", false}, {" 1", "false", false}, {"3", "false", false},
+	} {
+		env := map[string]string{"WEB_IDENTITY_VERSION": tc.version, "WEB_IDENTITY_SENSITIVE_OPERATIONS": tc.gate}
+		err := requireBootstrapIdentityV1(func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+		if (err == nil) != tc.valid {
+			t.Fatalf("version=%q gate=%q allowed=%v err=%v", tc.version, tc.gate, tc.valid, err)
+		}
+	}
+}

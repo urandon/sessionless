@@ -31,7 +31,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webstatic"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 const component = "web-bff"
@@ -90,6 +89,11 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	if err != nil {
 		return nil, func() {}, err
 	}
+	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
+	identity, err := webIdentityFromEnvironment(os.LookupEnv, login, baseURL, identityKey)
+	if err != nil {
+		return nil, func() {}, err
+	}
 	// Install one immutable operator registry before opening dependencies; the
 	// same pointer must reach both preflight binding and allocating Store.
 	generations, err := attachedresourcegeneration.LoadRegistryFromEnv(os.Getenv)
@@ -119,7 +123,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	}
 	storeOptions := local.StoreOptions()
 	storeOptions.AttachedResourceGenerations = generations
-	store, err := ydbstore.New(ydb.DB, storeOptions)
+	store, identityAccounts, err := identity.newStore(ydb.DB, storeOptions, identityKey)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -168,7 +172,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	sessions, err := sessionapi.New(sessionapi.Config{
 		OpsSignals: signals,
 		CursorKey:  []byte(os.Getenv("SESSION_API_CURSOR_HMAC_KEY")),
-		IDKey:      []byte(os.Getenv("SESSION_API_ID_HMAC_KEY")),
+		IDKey:      identityKey,
 	}, store, blobs, systemClock{})
 	if err != nil {
 		closeYDB()
@@ -193,7 +197,6 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
-	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
 	var harnessBinder ports.HarnessBinder
 	var resources ports.WebResourceStore = store
 	if local != nil {
@@ -255,7 +258,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	}
 	backend, err := webbff.New(webbff.Config{
 		OpsSignals: signals,
-		BaseURL:    baseURL, LoginProviders: login.providers,
+		BaseURL:    baseURL, LoginProviders: login.providers, IdentityAccounts: identityAccounts,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
 		AllowLoopbackObjectStorage: allowLocal,
 		Store:                      store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,

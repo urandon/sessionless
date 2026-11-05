@@ -462,7 +462,7 @@ web-auth-ydb-gate: prepare
 		-run '^(TestYandexLoginYDBFreshIdentityMembershipIsolationReplayAndRevocation|TestYandexLoginYDBClientAndProviderBindingDenials|TestYandexBootstrapYDBAtomicFirstIdentityAndNoLink)$$' ./test/ydbintegration
 
 .PHONY: web-identity-v2-ydb-gate
-# Closed V2 row primitives only; no serving mode or provider activation.
+# V2 row and joined HTTP/SQL fixtures; no real provider/deployment activation.
 web-identity-v2-ydb-gate: prepare
 	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
 	SESSIONLESS_WEB_IDENTITY_V2_YDB_GATE=1 SESSIONLESS_WEB_IDENTITY_V2_YDB_DISPOSABLE=1 \

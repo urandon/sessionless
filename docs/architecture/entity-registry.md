@@ -53,8 +53,13 @@ revision live in `external_identities`; `external_identities_by_user` projects
 at most two active methods. Immutable unlinked-subject ownership tombstones
 have no operational TTL and are not account erasure. `web_sessions` snapshot
 the authenticating identity revision; every authorization consumer rechecks it.
-The explicit V2 domain/row helpers and private operation transaction remain
-unmounted source components, not a serving-mode installation. The machine
+`NewWebIdentityRuntimeV2` now constructs the immutable Store/account service
+pair used by explicit V2 `cmd/web-bff` startup. It performs no SQL or cutover;
+the existing tables/readers remain authoritative. Sensitive OFF preserves V2
+login/revision checks/receipts, not a V1 rollback. Legacy enrollment, bootstrap
+and Telegram-chat writers are retired in V2; command guards do not retire old
+revisions/private invokers. See the [writer inventory](../development.md#immutable-identity-runtime-and-retired-writers).
+The machine
 registry lists these source consumers and retains the original CREATE lineage.
 Forward migrations [00130](../../migrations/ydb/00130_add_identity_challenge_delete_after.sql)
 and [00131](../../migrations/ydb/00131_set_identity_challenge_delete_after_ttl.sql)

@@ -10,9 +10,44 @@ import (
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 	"gitcode.com/urandon/sessionless/internal/yandexoauth"
+	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 type webLoginConfig struct{ providers []webbff.LoginProviderConfig }
+
+// Derive proof clients from the very same adapter instances as ordinary login.
+// This private deployment composition is never selected by a browser request.
+func (config webLoginConfig) identityProvidersV2(baseURL string) ([]ydbstore.IdentityAccountProviderV2, error) {
+	providers := make([]ydbstore.IdentityAccountProviderV2, 0, len(config.providers))
+	for _, ordinary := range config.providers {
+		var provider ydbstore.IdentityAccountProviderV2
+		switch ordinary.Provider {
+		case domain.IdentityProviderYandex:
+			adapter, ok := ordinary.OAuthProvider.(*yandexoauth.Provider)
+			if !ok || adapter == nil || ordinary.OIDCProvider != nil {
+				return nil, errors.New("identity runtime requires its configured Yandex adapter")
+			}
+			provider = ydbstore.IdentityAccountProviderV2{Binding: domain.IdentityProviderBindingV2{Provider: ordinary.Provider, Issuer: domain.YandexOAuthIssuer, ClientID: ordinary.OAuthClientID, CallbackURI: baseURL + webcontract.RouteLoginCallback}, Prover: adapter}
+		case domain.IdentityProviderTelegram:
+			adapter, ok := ordinary.OIDCProvider.(*telegramoidc.Provider)
+			if !ok || adapter == nil || ordinary.OAuthProvider != nil {
+				return nil, errors.New("identity runtime requires its configured Telegram adapter")
+			}
+			provider = ydbstore.IdentityAccountProviderV2{Binding: domain.IdentityProviderBindingV2{Provider: ordinary.Provider, Issuer: ordinary.OIDCPolicy.Issuer, ClientID: ordinary.OIDCPolicy.Audience, CallbackURI: baseURL + webcontract.RouteOIDCCallback}, Prover: adapter}
+		default:
+			return nil, errors.New("identity runtime requires a closed configured provider")
+		}
+		providers = append(providers, provider)
+	}
+	bindings := make([]domain.IdentityProviderBindingV2, 0, len(providers))
+	for _, provider := range providers {
+		bindings = append(bindings, provider.Binding)
+	}
+	if _, err := ydbstore.WebIdentityManifestDigestV2(bindings); err != nil {
+		return nil, err
+	}
+	return providers, nil
+}
 
 // Configuration is deployment authority, not browser input. Presence of the
 // retired singular variable (even empty) requires an explicit operator migration.

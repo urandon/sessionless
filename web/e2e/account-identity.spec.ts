@@ -24,11 +24,12 @@ class IdentityPresentationFixture {
   }[] = [];
   readonly navigations: string[] = [];
   linked = false;
-  phase: View['phase'] = 'source_proof';
+  phase: View['phase'] = 'target_proof';
   kind: 'link' | 'unlink' = 'link';
   outcome: View['outcome'];
   confirmLost = false;
   unavailable = false;
+  authLost = false;
 
   methods(): Methods {
     return {
@@ -104,15 +105,27 @@ class IdentityPresentationFixture {
           headers: { 'Cache-Control': 'no-store' },
           body: JSON.stringify(value),
         });
+      if (this.authLost && method === 'GET')
+        return json(
+          {
+            error: {
+              code: 'unauthenticated',
+              message: 'Sign in required.',
+              request_id: 'req_fixture',
+            },
+          },
+          401,
+        );
       if (path === methodsPath && method === 'GET') return json(this.methods());
       if (path === operationsPath && method === 'POST') {
         this.kind = (body as { kind: 'link' | 'unlink' }).kind;
+        this.phase = this.kind === 'link' ? 'target_proof' : 'source_proof';
         return json(this.view());
       }
       if (path === `${operationsPath}/${operationId}` && method === 'GET')
         return json(this.view(), this.unavailable ? 410 : 200);
       if (path === `${operationsPath}/${operationId}/continue` && method === 'POST') {
-        const yandex = this.phase === 'source_proof';
+        const yandex = this.kind === 'unlink';
         const url = new URL(
           yandex ? 'https://oauth.yandex.ru/authorize' : 'https://oauth.telegram.org/auth',
         );
@@ -163,7 +176,7 @@ class IdentityPresentationFixture {
 }
 
 test.describe('account identity presentation (controlled HTTP, not joined SQL proof)', () => {
-  test('link requires explicit source, target and local confirmation; refresh performs GET only', async ({
+  test('link goes straight to target and local confirmation; refresh performs GET only', async ({
     page,
     canonicalApi,
   }) => {
@@ -173,32 +186,27 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
     await page.goto(settings);
     await expect(page.getByRole('heading', { name: 'Login methods', exact: true })).toBeVisible();
     expect(fixture.calls.every((call) => call.method === 'GET')).toBe(true);
-    await page.getByRole('button', { name: 'Start linking Telegram', exact: true }).click();
-    await expect(page).toHaveURL(`${settings}?operation_id=${operationId}`);
-    await expect(
-      page.getByRole('heading', { name: 'Stored operation', exact: true }),
-    ).toBeFocused();
+    await page.getByRole('button', { name: 'Link Telegram', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Controlled provider check' })).toBeVisible();
     expect(fixture.calls.find((call) => call.path === operationsPath)?.body).toEqual({
       kind: 'link',
       target_provider: 'telegram',
       expected_revision: before,
     });
-    await page.reload();
-    await expect(page.getByRole('button', { name: 'Continue provider check' })).toBeVisible();
-    expect(fixture.mutations(operationsPath)).toBe(1);
-    expect(fixture.mutations(`${operationsPath}/${operationId}/continue`)).toBe(0);
-    await page.getByRole('button', { name: 'Continue provider check' }).click();
-    await expect(page.getByRole('heading', { name: 'Controlled provider check' })).toBeVisible();
-    fixture.phase = 'target_proof';
+    expect(fixture.mutations(`${operationsPath}/${operationId}/continue`)).toBe(1);
+    expect(fixture.navigations).toEqual(['https://oauth.telegram.org']);
     await page.goto(`${settings}?operation_id=${operationId}`);
-    await page.getByRole('button', { name: 'Continue provider check' }).click();
-    await expect(page.getByRole('heading', { name: 'Controlled provider check' })).toBeVisible();
-    expect(fixture.navigations).toEqual(['https://oauth.yandex.ru', 'https://oauth.telegram.org']);
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Continue to Telegram' })).toBeVisible();
+    expect(fixture.mutations(operationsPath)).toBe(1);
+    expect(fixture.mutations(`${operationsPath}/${operationId}/continue`)).toBe(1);
     fixture.phase = 'confirm';
     await page.goto(`${settings}?operation_id=${operationId}`);
-    await expect(page.getByRole('button', { name: 'Confirm link', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Confirm Telegram link', exact: true }),
+    ).toBeVisible();
     expect(fixture.mutations(`${operationsPath}/${operationId}/confirm`)).toBe(0);
-    await page.getByRole('button', { name: 'Confirm link', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm Telegram link', exact: true }).click();
     await expect(page.getByText(/sign-in method linked/i)).toBeVisible();
     expect(fixture.mutations(`${operationsPath}/${operationId}/confirm`)).toBe(1);
     await page.reload();
@@ -237,7 +245,7 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
     fixture.linked = true;
     await fixture.install(page);
     await page.goto(settings);
-    await page.getByRole('button', { name: 'Start unlinking Telegram', exact: true }).click();
+    await page.getByRole('button', { name: 'Remove Telegram', exact: true }).click();
     expect(fixture.calls.find((call) => call.path === operationsPath)?.body).toEqual({
       kind: 'unlink',
       method_handle: 'own-telegram',
@@ -263,10 +271,15 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
     fixture.confirmLost = true;
     await fixture.install(page);
     await page.goto(`${settings}?operation_id=${operationId}`);
-    await page.getByRole('button', { name: 'Confirm link', exact: true }).click();
+    await page.getByRole('button', { name: 'Confirm Telegram link', exact: true }).click();
     await expect(page.getByRole('alert')).toBeFocused();
     expect(fixture.mutations(`${operationsPath}/${operationId}/confirm`)).toBe(1);
     const returnTo = `${settings}?operation_id=${operationId}`;
+    // A transport failure is not evidence of cookie loss. Only a subsequent
+    // authenticated read returning 401 should recommend another sign-in.
+    await expect(page.getByRole('link', { name: 'Sign in again', exact: true })).toHaveCount(0);
+    fixture.authLost = true;
+    await page.getByRole('button', { name: 'Refresh status' }).click();
     const recovery = page.getByRole('link', { name: 'Sign in again', exact: true });
     await expect(recovery).toHaveAttribute(
       'href',
@@ -276,15 +289,18 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
     await expect(page.getByRole('button', { name: 'Continue with Yandex' })).toBeVisible();
     await expect(page.locator('form input[name="return_to"]')).toHaveValue(returnTo);
     // Re-entry is simulated; no claim that a genuine OAuth login happened.
+    fixture.authLost = false;
     await page.goto(returnTo);
     await expect(
-      page.getByRole('heading', { name: 'Stored operation', exact: true }),
+      page.getByRole('heading', { name: 'Link a sign-in method', exact: true }),
     ).toBeVisible();
     expect(fixture.mutations(`${operationsPath}/${operationId}/confirm`)).toBe(1);
     fixture.unavailable = true;
     await page.reload();
     await expect(page.getByText(/No retained outcome is available/)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Confirm link', exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: 'Confirm Telegram link', exact: true }),
+    ).toHaveCount(0);
     await expect(page.getByText(/sign-in method linked/i)).toHaveCount(0);
     expect(fixture.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
   });
@@ -322,7 +338,9 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
     await fixture.install(page);
     await page.setViewportSize({ width: 320, height: 844 });
     await page.goto(`${settings}?operation_id=${operationId}`);
-    await expect(page.getByRole('button', { name: 'Confirm link', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Confirm Telegram link', exact: true }),
+    ).toBeVisible();
     await page.addStyleTag({ content: 'html { font-size: 200%; }' });
     const results = await new AxeBuilder({ page }).analyze();
     expect(
@@ -335,7 +353,7 @@ test.describe('account identity presentation (controlled HTTP, not joined SQL pr
       path: testInfo.outputPath('account-320px-200percent-text.png'),
       fullPage: true,
     });
-    const confirm = page.getByRole('button', { name: 'Confirm link', exact: true });
+    const confirm = page.getByRole('button', { name: 'Confirm Telegram link', exact: true });
     await page.getByRole('heading', { name: 'Login methods', exact: true }).focus();
     for (let step = 0; step < 16; step += 1) {
       await page.keyboard.press('Tab');

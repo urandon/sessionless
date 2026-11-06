@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -146,6 +148,102 @@ func (f *accountConnectedV2) ordinaryLogin(t *testing.T, provider domain.Identit
 	}
 }
 
+func TestIdentityAccountV2ConnectedCurrentSessionLinkNeedsOnlyTargetProof(t *testing.T) {
+	f := newAccountConnectedV2(t, domain.IdentityProviderYandex, false)
+	before := f.raw.Snapshot()
+	var start webcontract.IdentityOperationView
+	accountDecodeV2(t, f.request(t, "POST", "/api/web/v1/account/identity-operations", `{"kind":"link","target_provider":"telegram","expected_revision":"7"}`, true), 200, &start)
+	if start.Phase != domain.IdentityPhaseTargetProofV2 || f.raw.Snapshot().Tokens != 0 {
+		t.Fatalf("authenticated LINK phase=%s tokens=%d, want target_proof without source exchange", start.Phase, f.raw.Snapshot().Tokens)
+	}
+	operation, err := domain.DecodeIdentityOperationV2([]byte(f.raw.Snapshot().Operation))
+	if err != nil || operation.Pending == nil || operation.Pending.SourceSubject != operation.Pending.Scope.AuthenticatedSubject || operation.Pending.SourceChallengeDigest != "" || operation.Pending.SourceProof != nil {
+		t.Fatalf("LINK must retain exact current subject without invented source proof: operation=%+v err=%v", operation, err)
+	}
+	var wire struct {
+		Pending map[string]json.RawMessage `json:"pending"`
+	}
+	if err := json.Unmarshal([]byte(f.raw.Snapshot().Operation), &wire); err != nil || string(wire.Pending["source_challenge_digest"]) != `""` {
+		t.Fatalf("LINK must preserve canonical empty source_challenge_digest field: pending=%v err=%v", wire.Pending, err)
+	}
+	f.continueProof(t, start.OperationID, 7, "target-code")
+	if f.raw.Snapshot().Tokens != 1 || !reflect.DeepEqual(before.Forward, f.raw.Snapshot().Forward) || !reflect.DeepEqual(before.Members, f.raw.Snapshot().Members) {
+		t.Fatal("target proof must exchange once and leave original owner/membership unchanged before confirm")
+	}
+	var confirmed webcontract.IdentityOperationView
+	accountDecodeV2(t, f.request(t, "POST", "/api/web/v1/account/identity-operations/"+start.OperationID+"/confirm", `{"expected_revision":"7"}`, true), 200, &confirmed)
+	if confirmed.Outcome != domain.IdentityOutcomeLinkedV2 || f.raw.Snapshot().Tokens != 1 || !reflect.DeepEqual(before.Members, f.raw.Snapshot().Members) {
+		t.Fatal("local confirmation must link with exactly one target exchange and unchanged membership")
+	}
+	for _, raw := range f.raw.Snapshot().Forward {
+		identity, err := domain.DecodeExternalIdentityV2([]byte(raw))
+		if err != nil || identity.UserID != "rows-user" || identity.Revision != 8 {
+			t.Fatalf("link changed canonical owner: identity=%+v err=%v", identity, err)
+		}
+	}
+}
+
+func TestIdentityAccountV2ConnectedContinuationExport(t *testing.T) {
+	output := os.Getenv("SESSIONLESS_IDENTITY_CONTINUATION_FIXTURE")
+	if output == "" {
+		t.Skip("explicit synthetic cross-language fixture export not requested")
+	}
+	// The caller owns one fresh physical mktemp directory directly below .build.
+	// Never create arbitrary parents, follow a symlink or reuse a stale artifact.
+	build, err := filepath.EvalSymlinks("../../.build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build, err = filepath.Abs(build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(output)
+	physical, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(parent)
+	if err != nil || !filepath.IsAbs(output) || filepath.Clean(output) != output || filepath.Base(output) != "continuation.json" || filepath.Dir(parent) != build || !strings.HasPrefix(filepath.Base(parent), "account-link-smoke.") || filepath.Base(parent) == "account-link-smoke." || physical != parent || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fixture path=%q requires a fresh physical .build/account-link-smoke.* directory mode0700: err=%v", output, err)
+	}
+	f := newAccountConnectedV2(t, domain.IdentityProviderYandex, false)
+	var methods webcontract.AccountLoginMethods
+	methodsResponse := f.request(t, "GET", "/api/web/v1/account/login-methods", "", true)
+	accountDecodeV2(t, methodsResponse, 200, &methods)
+	var start webcontract.IdentityOperationView
+	startResponse := f.request(t, "POST", "/api/web/v1/account/identity-operations", `{"kind":"link","target_provider":"telegram","expected_revision":"7"}`, true)
+	accountDecodeV2(t, startResponse, 200, &start)
+	if start.Phase != domain.IdentityPhaseTargetProofV2 {
+		t.Fatalf("link phase=%s want target_proof", start.Phase)
+	}
+	w := f.request(t, "POST", "/api/web/v1/account/identity-operations/"+start.OperationID+"/continue", `{"expected_revision":"7"}`, true)
+	accountDecodeV2(t, w, 200, nil)
+	if f.raw.Snapshot().Tokens != 0 {
+		t.Fatal("continuation export exchanged a token")
+	}
+	bundle, err := json.Marshal(struct {
+		Origin       string `json:"origin"`
+		Start        string `json:"start"`
+		Methods      string `json:"methods"`
+		Continuation string `json:"continuation"`
+	}{accountConnectedBaseV2, startResponse.Body.String(), methodsResponse.Body.String(), w.Body.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(bundle); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIdentityAccountV2ConnectedBFFLinkBothDirections(t *testing.T) {
 	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
 		t.Run(string(provider), func(t *testing.T) {
@@ -161,12 +259,8 @@ func TestIdentityAccountV2ConnectedBFFLinkBothDirections(t *testing.T) {
 			if f.cookies[accountConnectedOpCookieV2] == nil || f.raw.Snapshot().Tokens != 0 {
 				t.Fatal("start omitted binding or exchanged without explicit continue")
 			}
-			f.continueProof(t, start.OperationID, 7, "source-code")
-			if len(f.raw.Snapshot().Forward) != 1 {
-				t.Fatal("SOURCE callback silently linked target")
-			}
 			f.continueProof(t, start.OperationID, 7, "target-code")
-			if len(f.raw.Snapshot().Forward) != 1 || f.raw.Snapshot().Tokens != 2 {
+			if len(f.raw.Snapshot().Forward) != 1 || f.raw.Snapshot().Tokens != 1 {
 				t.Fatal("TARGET callback linked before local confirm or retried exchange")
 			}
 			var confirmed webcontract.IdentityOperationView
@@ -188,7 +282,11 @@ func TestIdentityAccountV2ConnectedBFFLinkBothDirections(t *testing.T) {
 			if outcome.Outcome != confirmed.Outcome {
 				t.Error("refresh lost committed receipt")
 			}
-			if f.raw.Snapshot().Tokens != 2 || f.raw.Snapshot().Infos != 1 || f.raw.Snapshot().JWKS != 1 || f.raw.Snapshot().Closed != 4 {
+			wantInfos, wantJWKS := 0, 1
+			if target == domain.IdentityProviderYandex {
+				wantInfos, wantJWKS = 1, 0
+			}
+			if f.raw.Snapshot().Tokens != 1 || f.raw.Snapshot().Infos != wantInfos || f.raw.Snapshot().JWKS != wantJWKS || f.raw.Snapshot().Closed != 2 {
 				t.Errorf("provider effects/closed bodies=%d/%d/%d/%d", f.raw.Snapshot().Tokens, f.raw.Snapshot().Infos, f.raw.Snapshot().JWKS, f.raw.Snapshot().Closed)
 			}
 			linked, receipt := f.raw.Snapshot(), f.raw.Snapshot().Operation
@@ -258,7 +356,6 @@ func TestIdentityAccountV2ConnectedBFFLostConfirmReloginCanReplaceTerminalCookie
 	var start webcontract.IdentityOperationView
 	accountDecodeV2(t, f.request(t, "POST", "/api/web/v1/account/identity-operations", `{"kind":"link","target_provider":"telegram","expected_revision":"7"}`, true), 200, &start)
 	oldOperationCookie := *f.cookies[accountConnectedOpCookieV2]
-	f.continueProof(t, start.OperationID, 7, "recover-source")
 	f.continueProof(t, start.OperationID, 7, "recover-target")
 	var confirmed webcontract.IdentityOperationView
 	accountDecodeV2(t, f.request(t, "POST", "/api/web/v1/account/identity-operations/"+start.OperationID+"/confirm", `{"expected_revision":"7"}`, true), 200, &confirmed)

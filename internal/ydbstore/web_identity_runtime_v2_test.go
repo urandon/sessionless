@@ -93,7 +93,7 @@ func TestWebIdentityRuntimeV2ManifestClosedAndRedeployStable(t *testing.T) {
 	t.Parallel()
 	o := runtimeOptionsV2()
 	bindings := []domain.IdentityProviderBindingV2{o.Providers[0].Binding, o.Providers[1].Binding}
-	want := domain.DigestSecret(`{"version":"web-identity-runtime.v2","yandex_proof":"yandex_fresh_authorization","telegram_proof":"telegram_signed_auth_time","providers":[{"provider":"yandex","issuer":"https://oauth.yandex.ru","client_id":"runtime-yandex","callback_uri":"https://web.example.invalid/auth/login/callback"},{"provider":"telegram","issuer":"https://oauth.telegram.org","client_id":"123456","callback_uri":"https://web.example.invalid/auth/telegram/callback"}]}`)
+	want := domain.DigestSecret(`{"version":"web-identity-runtime.v2.session-link-v1","yandex_proof":"yandex_fresh_authorization","telegram_proof":"telegram_signed_auth_time","providers":[{"provider":"yandex","issuer":"https://oauth.yandex.ru","client_id":"runtime-yandex","callback_uri":"https://web.example.invalid/auth/login/callback"},{"provider":"telegram","issuer":"https://oauth.telegram.org","client_id":"123456","callback_uri":"https://web.example.invalid/auth/telegram/callback"}]}`)
 	got, err := WebIdentityManifestDigestV2(bindings)
 	if err != nil || got != want {
 		t.Fatalf("canonical manifest differs: got=%s want=%s err=%v", got, want, err)

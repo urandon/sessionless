@@ -209,6 +209,9 @@ func identityOperationConfirmationFixtureV2(t *testing.T, kind domain.IdentityOp
 	}}
 	scope := domain.IdentityOperationScopeV2{UserID: identity.UserID, SessionDigest: session.Session.SessionDigest, AuthenticatedSubject: identity.Subject, TenantID: membership.TenantID, MembershipSecurityVersion: membership.SecurityVersion, BrowserBindingDigest: domain.DigestSecret("transaction-browser"), ConfigurationDigest: config.ManifestDigest, ExpectedRevision: identity.Revision}
 	operation := domain.IdentityOperationV2{Version: 2, Purpose: domain.IdentityPurposeOperationV2, OperationDigest: domain.DigestSecret("transaction-operation"), Kind: kind, Phase: domain.IdentityPhaseSourceProofV2, CreatedAt: at.Add(-2 * time.Minute), ExpiresAt: at.Add(8 * time.Minute), DeleteAfter: at.Add(8 * time.Minute), Pending: &domain.IdentityOperationPendingV2{Scope: scope, SourceSubject: identity.Subject, TargetProvider: domain.IdentityProviderTelegram, SourceChallengeDigest: domain.DigestSecret("transaction-source-child"), TargetChallengeDigest: domain.DigestSecret("transaction-target-child")}}
+	if kind == domain.IdentityOperationLinkV2 {
+		operation.Phase, operation.Pending.SourceChallengeDigest = domain.IdentityPhaseTargetProofV2, ""
+	}
 	if kind == domain.IdentityOperationUnlinkV2 {
 		remaining := identityRowsV2Identity(domain.IdentityProviderTelegram, identity.Revision)
 		state.forward[identityRowsV2SubjectKey(remaining.Subject)] = identityRowsV2JSON(t, remaining)
@@ -224,7 +227,6 @@ func identityOperationConfirmationFixtureV2(t *testing.T, kind domain.IdentityOp
 		created := operation.CreatedAt.Add(10 * time.Second)
 		if operation.Phase == domain.IdentityPhaseTargetProofV2 {
 			provider, stateDigest, expected = pending.TargetProvider, pending.TargetChallengeDigest, nil
-			created = pending.SourceProof.CompletedAt.Add(time.Second)
 		}
 		bindings, err := config.bindings()
 		if err != nil {
@@ -345,7 +347,7 @@ func TestIdentityOperationStorageV2OriginalScopeAndCurrentnessDenials(t *testing
 			case "expired":
 				fixture.at = operation.ExpiresAt
 			case "wrong_client":
-				config.Providers[0].ClientID = "different-client"
+				config.Providers[1].ClientID = "different-client"
 			case "foreign_target":
 				target := identityRowsV2Identity(domain.IdentityProviderTelegram, 7)
 				target.Subject, target.UserID = *operation.Pending.TargetSubject, "foreign-owner"

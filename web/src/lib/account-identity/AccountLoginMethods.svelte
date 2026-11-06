@@ -46,6 +46,8 @@
   let busy = $state(false);
   let uncertain = $state(false);
   let error = $state('');
+  let errorReference = $state('');
+  let needsSignIn = $state(false);
   let announcement = $state('');
   let heading: HTMLHeadingElement;
   let operationHeading = $state<HTMLHeadingElement>();
@@ -57,6 +59,37 @@
   const pending = $derived(
     operation !== null && operation.phase !== undefined && operation.phase !== 'terminal',
   );
+  const checkProvider = $derived(
+    operation?.kind === 'unlink'
+      ? operation.target_provider === 'yandex'
+        ? 'Telegram'
+        : 'Yandex'
+      : operation?.target_provider
+        ? providerLabel[operation.target_provider]
+        : 'your provider',
+  );
+  function localTime(instant: string): string {
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(new Date(instant));
+  }
+  function setFailure(cause: unknown, mutation = false, continuing = false): void {
+    needsSignIn =
+      cause instanceof ApiError &&
+      ['unauthenticated', 'access_denied', 'csrf_failed'].includes(cause.code);
+    errorReference =
+      cause instanceof ApiError && /^req_[A-Za-z0-9_-]{1,128}$/.test(cause.requestId ?? '')
+        ? cause.requestId!
+        : '';
+    error =
+      continuing && !needsSignIn
+        ? `Could not open ${checkProvider}. Refresh status to check this change before continuing. No sign-in method has been changed by this navigation step.`
+        : explanation(cause, mutation);
+  }
   const canUseOperation = $derived(
     !loading &&
       !busy &&
@@ -124,6 +157,8 @@
     loading = true;
     busy = false;
     error = '';
+    errorReference = '';
+    needsSignIn = false;
     methods = null;
     operation = null;
     if (reference && !isIdentityOperationID(reference)) {
@@ -145,7 +180,7 @@
         announcement = 'Current stored status read. No provider check or change was replayed.';
     } catch (cause) {
       if (!present(version, signal)) return;
-      error = explanation(cause);
+      setFailure(cause);
       if (explicit) await focusError(version, signal);
     } finally {
       if (present(version, signal)) loading = false;
@@ -193,24 +228,60 @@
       api = client;
     busy = true;
     error = '';
+    errorReference = '';
+    needsSignIn = false;
     announcement = '';
+    let started = false;
     try {
       const view = await api.startIdentityOperation(input, signal);
       if (!present(version, signal)) return;
+      started = true;
       currentID = view.operation_id;
       operation = view;
       onOperationIdChange(currentID);
-      announcement =
-        'Operation started. No sign-in method has changed. Continue a provider check only when ready.';
       await focusOperation(version, signal);
+      if (!present(version, signal)) return;
+      if (kind === 'link') {
+        // This explicit Link click authorizes exactly one target navigation.
+        // Reading or restoring the operation never takes this path.
+        await navigateProvider(api, view, version, signal);
+      } else announcement = `Confirm with ${checkProvider} before removing this sign-in method.`;
     } catch (cause) {
       if (!present(version, signal)) return;
       uncertain = true;
-      error = explanation(cause, true);
+      setFailure(cause, true, started && kind === 'link');
       await focusError(version, signal);
     } finally {
       if (present(version, signal)) busy = false;
     }
+  }
+  async function navigateProvider(
+    api: AccountClient,
+    view: IdentityOperationView,
+    version: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (
+      !view.before_revision ||
+      !view.allowed_actions.includes('continue') ||
+      (view.kind === 'link' && view.phase !== 'target_proof')
+    )
+      throw new TypeError('Invalid provider step.');
+    const result = await api.continueIdentityOperation(
+      view.operation_id,
+      view.before_revision,
+      signal,
+    );
+    if (!present(version, signal)) return;
+    const url = validateIdentityAuthorizationURL(
+      result.authorization_url,
+      globalThis.location.origin,
+    );
+    const expectedHost = checkProvider === 'Telegram' ? 'oauth.telegram.org' : 'oauth.yandex.ru';
+    if (new URL(url).hostname !== expectedHost) throw new TypeError('Wrong provider step.');
+    onNavigate(url);
+    if (!present(version, signal)) return;
+    announcement = `Opening ${checkProvider}…`;
   }
   async function action(kind: 'continue' | 'confirm' | 'cancel'): Promise<void> {
     const view = operation;
@@ -220,23 +291,13 @@
       api = client;
     busy = true;
     error = '';
+    errorReference = '';
+    needsSignIn = false;
     announcement = '';
     let storedResult = false;
     try {
       if (kind === 'continue') {
-        const result = await api.continueIdentityOperation(
-          view.operation_id,
-          view.before_revision,
-          signal,
-        );
-        if (!present(version, signal)) return;
-        const url = validateIdentityAuthorizationURL(
-          result.authorization_url,
-          globalThis.location.origin,
-        );
-        onNavigate(url);
-        announcement =
-          'Provider navigation requested. Return here to read the stored operation; no confirmation has been submitted.';
+        await navigateProvider(api, view, version, signal);
       } else {
         const result =
           kind === 'confirm'
@@ -258,9 +319,9 @@
     } catch (cause) {
       if (!present(version, signal)) return;
       uncertain = true;
-      error = storedResult
-        ? `The stored outcome above was returned, but current methods could not be refreshed. ${explanation(cause)}`
-        : explanation(cause, true);
+      setFailure(cause, true, kind === 'continue');
+      if (storedResult)
+        error = `The change result was received, but sign-in methods could not be refreshed. ${explanation(cause)}`;
       if (
         cause instanceof ApiError &&
         ['unauthenticated', 'access_denied', 'csrf_failed'].includes(cause.code)
@@ -284,21 +345,20 @@
       onclick={() => void read(client, currentID, true)}>Refresh status</button
     >
   </header>
-  <p>
-    Manage sign-in to your existing Sessionless account. Linking does not merge another account,
-    transfer its data, or enable Telegram messaging.
-  </p>
+  <p>Add another way to sign in to this account. Telegram login does not connect bot chats.</p>
   <p role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
   {#if error}
     <div bind:this={errorSummary} role="alert" tabindex="-1" class="account-error">
       <h2>Action needs attention</h2>
       <p>{error}</p>
-      <a href={resolve(`/login?return_to=${encodeURIComponent(reloginReturn)}`)}>Sign in again</a>
+      {#if errorReference}<p>Error reference: <code>{errorReference}</code></p>{/if}
+      {#if needsSignIn}<a href={resolve(`/login?return_to=${encodeURIComponent(reloginReturn)}`)}
+          >Sign in again</a
+        >{/if}
     </div>
   {/if}
   {#if loading}<p>Reading sign-in methods and stored status…</p>{/if}
   {#if methods}
-    <p>Current sign-in revision: <span class="revision">{methods.revision}</span></p>
     <ul class="method-list" aria-label="Your sign-in methods">
       {#each methods.methods as method (method.provider)}
         <li>
@@ -312,17 +372,19 @@
           </p>
           {#if method.allowed_actions.includes('link')}
             <p>
-              Linking requires a new check with your current provider and a separate check with {providerLabel[
-                method.provider
-              ]}, then local confirmation.
+              Confirm with {providerLabel[method.provider]}, then finish here.
             </p>
-            <button
-              type="button"
-              class="button"
-              disabled={!allowed(method, 'link')}
-              onclick={() => void start(method, 'link')}
-              >Start linking {providerLabel[method.provider]}</button
-            >
+            {#if pending && operation?.allowed_actions.length && operation.target_provider === method.provider}
+              <p>Link in progress — continue below.</p>
+            {:else}
+              <button
+                type="button"
+                class="button"
+                disabled={!allowed(method, 'link')}
+                onclick={() => void start(method, 'link')}
+                >Link {providerLabel[method.provider]}</button
+              >
+            {/if}
           {:else if method.allowed_actions.includes('unlink') && method.remaining_provider}
             <p>
               Keep signing in with {providerLabel[method.remaining_provider]}. A fresh check with
@@ -334,13 +396,13 @@
               class="button"
               disabled={!allowed(method, 'unlink')}
               onclick={() => void start(method, 'unlink')}
-              >Start unlinking {providerLabel[method.provider]}</button
+              >Remove {providerLabel[method.provider]}</button
             >
           {:else}
             <p class="muted">
               {method.linked
-                ? 'The server offers no removal action for this method. A different enabled sign-in method is required.'
-                : 'The server offers no linking action for this provider.'}
+                ? 'Keep at least one enabled sign-in method connected.'
+                : 'This sign-in method cannot be connected right now.'}
             </p>
           {/if}
         </li>
@@ -349,7 +411,9 @@
   {/if}
   {#if operation}
     <section aria-labelledby={`${id}-operation`} class="operation">
-      <h2 id={`${id}-operation`} bind:this={operationHeading} tabindex="-1">Stored operation</h2>
+      <h2 id={`${id}-operation`} bind:this={operationHeading} tabindex="-1">
+        {operation.kind === 'unlink' ? 'Remove a sign-in method' : 'Link a sign-in method'}
+      </h2>
       {#if operation.outcome === 'outcome_unavailable'}
         <p>
           No retained outcome is available. This does not prove the change failed or permit replay.
@@ -378,10 +442,9 @@
             code.
           </p>{/if}
         {#if operation.completed_at}<p>
-            Recorded at <time datetime={operation.completed_at}>{operation.completed_at}</time>.
-          </p>{/if}
-        {#if operation.after_revision}<p>
-            Stored revision: <span class="revision">{operation.after_revision}</span>.
+            Recorded at <time datetime={operation.completed_at}
+              >{localTime(operation.completed_at)}</time
+            >.
           </p>{/if}
       {:else if operation.outcome === 'expired'}
         <p>
@@ -393,21 +456,18 @@
           {operation.kind === 'link' ? 'Link' : 'Unlink'}
           {operation.target_provider ? providerLabel[operation.target_provider] : 'sign-in method'} ·
           {operation.phase === 'source_proof'
-            ? operation.kind === 'unlink'
-              ? 'Check the remaining sign-in method'
-              : 'Check your existing account first'
+            ? `Confirm with ${checkProvider} to keep access to your account`
             : operation.phase === 'target_proof'
-              ? 'Check the target provider separately'
-              : 'Review the final local confirmation'}.
+              ? `Continue to ${checkProvider} to confirm your account`
+              : 'Provider confirmed — finish below'}.
         </p>
         {#if operation.expires_at}<p>
-            The original window ends at <time datetime={operation.expires_at}
-              >{operation.expires_at}</time
-            >. Refresh does not extend it.
+            Complete by <time datetime={operation.expires_at}
+              >{localTime(operation.expires_at)}</time
+            >.
           </p>{/if}
         {#if operation.phase === 'confirm'}<p>
-            Confirm only this unchanged change to your existing account. No account merge or
-            resource transfer occurs. Other Web sessions will need to sign in again.
+            Your account and data stay the same. Other Web sessions will need to sign in again.
           </p>{/if}
         {#if operation.allowed_actions.length === 0}<p>
             The server currently offers no continuation. This read is not permission to restart a
@@ -418,14 +478,17 @@
               type="button"
               class="button primary"
               disabled={!canUseOperation}
-              onclick={() => void action('continue')}>Continue provider check</button
+              onclick={() => void action('continue')}
+              >{operation.kind === 'link' ? 'Continue to' : 'Confirm with'} {checkProvider}</button
             >{/if}
           {#if operation.allowed_actions.includes('confirm')}<button
               type="button"
               class="button primary"
               disabled={!canUseOperation}
               onclick={() => void action('confirm')}
-              >Confirm {operation.kind === 'link' ? 'link' : 'unlink'}</button
+              >{operation.kind === 'link'
+                ? `Confirm ${checkProvider} link`
+                : `Confirm removal of ${operation.target_provider ? providerLabel[operation.target_provider] : 'method'}`}</button
             >{/if}
           {#if operation.allowed_actions.includes('cancel')}<button
               type="button"
@@ -477,9 +540,6 @@
   }
   .muted {
     color: var(--muted);
-  }
-  .revision {
-    font-variant-numeric: tabular-nums;
   }
   button {
     min-height: 44px;

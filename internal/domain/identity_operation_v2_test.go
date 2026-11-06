@@ -25,7 +25,11 @@ func operationV2Fixture(kind domain.IdentityOperationKindV2) domain.IdentityOper
 		pending.TargetChallengeDigest = ""
 	}
 	created := operationV2At()
-	return domain.IdentityOperationV2{Version: 2, Purpose: domain.IdentityPurposeOperationV2, OperationDigest: domain.DigestSecret("operation-address"), Kind: kind, Phase: domain.IdentityPhaseSourceProofV2, CreatedAt: created, ExpiresAt: created.Add(10 * time.Minute), DeleteAfter: created.Add(10 * time.Minute), Pending: pending}
+	phase := domain.IdentityPhaseSourceProofV2
+	if kind == domain.IdentityOperationLinkV2 {
+		phase, pending.SourceChallengeDigest = domain.IdentityPhaseTargetProofV2, ""
+	}
+	return domain.IdentityOperationV2{Version: 2, Purpose: domain.IdentityPurposeOperationV2, OperationDigest: domain.DigestSecret("operation-address"), Kind: kind, Phase: phase, CreatedAt: created, ExpiresAt: created.Add(10 * time.Minute), DeleteAfter: created.Add(10 * time.Minute), Pending: pending}
 }
 
 func operationV2ProofChallenge(operation domain.IdentityOperationV2) domain.IdentityChallengeV2 {
@@ -37,7 +41,6 @@ func operationV2ProofChallenge(operation domain.IdentityOperationV2) domain.Iden
 	proof := &domain.IdentityProofChallengeV2{ParentOperationDigest: operation.OperationDigest, ParentPhase: operation.Phase, Scope: pending.Scope, ExpectedSubject: &expected}
 	if operation.Phase == domain.IdentityPhaseTargetProofV2 {
 		provider, state = pending.TargetProvider, pending.TargetChallengeDigest
-		created = pending.SourceProof.CompletedAt.Add(time.Second)
 		proof.ExpectedSubject = nil
 	}
 	nonce := ""
@@ -93,23 +96,18 @@ func TestIdentityOperationV2LinkAndUnlinkPhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if original.Pending.SourceProof != nil || original.Phase != domain.IdentityPhaseSourceProofV2 || !next.ExpiresAt.Equal(original.ExpiresAt) || !next.DeleteAfter.Equal(original.DeleteAfter) || next.Pending.Scope != original.Pending.Scope {
+			if original.Pending.SourceProof != nil || !next.ExpiresAt.Equal(original.ExpiresAt) || !next.DeleteAfter.Equal(original.DeleteAfter) || next.Pending.Scope != original.Pending.Scope {
 				t.Error("proof transition mutated original scope/deadline/input")
 			}
 			if kind == domain.IdentityOperationLinkV2 {
-				if next.Phase != domain.IdentityPhaseTargetProofV2 || next.Pending.TargetProof != nil || next.Pending.TargetSubject != nil {
-					t.Fatalf("link source phase skipped independent target: %+v", next)
-				}
-				challenge, proof = operationV2VerifiedStep(t, next)
-				next, err = next.RecordProof(challenge, proof, proof.CompletedAt)
-				if err != nil {
-					t.Fatal(err)
+				if original.Phase != domain.IdentityPhaseTargetProofV2 || original.Pending.SourceChallengeDigest != "" || next.Pending.SourceProof != nil {
+					t.Fatalf("link invented a source provider proof: %+v", next)
 				}
 			}
 			if next.Phase != domain.IdentityPhaseConfirmV2 || next.ValidateConfirm(proof.CompletedAt) != nil {
 				t.Fatalf("complete proofs did not reach pure confirm: %+v", next)
 			}
-			if next.Pending.SourceProof == nil || (kind == domain.IdentityOperationLinkV2 && next.Pending.TargetProof == nil) {
+			if (kind == domain.IdentityOperationUnlinkV2 && next.Pending.SourceProof == nil) || (kind == domain.IdentityOperationLinkV2 && next.Pending.TargetProof == nil) {
 				t.Error("required provider proof missing")
 			}
 			if kind == domain.IdentityOperationUnlinkV2 && (next.Pending.SourceSubject == *next.Pending.TargetSubject || next.Pending.SourceSubject.Provider == next.Pending.TargetProvider) {
@@ -191,6 +189,11 @@ func TestIdentityProviderProofV2FreshnessAndDistinctAssurance(t *testing.T) {
 	for _, kind := range []domain.IdentityOperationKindV2{domain.IdentityOperationLinkV2, domain.IdentityOperationUnlinkV2} {
 		t.Run(string(kind), func(t *testing.T) {
 			operation := operationV2Fixture(kind)
+			if kind == domain.IdentityOperationLinkV2 {
+				operation.Pending.SourceSubject.Provider = domain.IdentityProviderTelegram
+				operation.Pending.Scope.AuthenticatedSubject = operation.Pending.SourceSubject
+				operation.Pending.TargetProvider = domain.IdentityProviderYandex
+			}
 			_, proof := operationV2VerifiedStep(t, operation)
 			if err := proof.ValidateFresh(proof.CompletedAt.Add(5 * time.Minute)); err != nil {
 				t.Errorf("exact five minute proof should remain usable: %v", err)
@@ -256,9 +259,11 @@ func TestIdentityOperationV2RejectsWrongChildAndProof(t *testing.T) {
 			p.ChallengeDigest = domain.DigestSecret("other")
 		}},
 		{name: "wrong phase", mutate: func(_ *domain.IdentityChallengeV2, p *domain.IdentityProviderProofV2) {
-			p.ParentPhase = domain.IdentityPhaseTargetProofV2
+			p.ParentPhase = domain.IdentityPhaseSourceProofV2
 		}},
-		{name: "wrong subject", mutate: func(_ *domain.IdentityChallengeV2, p *domain.IdentityProviderProofV2) { p.Subject.Subject = "other" }},
+		{name: "wrong subject provider", mutate: func(_ *domain.IdentityChallengeV2, p *domain.IdentityProviderProofV2) {
+			p.Subject.Provider = domain.IdentityProviderYandex
+		}},
 		{name: "wrong client", mutate: func(_ *domain.IdentityChallengeV2, p *domain.IdentityProviderProofV2) { p.Binding.ClientID = "other" }},
 		{name: "proof starts before parent", mutate: func(_ *domain.IdentityChallengeV2, p *domain.IdentityProviderProofV2) {
 			p.ChallengeCreatedAt = operationV2At().Add(-time.Second)
@@ -288,9 +293,9 @@ func TestIdentityOperationV2ConfirmFreshnessAndDeepCopy(t *testing.T) {
 	if operation.ValidateConfirm(at) != nil {
 		t.Fatal("complete fresh operation denied")
 	}
-	stale := operation.Pending.SourceProof.CompletedAt.Add(5*time.Minute + time.Nanosecond)
+	stale := operation.Pending.TargetProof.CompletedAt.Add(5*time.Minute + time.Nanosecond)
 	if stale.Before(operation.ExpiresAt) && operation.ValidateConfirm(stale) == nil {
-		t.Error("stale source proof accepted while target proof is newer")
+		t.Error("stale target proof accepted")
 	}
 	for _, at := range []time.Time{operation.CreatedAt.Add(-time.Nanosecond), operation.ExpiresAt} {
 		if operation.ValidateConfirm(at) == nil {
@@ -319,7 +324,7 @@ func TestIdentityOperationV2TerminalPrivacyAndReceiptIsNotGrant(t *testing.T) {
 	for _, kind := range []domain.IdentityOperationKindV2{domain.IdentityOperationLinkV2, domain.IdentityOperationUnlinkV2} {
 		t.Run(string(kind), func(t *testing.T) {
 			operation := operationV2Confirm(t, kind)
-			completed := operation.Pending.SourceProof.CompletedAt.Add(time.Minute)
+			completed := operation.CreatedAt.Add(time.Minute)
 			outcome := domain.IdentityOutcomeUnlinkedV2
 			if kind == domain.IdentityOperationLinkV2 {
 				outcome = domain.IdentityOutcomeLinkedV2
@@ -441,18 +446,26 @@ func TestIdentityOperationV2CodecRoundTripAllPhases(t *testing.T) {
 	}
 }
 
-func TestIdentityOperationV2SourceCannotExpireDuringTargetProof(t *testing.T) {
+func TestIdentityOperationV2LinkRejectsLegacySourceArms(t *testing.T) {
 	operation := operationV2Fixture(domain.IdentityOperationLinkV2)
-	challenge, proof := operationV2VerifiedStep(t, operation)
-	operation, err := operation.RecordProof(challenge, proof, proof.CompletedAt)
-	if err != nil {
-		t.Fatal(err)
+	for _, mode := range []string{"source_phase", "source_challenge", "source_proof"} {
+		t.Run(mode, func(t *testing.T) {
+			bad := operationV2Fixture(domain.IdentityOperationLinkV2)
+			switch mode {
+			case "source_phase":
+				bad.Phase = domain.IdentityPhaseSourceProofV2
+			case "source_challenge":
+				bad.Pending.SourceChallengeDigest = domain.DigestSecret("legacy-source")
+			case "source_proof":
+				bad.Pending.SourceProof = &domain.IdentityProviderProofV2{}
+			}
+			if bad.Validate() == nil {
+				t.Fatalf("legacy link %s accepted: %+v", mode, bad)
+			}
+		})
 	}
-	challenge, proof = operationV2VerifiedStep(t, operation)
-	proof.CompletedAt = operation.Pending.SourceProof.CompletedAt.Add(domain.IdentityProofMaxAgeV2 + time.Nanosecond)
-	next, err := operation.RecordProof(challenge, proof, proof.CompletedAt)
-	if err == nil || !reflect.DeepEqual(next, domain.IdentityOperationV2{}) {
-		t.Errorf("fresh target revived stale source: (%+v,%v)", next, err)
+	if operation.Validate() != nil {
+		t.Fatal("canonical current-session link rejected")
 	}
 }
 

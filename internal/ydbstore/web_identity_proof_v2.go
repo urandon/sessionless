@@ -337,6 +337,9 @@ func buildIdentityOperationV2(request identityOperationStartV2, scope domain.Ide
 		return empty, domain.ErrMembershipDenied
 	}
 	operation := domain.IdentityOperationV2{Version: 2, Purpose: domain.IdentityPurposeOperationV2, OperationDigest: request.Phase.OperationDigest, Kind: request.Kind, Phase: domain.IdentityPhaseSourceProofV2, CreatedAt: first, ExpiresAt: first.Add(domain.IdentityOperationMaxLifetimeV2), DeleteAfter: first.Add(domain.IdentityOperationMaxLifetimeV2), Pending: pending}
+	if request.Kind == domain.IdentityOperationLinkV2 {
+		operation.Phase = domain.IdentityPhaseTargetProofV2
+	}
 	if operation.Validate() != nil {
 		return empty, domain.ErrMembershipDenied
 	}

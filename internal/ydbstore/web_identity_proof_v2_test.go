@@ -171,6 +171,9 @@ func newIdentityProofStorageV2(t *testing.T, kind domain.IdentityOperationKindV2
 	config := identityConfigurationV2{ManifestDigest: domain.DigestSecret("proof-manifest"), SensitiveOperationsEnabled: true, Providers: []domain.IdentityProviderBindingV2{{Provider: domain.IdentityProviderYandex, Issuer: domain.YandexOAuthIssuer, ClientID: "proof-yandex", CallbackURI: "https://sessionless.example/auth/login/callback"}, {Provider: domain.IdentityProviderTelegram, Issuer: "https://oauth.telegram.org", ClientID: "proof-telegram", CallbackURI: "https://sessionless.example/auth/telegram/callback"}}}
 	phase := identityPhaseRequestV2{OperationDigest: domain.DigestSecret("proof-operation"), SessionDigest: session.Session.SessionDigest, CSRFDigest: session.Session.CSRFTokenDigest, BrowserBindingDigest: domain.DigestSecret("proof-browser"), ExpectedRevision: identity.Revision}
 	request := identityOperationStartV2{Phase: phase, Kind: kind, TargetProvider: domain.IdentityProviderTelegram, SourceChallengeDigest: domain.DigestSecret("proof-source-child"), TargetChallengeDigest: domain.DigestSecret("proof-target-child")}
+	if kind == domain.IdentityOperationLinkV2 {
+		request.SourceChallengeDigest = ""
+	}
 	if kind == domain.IdentityOperationUnlinkV2 {
 		request.TargetProvider = domain.IdentityProviderYandex
 		request.TargetChallengeDigest = ""
@@ -251,13 +254,12 @@ func TestIdentityProofStorageV2CompleteSourceAndIndependentTarget(t *testing.T) 
 			if operation.CreatedAt != f.at || operation.ExpiresAt != f.at.Add(10*time.Minute) || operation.Pending.Scope.ExpectedRevision != request.Phase.ExpectedRevision {
 				t.Fatalf("start did not fix DB original scope/deadline: %+v", operation)
 			}
-			operation = completeIdentityProofStepV2(t, f, store, ctx, request.Phase, config, operation)
 			if kind == domain.IdentityOperationLinkV2 {
 				if operation.Phase != domain.IdentityPhaseTargetProofV2 {
-					t.Fatal("source proof skipped independent target")
+					t.Fatal("authenticated link did not start with independent target")
 				}
-				operation = completeIdentityProofStepV2(t, f, store, ctx, request.Phase, config, operation)
 			}
+			operation = completeIdentityProofStepV2(t, f, store, ctx, request.Phase, config, operation)
 			if operation.Phase != domain.IdentityPhaseConfirmV2 || operation.ValidateConfirm(f.at) != nil {
 				t.Fatalf("proof storage did not reach exact confirm: %+v", operation)
 			}
@@ -323,9 +325,9 @@ func TestIdentityProofStorageV2ChildPhaseReplayAndNoSecretReset(t *testing.T) {
 	}
 	f.at = f.at.Add(time.Second)
 	wrong := identityProofChildRequestV2(operation, r.Phase)
-	wrong.ChallengeDigest = r.TargetChallengeDigest
+	wrong.ChallengeDigest = domain.DigestSecret("forbidden-source-child")
 	if got, err := s.createIdentityProofV2(ctx, wrong, c); err == nil || !reflect.DeepEqual(got, domain.IdentityChallengeV2{}) || len(f.children) != 0 {
-		t.Errorf("target child created in source phase: (%+v,%v)", got, err)
+		t.Errorf("non-target child created in link target phase: (%+v,%v)", got, err)
 	}
 	childReq := identityProofChildRequestV2(operation, r.Phase)
 	child, err := s.createIdentityProofV2(ctx, childReq, c)
@@ -409,7 +411,7 @@ func TestIdentityProofStorageV2EveryPhaseRejoinsAuthority(t *testing.T) {
 			c.ManifestDigest = domain.DigestSecret("foreign")
 		}},
 		{name: "client callback", mutate: func(_ *testing.T, _ *identityProofSQLV2, _ *identityProofConsumeV2, c *identityConfigurationV2) {
-			c.Providers[0].CallbackURI = "https://other.invalid/auth/login/callback"
+			c.Providers[1].CallbackURI = "https://other.invalid/auth/telegram/callback"
 		}},
 		{name: "identity revocation", mutate: func(t *testing.T, f *identityProofSQLV2, _ *identityProofConsumeV2, _ *identityConfigurationV2) {
 			for key, raw := range f.base.durable.forward {
@@ -462,7 +464,7 @@ func TestIdentityProofStorageV2EveryPhaseRejoinsAuthority(t *testing.T) {
 }
 
 func TestIdentityProofStorageV2RetryKeepsFirstDatabaseObservation(t *testing.T) {
-	f, s, ctx, r, c := newIdentityProofStorageV2(t, domain.IdentityOperationLinkV2)
+	f, s, ctx, r, c := newIdentityProofStorageV2(t, domain.IdentityOperationUnlinkV2)
 	first := f.at
 	f.rollbackOnce = true
 	f.retryAdvance = time.Second
@@ -496,7 +498,8 @@ func TestIdentityProofStorageV2RetryKeepsFirstDatabaseObservation(t *testing.T) 
 	f.at = f.at.Add(time.Second)
 	completeFirst := f.at
 	f.rollbackOnce = true
-	next, err := s.recordIdentityProofV2(ctx, identityProofCompletionV2{Phase: r.Phase, ChallengeDigest: child.StateDigest, Verified: acceptedIdentityProofV2{Subject: op.Pending.SourceSubject, Kind: domain.IdentityProofYandexAuthorizationV2, Binding: child.Binding}}, c)
+	authTime := child.CreatedAt
+	next, err := s.recordIdentityProofV2(ctx, identityProofCompletionV2{Phase: r.Phase, ChallengeDigest: child.StateDigest, Verified: acceptedIdentityProofV2{Subject: op.Pending.SourceSubject, Kind: domain.IdentityProofTelegramAuthTimeV2, SignedAuthTime: &authTime, Binding: child.Binding}}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,13 +555,14 @@ func TestIdentityProofStorageV2CompletionRequiresCanonicalConsumedChild(t *testi
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, s, ctx, start, config := newIdentityProofStorageV2(t, domain.IdentityOperationLinkV2)
+			kind := domain.IdentityOperationUnlinkV2
+			if test.target {
+				kind = domain.IdentityOperationLinkV2
+			}
+			f, s, ctx, start, config := newIdentityProofStorageV2(t, kind)
 			operation, err := s.startIdentityOperationV2(ctx, start, config)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.target {
-				operation = completeIdentityProofStepV2(t, f, s, ctx, start.Phase, config, operation)
 			}
 			f.at = f.at.Add(time.Second)
 			child, err := s.createIdentityProofV2(ctx, identityProofChildRequestV2(operation, start.Phase), config)
@@ -571,7 +575,8 @@ func TestIdentityProofStorageV2CompletionRequiresCanonicalConsumedChild(t *testi
 					t.Fatal(err)
 				}
 			}
-			verified := acceptedIdentityProofV2{Subject: operation.Pending.SourceSubject, Kind: domain.IdentityProofYandexAuthorizationV2, Binding: child.Binding}
+			authTime := child.CreatedAt
+			verified := acceptedIdentityProofV2{Subject: operation.Pending.SourceSubject, Kind: domain.IdentityProofTelegramAuthTimeV2, SignedAuthTime: &authTime, Binding: child.Binding}
 			if test.target {
 				authTime := child.CreatedAt
 				verified.Subject = domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "new-linked-subject"}
@@ -606,11 +611,12 @@ func TestIdentityProofStorageV2CompletionReplayAndCreateCurrentCSRF(t *testing.T
 		t.Errorf("child creation bypassed current CSRF: (%+v,%v)", child, err)
 	}
 	next := completeIdentityProofStepV2(t, f, s, ctx, start.Phase, config, operation)
-	child, err := domain.DecodeIdentityChallengeV2([]byte(f.children[operation.Pending.SourceChallengeDigest][9].(string)))
+	child, err := domain.DecodeIdentityChallengeV2([]byte(f.children[operation.Pending.TargetChallengeDigest][9].(string)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := identityProofCompletionV2{Phase: start.Phase, ChallengeDigest: child.StateDigest, Verified: acceptedIdentityProofV2{Subject: operation.Pending.SourceSubject, Kind: domain.IdentityProofYandexAuthorizationV2, Binding: child.Binding}}
+	authTime := child.CreatedAt
+	request := identityProofCompletionV2{Phase: start.Phase, ChallengeDigest: child.StateDigest, Verified: acceptedIdentityProofV2{Subject: *next.Pending.TargetSubject, Kind: domain.IdentityProofTelegramAuthTimeV2, SignedAuthTime: &authTime, Binding: child.Binding}}
 	before, writes := f.operation, f.base.writes
 	f.at = f.at.Add(time.Second)
 	if replay, err := s.recordIdentityProofV2(ctx, request, config); err == nil || !reflect.DeepEqual(replay, domain.IdentityOperationV2{}) || f.operation != before || f.base.writes != writes {

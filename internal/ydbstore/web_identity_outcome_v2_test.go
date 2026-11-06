@@ -81,7 +81,7 @@ func TestIdentityOutcomeV2ActualPhaseCancelAndExpiry(t *testing.T) {
 		for _, kind := range []domain.IdentityOperationKindV2{domain.IdentityOperationLinkV2, domain.IdentityOperationUnlinkV2} {
 			phases := []domain.IdentityOperationPhaseV2{domain.IdentityPhaseSourceProofV2, domain.IdentityPhaseConfirmV2}
 			if kind == domain.IdentityOperationLinkV2 {
-				phases = append(phases, domain.IdentityPhaseTargetProofV2)
+				phases = []domain.IdentityOperationPhaseV2{domain.IdentityPhaseTargetProofV2, domain.IdentityPhaseConfirmV2}
 			}
 			for _, phase := range phases {
 				for _, expire := range []bool{false, true} {
@@ -172,7 +172,7 @@ func TestIdentityOutcomeV2UnknownAndAuthorityErrorsNeverStop(t *testing.T) {
 		}
 		for _, fault := range faults {
 			t.Run(method+"/"+fault, func(t *testing.T) {
-				f, store, ctx, phase, config, operation := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseSourceProofV2)
+				f, store, ctx, phase, config, operation := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseTargetProofV2)
 				read := identityOutcomeReadV2{OperationDigest: phase.OperationDigest, SessionDigest: phase.SessionDigest}
 				if view, err := store.readIdentityOperationOutcomeV2(ctx, read, config); err != nil || view.Phase != operation.Phase {
 					t.Fatal("valid current baseline before denial", err)
@@ -267,7 +267,7 @@ func TestIdentityOutcomeV2UnknownAndAuthorityErrorsNeverStop(t *testing.T) {
 func TestIdentityOutcomeV2ReadUnavailableAndOriginalRetention(t *testing.T) {
 	for _, state := range []string{"absent", "pending-expired", "pending-beyond-retention", "terminal-beyond-retention"} {
 		t.Run(state, func(t *testing.T) {
-			f, store, ctx, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseSourceProofV2)
+			f, store, ctx, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseTargetProofV2)
 			if state == "terminal-beyond-retention" {
 				if _, err := store.cancelIdentityOperationV2(ctx, phase, config); err != nil {
 					t.Fatal(err)
@@ -393,7 +393,7 @@ func TestIdentityOutcomeV2ForeignCurrentReaderOwnAbsenceBeforeOwnerDenial(t *tes
 func TestIdentityOutcomeV2CancelCutoffAndLaterImmutableResult(t *testing.T) {
 	for _, delta := range []time.Duration{-time.Microsecond, 0, time.Microsecond} {
 		t.Run(delta.String(), func(t *testing.T) {
-			f, store, ctx, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseSourceProofV2)
+			f, store, ctx, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseTargetProofV2)
 			f.at = original.ExpiresAt.Add(delta)
 			view, err := store.cancelIdentityOperationV2(ctx, phase, config)
 			want := domain.IdentityOutcomeExpiredV2
@@ -517,7 +517,7 @@ func TestIdentityOutcomeV2SharedBudgetsRemainSticky(t *testing.T) {
 		}
 		for _, cap := range caps {
 			t.Run(method+"/"+cap, func(t *testing.T) {
-				f, store, parent, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseSourceProofV2)
+				f, store, parent, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseTargetProofV2)
 				f.at = original.ExpiresAt
 				ctx, cancel := ownedAuthorityCallContext(parent)
 				defer cancel()
@@ -592,7 +592,7 @@ func TestIdentityOutcomeV2UnlinkDisabledTargetCanStillStop(t *testing.T) {
 }
 
 func TestIdentityOutcomeV2CallerCancellationCannotInventStop(t *testing.T) {
-	f, store, parent, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseSourceProofV2)
+	f, store, parent, phase, config, original := identityOutcomeFixtureV2(t, domain.IdentityOperationLinkV2, domain.IdentityProviderYandex, domain.IdentityPhaseTargetProofV2)
 	f.at = original.ExpiresAt
 	ctx, cancel := context.WithCancel(parent)
 	cancel()

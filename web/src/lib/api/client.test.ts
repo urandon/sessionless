@@ -4,6 +4,32 @@ import { ApiError, CanonicalApiClient, parseLoginMethods } from './client';
 import { barrier, explanation } from '../run-explanation/test-fixtures';
 
 describe('CanonicalApiClient account identity methods', () => {
+  it('retains a safe server request reference through account error handling', async () => {
+    const client = new CanonicalApiClient({
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: 'temporarily_unavailable',
+              message: 'private upstream detail',
+              request_id: 'req_synthetic244',
+            },
+          },
+          { status: 503 },
+        ),
+      ),
+      readCSRFToken: () => 'synthetic-csrf',
+    });
+    const error = await client
+      .continueIdentityOperation('op_synthetic', '1')
+      .catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      code: 'temporarily_unavailable',
+      requestId: 'req_synthetic244',
+      status: 503,
+    });
+    expect((error as Error).message).not.toContain('private upstream');
+  });
   const revision = '9007199254740993';
   const operationId = 'opaque:operation-1';
   const rows = {
@@ -29,7 +55,7 @@ describe('CanonicalApiClient account identity methods', () => {
   const pending = {
     operation_id: operationId,
     kind: 'link',
-    phase: 'source_proof',
+    phase: 'target_proof',
     target_provider: 'telegram',
     before_revision: revision,
     expires_at: '2026-11-04T12:10:00Z',

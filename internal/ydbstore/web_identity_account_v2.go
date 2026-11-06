@@ -375,13 +375,15 @@ func (s *identityAccountServiceV2) Start(ctx context.Context, request ports.Iden
 				return domain.ErrIdentityLastMethodV2
 			}
 		}
-		start := identityOperationStartV2{Phase: phase, Kind: request.Kind, TargetProvider: target, SourceChallengeDigest: domain.DigestSecret(s.state(id, domain.IdentityPhaseSourceProofV2, s.bindings[source]))}
+		start := identityOperationStartV2{Phase: phase, Kind: request.Kind, TargetProvider: target}
 		if request.Kind == domain.IdentityOperationLinkV2 {
 			binding, ok := s.bindings[target]
 			if !ok {
 				return domain.ErrIdentityProviderUnavailableV2
 			}
 			start.TargetChallengeDigest = domain.DigestSecret(s.state(id, domain.IdentityPhaseTargetProofV2, binding))
+		} else {
+			start.SourceChallengeDigest = domain.DigestSecret(s.state(id, domain.IdentityPhaseSourceProofV2, s.bindings[source]))
 		}
 		operation, err := buildIdentityOperationV2(start, scope, active, s.bindings, first)
 		if err != nil {

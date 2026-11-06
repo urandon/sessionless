@@ -46,6 +46,16 @@ the [migration notes](../../migrations/ydb/README.md#configured-local-capacity-e
 
 ### Authentication V2 source extension (not applied schema)
 
+The session-authorized LINK policy in
+[#244](https://gitcode.com/urandon/sessionless/issues/244) reuses the same bounded
+operation/challenge records. LINK stores its original current-session scope,
+an empty `source_challenge_digest` and no source proof, and only creates a target
+challenge. UNLINK retains its real remaining-provider proof. No table, column,
+index, ledger or retention extension is added. The versioned trusted manifest
+and closed kind-dependent decoder reject old pending link proof-policy records;
+terminal receipts remain unchanged. Policy rollout needs old-revision retirement
+and pending expiry, not a repeat of migration/identity conversion.
+
 The [dual-provider account-linking design](../design/dual-provider-account-linking.md)
 for [#237](https://gitcode.com/urandon/sessionless/issues/237) requires no new
 physical table: versioned active/unlinked ownership and shared active-set

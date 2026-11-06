@@ -381,6 +381,16 @@ web-stage: web-check web-build
 
 web-ci: web-stage
 
+.PHONY: account-link-smoke-test
+account-link-smoke-test: prepare web-tools
+	@test -x "$(WEB_DIR)/node_modules/.bin/vitest" || { printf '%s\n' 'Run make web-install first.'; exit 1; }
+	@set -eu; \
+	task_dir=$$(mktemp -d "$(abspath .build)/account-link-smoke.XXXXXX"); \
+	trap 'rm -f "$$task_dir/continuation.json"; rmdir "$$task_dir"' EXIT HUP INT TERM; \
+	export SESSIONLESS_IDENTITY_CONTINUATION_FIXTURE="$$task_dir/continuation.json"; \
+	go test -race -count=1 -shuffle=190351 -timeout=1m -run='^TestIdentityAccountV2ConnectedContinuationExport$$' ./internal/ydbstore; \
+	npm --prefix $(WEB_DIR) run test -- --config vite.account-link.config.ts
+
 web-browser-install: web-install
 	npm --prefix $(WEB_DIR) exec playwright -- install $(PLAYWRIGHT_INSTALL_ARGS)
 

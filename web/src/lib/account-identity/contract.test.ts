@@ -35,7 +35,7 @@ function pending() {
   return {
     operation_id: 'opaque:operation-1',
     kind: 'link',
-    phase: 'source_proof',
+    phase: 'target_proof',
     target_provider: 'telegram',
     before_revision: '9007199254740993',
     expires_at: '2026-11-04T12:10:00Z',
@@ -64,6 +64,18 @@ function authorization(provider = 'telegram', origin = 'https://account.example.
 }
 
 describe('account identity presentation contract', () => {
+  it('accepts only target-first LINK and preserves remaining-provider-first UNLINK', () => {
+    const link = pending();
+    expect(parseIdentityOperation(JSON.stringify(link)).phase).toBe('target_proof');
+    expect(() =>
+      parseIdentityOperation(JSON.stringify({ ...link, phase: 'source_proof' })),
+    ).toThrow();
+    expect(
+      parseIdentityOperation(JSON.stringify({ ...link, kind: 'unlink', phase: 'source_proof' }))
+        .phase,
+    ).toBe('source_proof');
+    expect(() => parseIdentityOperation(JSON.stringify({ ...link, kind: 'unlink' }))).toThrow();
+  });
   it('rejects every raw ASCII space/control, DEL and backslash in continuation URLs without a regex exception', () => {
     const raw = authorization().href;
     for (const point of [...Array.from({ length: 33 }, (_, index) => index), 0x7f, 0x5c]) {
@@ -183,7 +195,7 @@ describe('account identity presentation contract', () => {
       parseIdentityOperation(JSON.stringify(current), current.operation_id).before_revision,
     ).toBe(current.before_revision);
     const expired = { ...current, outcome: 'expired', allowed_actions: [] };
-    expect(parseIdentityOperation(JSON.stringify(expired)).phase).toBe('source_proof');
+    expect(parseIdentityOperation(JSON.stringify(expired)).phase).toBe('target_proof');
     const terminal = {
       operation_id: current.operation_id,
       kind: 'link',

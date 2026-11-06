@@ -149,7 +149,11 @@ func (f *nativeAccountHTTPV2) start(t *testing.T, request webcontract.IdentityOp
 	t.Helper()
 	var view webcontract.IdentityOperationView
 	nativeAccountDecodeV2(t, f.call(t, http.MethodPost, webcontract.RouteIdentityOperations, nativeAccountJSONV2(t, request), false, false), 200, &view)
-	if view.Phase != domain.IdentityPhaseSourceProofV2 || view.BeforeRevision == nil || *view.BeforeRevision != request.ExpectedRevision || f.cookies[nativeAccountOpCookieV2] == nil {
+	wantPhase := domain.IdentityPhaseSourceProofV2
+	if request.Kind == domain.IdentityOperationLinkV2 {
+		wantPhase = domain.IdentityPhaseTargetProofV2
+	}
+	if view.Phase != wantPhase || view.BeforeRevision == nil || *view.BeforeRevision != request.ExpectedRevision || f.cookies[nativeAccountOpCookieV2] == nil {
 		t.Fatal("native Start did not create exact original pending operation")
 	}
 	return view
@@ -262,10 +266,6 @@ func TestWebIdentityV2YDBAccountLinkReloginAndUnlink(t *testing.T) {
 			start := f.start(t, webcontract.IdentityOperationStartRequest{Kind: domain.IdentityOperationLinkV2, TargetProvider: target, ExpectedRevision: 1})
 			f.proof(t, start.OperationID, 1, true)
 			if len(f.raw.Snapshot().Active[f.raw.Owner]) != 1 {
-				t.Fatal("SOURCE callback linked before target/local confirm")
-			}
-			f.proof(t, start.OperationID, 1, false)
-			if len(f.raw.Snapshot().Active[f.raw.Owner]) != 1 {
 				t.Fatal("TARGET callback linked before local confirm")
 			}
 			confirmed := f.confirm(t, start.OperationID, 1, 200)
@@ -370,7 +370,6 @@ func TestWebIdentityV2YDBAccountConflictIsolatesOwners(t *testing.T) {
 	}
 	baseline := f.raw.Snapshot()
 	start := f.start(t, webcontract.IdentityOperationStartRequest{Kind: domain.IdentityOperationLinkV2, TargetProvider: domain.IdentityProviderTelegram, ExpectedRevision: 1})
-	f.proof(t, start.OperationID, 1, false)
 	cookie := f.cookies[webcontract.SessionCookieName].Value
 	// The original proof recorder checks target ownership before local Confirm.
 	// This is that exact native conflict boundary, not an arbitrary later error.
@@ -386,7 +385,6 @@ func TestWebIdentityV2YDBAccountUnknownConfirmationRecoversExactReceipt(t *testi
 	f := newNativeAccountHTTPV2(t, domain.IdentityProviderYandex, false)
 	f.ordinary(t, domain.IdentityProviderYandex, true)
 	start := f.start(t, webcontract.IdentityOperationStartRequest{Kind: domain.IdentityOperationLinkV2, TargetProvider: domain.IdentityProviderTelegram, ExpectedRevision: 1})
-	f.proof(t, start.OperationID, 1, false)
 	f.proof(t, start.OperationID, 1, false)
 	before := f.raw.Snapshot()
 	old := cloneNativeAccountCookiesV2(f.cookies)
@@ -429,7 +427,6 @@ func TestWebIdentityV2YDBAccountCurrentnessDenialsBeforeConfirmation(t *testing.
 			f := newNativeAccountHTTPV2(t, domain.IdentityProviderYandex, false)
 			f.ordinary(t, domain.IdentityProviderYandex, true)
 			start := f.start(t, webcontract.IdentityOperationStartRequest{Kind: domain.IdentityOperationLinkV2, TargetProvider: domain.IdentityProviderTelegram, ExpectedRevision: 1})
-			f.proof(t, start.OperationID, 1, false)
 			f.proof(t, start.OperationID, 1, false)
 			revision, status := domain.AuthRevisionV2(2), 409
 			if mode == "membership" {

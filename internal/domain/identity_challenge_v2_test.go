@@ -77,8 +77,7 @@ func TestIdentityChallengeV2ProofParentAndPurposeBinding(t *testing.T) {
 			c.Proof.ParentOperationDigest = domain.DigestSecret("other")
 		}},
 		{name: "wrong phase", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) {
-			c.Proof.ParentPhase = domain.IdentityPhaseTargetProofV2
-			c.Proof.ExpectedSubject = nil
+			c.Proof.ParentPhase = domain.IdentityPhaseSourceProofV2
 		}},
 		{name: "wrong user", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) { c.Proof.Scope.UserID = "other" }},
 		{name: "wrong session", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) {
@@ -91,8 +90,8 @@ func TestIdentityChallengeV2ProofParentAndPurposeBinding(t *testing.T) {
 			c.Proof.Scope.ConfigurationDigest = domain.DigestSecret("other")
 		}},
 		{name: "wrong expected revision", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) { c.Proof.Scope.ExpectedRevision++ }},
-		{name: "wrong source subject", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) {
-			c.Proof.ExpectedSubject.Subject = "other"
+		{name: "unexpected target subject restriction", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) {
+			c.Proof.ExpectedSubject = &domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "other"}
 		}},
 		{name: "wrong child state", mutate: func(c *domain.IdentityChallengeV2, _ *domain.IdentityOperationV2) {
 			c.StateDigest = domain.DigestSecret("other")

@@ -247,7 +247,7 @@ func TestIdentityAccountV2StartOutcomeHintsCancelAndUnknown(t *testing.T) {
 	state := f.base.durable.clone()
 	for _, cookie := range []string{"", "wrong-cookie", start.OperationCookie} {
 		view, err := service.Outcome(ctx, ports.IdentityAccountOutcomeRequestV2{Auth: ports.IdentityAccountReadAuthV2{SessionCookie: "rows-session"}, OperationID: start.View.OperationID, OperationCookie: cookie})
-		if err != nil || view.Phase != domain.IdentityPhaseSourceProofV2 {
+		if err != nil || view.Phase != domain.IdentityPhaseTargetProofV2 {
 			t.Fatal("same-user GET:", err)
 		}
 		if (len(view.AllowedActions) > 0) != (cookie == start.OperationCookie) {

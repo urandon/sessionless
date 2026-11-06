@@ -223,6 +223,7 @@ export function parseIdentityOperation(
         value.after_revision === undefined,
     );
     valid(value.kind !== 'unlink' || value.phase !== 'target_proof');
+    valid(value.kind !== 'link' || value.phase !== 'source_proof');
     valid(value.outcome === undefined || value.outcome === 'expired');
     for (const action of value.allowed_actions)
       valid(action === 'cancel' || action === (value.phase === 'confirm' ? 'confirm' : 'continue'));

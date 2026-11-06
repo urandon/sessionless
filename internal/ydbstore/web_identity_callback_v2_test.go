@@ -17,8 +17,9 @@ import (
 
 func accountPendingChildV2(t *testing.T) (*identityProofSQLV2, *Store, *identityAccountServiceV2, ports.IdentityAccountStartResultV2, domain.IdentityChallengeV2) {
 	t.Helper()
-	f, store, service, ctx, _ := newAccountTestV2(t, domain.IdentityOperationLinkV2)
-	start, err := accountStartV2(service, ctx)
+	f, store, service, ctx, _ := newAccountTestV2(t, domain.IdentityOperationUnlinkV2)
+	identity := identityRowsV2Identity(domain.IdentityProviderTelegram, 7)
+	start, err := service.Start(ctx, ports.IdentityAccountStartRequestV2{Auth: accountAuthV2(), Kind: domain.IdentityOperationUnlinkV2, MethodHandle: service.methodHandle(identity.UserID, identity), ExpectedRevision: 7})
 	if err != nil {
 		t.Fatal("actual start", err)
 	}
@@ -56,13 +57,23 @@ func (p *accountErrorProverV2) ExchangeAndVerifyProof(_ context.Context, request
 // error is at the already-consumed provider boundary, never a supplied proof.
 func accountCallbackErrorFixtureV2(t *testing.T, provider domain.IdentityProvider, override ports.IdentityProviderProverV1) (*IdentityAccountConnectedFixtureV2, ports.IdentityAccountCallbackRequestV2, domain.SecretDigest) {
 	t.Helper()
-	raw := newIdentityAccountConnectedFixtureV2(t, provider, false, override)
+	raw := newIdentityAccountConnectedFixtureV2(t, provider, true, override)
 	service := raw.Service.(*identityAccountServiceV2)
 	target := domain.IdentityProviderTelegram
 	if provider == target {
 		target = domain.IdentityProviderYandex
 	}
-	start, err := service.Start(t.Context(), ports.IdentityAccountStartRequestV2{Auth: accountAuthV2(), Kind: domain.IdentityOperationLinkV2, TargetProvider: target, ExpectedRevision: 7})
+	var removed domain.ExternalIdentityV2
+	for _, value := range raw.Snapshot().Forward {
+		identity, decodeErr := domain.DecodeExternalIdentityV2([]byte(value))
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		if identity.Subject.Provider == target {
+			removed = identity
+		}
+	}
+	start, err := service.Start(t.Context(), ports.IdentityAccountStartRequestV2{Auth: accountAuthV2(), Kind: domain.IdentityOperationUnlinkV2, MethodHandle: service.methodHandle(removed.UserID, removed), ExpectedRevision: 7})
 	if err != nil {
 		t.Fatal("actual current start before provider error", err)
 	}

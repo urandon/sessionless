@@ -1,6 +1,6 @@
 # Dual-provider login and explicit account linking
 
-Version: 0.1.0. Status: accepted engineering design; implementation and enablement pending.
+Version: 0.2.0. Status: session-authorized linking policy; implementation and enablement verified separately.
 Owners: [#172](https://gitcode.com/urandon/sessionless/issues/172),
 [research/design #237](https://gitcode.com/urandon/sessionless/issues/237),
 [WebUI epic #29](https://gitcode.com/urandon/sessionless/issues/29).
@@ -29,9 +29,9 @@ The owning issue retains the research evidence and later acceptance receipts.
 | [Yandex authorization code](https://yandex.ru/dev/id/doc/en/codes/code-url), [account information](https://yandex.com/dev/id/doc/en/user-information) | Use S256 code exchange and account API `id` with exact `client_id`; keep tokens server-side. `force_confirm=yes` requests consent/account selection, not a guarantee of another password or MFA. No invented Yandex OIDC claims. |
 | [Telegram Login](https://core.telegram.org/bots/telegram-login) | Reuse code/S256, registered callbacks and verified ID token. The documented identity is issuer-qualified `sub`; no separate UserInfo endpoint. Keep minimal `openid profile`, no phone/bot-message scope. Password age is not token issuance time. |
 | [OAuth BCP, sections 2.1 and 4.4](https://www.rfc-editor.org/rfc/rfc9700.html), [OIDC Core, sections 2 and 3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html) | Bind browser, provider, client, purpose and callback; use distinct provider callbacks plus S256/state and Telegram nonce. `max_age` requires verified `auth_time`; `iat` is not a substitute. |
-| [Auth0 account linking](https://auth0.com/docs/manage-users/user-accounts/user-account-linking) | Adopt explicit user initiation and proof of both accounts. Reject its primary/secondary profile-merge model: here another canonical user's subject is a conflict, not a merge candidate. |
+| [Auth0 account linking](https://auth0.com/docs/manage-users/user-accounts/user-account-linking) | Adopt explicit user initiation and ownership checks. Its recommendation to freshly authenticate both accounts is a stricter policy, not the selected Sessionless linking UX. Reject profile merging: another canonical user's subject is a conflict, not a merge candidate. |
 | [Keycloak client-initiated linking](https://www.keycloak.org/docs/26.8.1/server_development/#client-initiated-account-linking) | Adopt configured-provider/account-settings initiation and bound browser authorization. Do not add an identity broker, external token retrieval or its legacy custom linking protocol. |
-| [Supabase identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking) | Adopt the manual link/settings pattern and protection of the final method. Reject email-driven automatic linking: Sessionless neither requires unique email nor trusts it as account ownership. |
+| [Supabase identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking) | Adopt signed-in manual linking: the current session initiates OAuth with the new provider. Protect the final method. Reject email-driven automatic linking: Sessionless neither requires unique email nor trusts it as account ownership. |
 | [YDB primitive/JSON types](https://ydb.tech/docs/en/yql/reference/types/primitive?version=v25.1) | JsonDocument numbers use Double; do not persist the new uint64 auth revisions as JSON numbers. Use one closed decimal-string representation and verify actual storage/API boundary values. |
 
 These adoption/rejection choices are Sessionless engineering decisions. They do
@@ -115,11 +115,13 @@ configuration-change procedure below is mandatory for that separate boundary.
 
 1. Authorize existing session and membership. Derive exact own identities from
    canonical rows; persist the operation. Cookie possession alone is not proof.
-2. Perform a NEW source-provider authorization roundtrip. For link, prove the
-   exact current authenticating subject. For unlink, prove an exact remaining
-   enabled method (which may differ from the current login method). Never create
-   an identity, rotate login user or grant membership during this proof.
-3. For link, independently authorize the target provider using a second one-use
+2. For **link**, the original currently authorized session and its active canonical
+   identity are the source authority. Start directly at `target_proof`; do not
+   redirect to the source provider or manufacture a source-provider proof. For
+   **unlink**, retain the NEW authorization roundtrip with an exact remaining
+   enabled method (which may differ from the current login method). Neither path
+   creates an identity, rotates the login user or grants membership during proof.
+3. For link, independently authorize the target provider using one-use
    state/PKCE/nonce. Keep verified subject privately in this operation, not in
    browser DTOs. Reject a target already belonging to another user without
    exposing that user's ID, profile, memberships or history.
@@ -139,9 +141,49 @@ The actual registered Telegram profile therefore needs a bounded compatibility
 check before enabling linking. Never fall back to `iat`, cached token or ordinary
 login success; ordinary login need not enforce sensitive-operation freshness.
 
-This is dual provider proof, not a new password/MFA subsystem or a claim that
-the providers have identical assurance. Preserve their distinct proof kinds in
-the private record. If stronger assurance is required later, version the policy.
+This policy deliberately trusts an existing authorized session when adding a
+login method. Compared with fresh source reauthentication, it accepts that an
+attacker possessing a stolen valid session and its CSRF capability could initiate
+adding their own target identity. Session/identity revocation,
+exact Origin/CSRF, original browser/session binding and explicit target proof
+remain mandatory; automatic email matching and account merging remain forbidden.
+This is a product tradeoff, not a claim that all providers have identical
+assurance or that reauthentication is never useful. Unlink keeps its stronger
+remaining-method check.
+
+### Canonical session-authorized link and user flow
+
+LINK has one kind-dependent representation: exact original `SourceSubject`,
+`SourceChallengeDigest` serialized as an empty string, and no `SourceProof`.
+Only `target_proof` and `confirm` are valid pending link phases. The target proof
+must match its own consumed child and the original operation/session scope.
+UNLINK retains its source challenge, real source proof and original phases.
+No extra proof ledger, session-proof object, table or implicit legacy alias is
+introduced. Every target preparation, callback and confirmation rechecks current
+session/identity revision, membership, browser binding and configuration.
+
+Clicking **Link Telegram** starts the bound operation and requests its target
+authorization once, then navigates to Telegram. Returning from Telegram shows
+**Confirm Telegram link**, not another source login. The reverse direction is
+symmetric. A readable progress heading names the provider; expiry is formatted
+in the browser's local time. Reading settings or refreshing status never starts
+or retries a provider request. An ambiguous start/continuation preserves the
+reference and requires explicit status reading; no automatic replay or confirm.
+
+The trusted manifest versions this policy as
+`web-identity-runtime.v2.session-link-v1`. Old pending source-proof LINK records
+are rejected, not silently reinterpreted as session-authorized links. Existing
+terminal receipts remain same-user readable. Deployment must use the existing
+proof-policy freeze/drain/exclusive-writer procedure, including actual retirement
+of the old revision and expiry of outstanding old pending operations. This is
+not the prior image-only hotfix contract. No DDL or identity conversion rerun is
+required, and no old maintenance receipt may be relabelled as the new manifest.
+
+Implementation and acceptance are tracked in
+[#244](https://gitcode.com/urandon/sessionless/issues/244). A credential-free joined
+smoke test must feed actual Go BFF continuation response bytes through the real
+browser API parser and component navigation; it must not claim live Telegram,
+Huawei compatibility or cloud acceptance from controlled peers.
 
 ## Storage: reuse existing authorities, no new table
 
@@ -220,7 +262,7 @@ Reuse `oidc_login_challenges` with explicit closed V2 tagged records: ordinary
 login challenge, provider-proof challenge and identity-operation. Do not coerce
 old records into a new purpose. Store parent reference/phase, original scope,
 proof completion metadata and terminal result in those existing bounded records.
-At most one operation and two proof challenges are needed per link; unlink
+At most one operation and one target proof challenge are needed per link; unlink
 needs one proof. Keep each record <=8KiB, reject duplicate/unknown JSON members.
 No code, access/refresh/ID token or authorization URL is durable. PKCE verifier
 and nonce are temporary server-only fields, cleared immediately on consume.
@@ -288,7 +330,8 @@ success or permission to replay. A new explicit attempt starts from current data
 Login shows one named button or both Yandex/Telegram buttons in stable order.
 Account settings show two provider rows: linked/current, not linked, or linked
 but unavailable in this deployment. Show no other user's data. A link action
-explains two provider checks; unlink names the remaining sign-in method and
+names the target provider and uses the existing session without another source
+login; unlink names the remaining sign-in method and
 warns that other Web sessions will need sign-in again. Preserve return-to only
 as an allowlisted local route, never a provider/user-supplied external redirect.
 
@@ -377,7 +420,7 @@ source behavior, not real registration, forced authentication or reachability.
 | --- | --- |
 | Configuration/login | Three allowed modes, both buttons, missing/duplicate/unknown config denied; provider/client/callback/state/nonce mix-up; old singular setting explicitly rejected. |
 | Continuity | Both initial directions, link, sign out, login through EACH method; exact unchanged UserID/memberships/history/files/resources, equal numeric provider subjects isolated. |
-| Proof | New source plus independent target, stale/wrong/consumed/revoked proof, Yandex consent vs password distinction; Telegram missing/old auth_time denied; no reused code/token. |
+| Proof | LINK starts from the exact current session and verifies only the target; UNLINK verifies the remaining method. Deny stale/wrong/consumed/revoked proof, preserve Yandex consent vs password distinction and Telegram signed auth_time checks; no reused code/token. |
 | Transactions | Genuine disposable-YDB unique target race, opposing unlink race, link versus ordinary login/bootstrap/ingress, stale revision/overflow/tombstone ABA, exact MaxUint64 decimal-string storage/API roundtrip, atomic audit+projection+cookie outcome. |
 | Revocation | Old cookies denied across tenants by main BFF AND direct compute/explanation/consent/canonical transactions; currently suspended/revoked membership, unlinked identity and missing row deny. |
 | Recovery | Lost exchange/commit/browser response, expired/missing receipt, relogin after lost rotated cookie, refresh without repeated effect; expired rows remain logically denied before TTL. |

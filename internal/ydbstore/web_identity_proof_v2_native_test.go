@@ -25,7 +25,7 @@ func TestWebIdentityV2YDBProofStorageAndAtomicLink(t *testing.T) {
 	key := string(identity.UserID)
 	browser := "native-proof-browser-" + key
 	phase := identityPhaseRequestV2{OperationDigest: domain.DigestSecret(key + "-operation"), SessionDigest: session.Session.SessionDigest, CSRFDigest: session.Session.CSRFTokenDigest, BrowserBindingDigest: domain.DigestSecret(browser), ExpectedRevision: identity.Revision}
-	start := identityOperationStartV2{Phase: phase, Kind: domain.IdentityOperationLinkV2, TargetProvider: domain.IdentityProviderTelegram, SourceChallengeDigest: domain.DigestSecret(key + "-source-child"), TargetChallengeDigest: domain.DigestSecret(key + "-target-child")}
+	start := identityOperationStartV2{Phase: phase, Kind: domain.IdentityOperationLinkV2, TargetProvider: domain.IdentityProviderTelegram, TargetChallengeDigest: domain.DigestSecret(key + "-target-child")}
 	target := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "native-target-" + key}
 	confirmation := identityConfirmationV2{OperationDigest: phase.OperationDigest, SessionDigest: phase.SessionDigest, CSRFDigest: phase.CSRFDigest, BrowserBindingDigest: phase.BrowserBindingDigest, ExpectedRevision: phase.ExpectedRevision, NextSessionDigest: domain.DigestSecret(key + "-next-cookie"), NextCSRFDigest: domain.DigestSecret(key + "-next-csrf")}
 	config := identityConfigurationV2{ManifestDigest: domain.DigestSecret(key + "-manifest"), SensitiveOperationsEnabled: true, Providers: []domain.IdentityProviderBindingV2{
@@ -37,7 +37,7 @@ func TestWebIdentityV2YDBProofStorageAndAtomicLink(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		for _, digest := range []domain.SecretDigest{phase.OperationDigest, start.SourceChallengeDigest, start.TargetChallengeDigest} {
+		for _, digest := range []domain.SecretDigest{phase.OperationDigest, start.TargetChallengeDigest} {
 			bucket, err := webBucket(string(digest))
 			if err != nil {
 				t.Error(err)
@@ -85,12 +85,8 @@ func TestWebIdentityV2YDBProofStorageAndAtomicLink(t *testing.T) {
 	if err != nil {
 		t.Fatal("actual native start operation", err)
 	}
-	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderYandex, domain.IdentityProviderTelegram} {
-		digest, subject := start.SourceChallengeDigest, identity.Subject
-		nonce := ""
-		if provider == domain.IdentityProviderTelegram {
-			digest, subject, nonce = start.TargetChallengeDigest, target, "native-synthetic-nonce"
-		}
+	for _, provider := range []domain.IdentityProvider{domain.IdentityProviderTelegram} {
+		digest, subject, nonce := start.TargetChallengeDigest, target, "native-synthetic-nonce"
 		child, err := store.createIdentityProofV2(ctx, identityProofChildV2{Phase: phase, ChallengeDigest: digest, PKCEVerifier: strings.Repeat("p", 43), Nonce: nonce}, config)
 		if err != nil {
 			t.Fatal("actual native create child", provider, err)
@@ -110,7 +106,7 @@ func TestWebIdentityV2YDBProofStorageAndAtomicLink(t *testing.T) {
 		}
 	}
 	if operation.Phase != domain.IdentityPhaseConfirmV2 {
-		t.Fatal("native dual proof storage did not reach exact confirm phase")
+		t.Fatal("native current-session target proof storage did not reach exact confirm phase")
 	}
 	result, err := store.confirmIdentityOperationV2(ctx, confirmation, config)
 	if err != nil || result.Receipt.AfterRevision == nil || *result.Receipt.AfterRevision != identity.Revision+1 || result.Session.Session.UserID != identity.UserID {
@@ -144,7 +140,7 @@ func TestWebIdentityV2YDBProofStorageAndAtomicLink(t *testing.T) {
 		if err != nil || !found || terminal.Pending != nil || !reflect.DeepEqual(terminal.Receipt, &result.Receipt) {
 			return errors.New("native exact minimal receipt mismatch")
 		}
-		for _, digest := range []domain.SecretDigest{start.SourceChallengeDigest, start.TargetChallengeDigest} {
+		for _, digest := range []domain.SecretDigest{start.TargetChallengeDigest} {
 			consumed, found, err := readIdentityProofChildV2(ctx, query, digest)
 			if err != nil || !found || consumed.ConsumedAt == nil || consumed.Secrets != nil {
 				return errors.New("native committed child JSON/scalar secret pruning failed")

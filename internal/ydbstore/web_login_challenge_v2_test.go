@@ -270,8 +270,8 @@ func TestIdentityLoginServingV2PurposeIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			challenge := identityLoginCarrierV2(config.Providers[0], f.at)
-			challenge.StateDigest = request.SourceChallengeDigest
+			challenge := identityLoginCarrierV2(config.Providers[1], f.at)
+			challenge.StateDigest = request.TargetChallengeDigest
 			childRequest := identityProofChildRequestV2(operation, request.Phase)
 			if loginFirst {
 				if err := store.CreateLoginChallenge(ctx, challenge); err != nil {

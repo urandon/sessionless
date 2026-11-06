@@ -193,14 +193,14 @@ func (operation IdentityOperationV2) Validate() error {
 
 func (operation IdentityOperationV2) validatePending() error {
 	pending := operation.Pending
-	if pending == nil || operation.Receipt != nil || !operation.DeleteAfter.Equal(operation.ExpiresAt) || pending.Scope.Validate() != nil || validateIdentitySubjectV2(pending.SourceSubject) != nil || !identityProviderV2(pending.TargetProvider) || pending.SourceSubject.Provider == pending.TargetProvider || pending.SourceChallengeDigest.Validate("identity_operation_v2.source_challenge_digest") != nil || pending.SourceChallengeDigest == operation.OperationDigest {
+	if pending == nil || operation.Receipt != nil || !operation.DeleteAfter.Equal(operation.ExpiresAt) || pending.Scope.Validate() != nil || validateIdentitySubjectV2(pending.SourceSubject) != nil || !identityProviderV2(pending.TargetProvider) || pending.SourceSubject.Provider == pending.TargetProvider {
 		return identityOperationErrorV2("pending", "requires original scope, distinct fixed methods and unextended pending retention")
 	}
 	if operation.Kind == IdentityOperationLinkV2 {
-		if pending.SourceSubject != pending.Scope.AuthenticatedSubject || pending.TargetChallengeDigest.Validate("identity_operation_v2.target_challenge_digest") != nil || pending.TargetChallengeDigest == pending.SourceChallengeDigest || pending.TargetChallengeDigest == operation.OperationDigest {
+		if pending.SourceSubject != pending.Scope.AuthenticatedSubject || pending.SourceChallengeDigest != "" || pending.SourceProof != nil || operation.Phase == IdentityPhaseSourceProofV2 || pending.TargetChallengeDigest.Validate("identity_operation_v2.target_challenge_digest") != nil || pending.TargetChallengeDigest == operation.OperationDigest {
 			return identityOperationErrorV2("pending.link", "requires current authenticating source and independent target challenge")
 		}
-	} else if pending.TargetSubject == nil || pending.TargetChallengeDigest != "" || pending.TargetProof != nil {
+	} else if pending.SourceChallengeDigest.Validate("identity_operation_v2.source_challenge_digest") != nil || pending.SourceChallengeDigest == operation.OperationDigest || pending.TargetSubject == nil || pending.TargetChallengeDigest != "" || pending.TargetProof != nil {
 		return identityOperationErrorV2("pending.unlink", "requires exact removed method and no target-proof arm")
 	}
 	if pending.TargetSubject != nil && (validateIdentitySubjectV2(*pending.TargetSubject) != nil || pending.TargetSubject.Provider != pending.TargetProvider || *pending.TargetSubject == pending.SourceSubject) {
@@ -218,11 +218,11 @@ func (operation IdentityOperationV2) validatePending() error {
 			return identityOperationErrorV2("phase", "source phase cannot carry completed proof or selected link subject")
 		}
 	case IdentityPhaseTargetProofV2:
-		if operation.Kind != IdentityOperationLinkV2 || pending.SourceProof == nil || pending.TargetProof != nil || pending.TargetSubject != nil {
-			return identityOperationErrorV2("phase", "target phase requires exactly completed source proof")
+		if operation.Kind != IdentityOperationLinkV2 || pending.TargetProof != nil || pending.TargetSubject != nil {
+			return identityOperationErrorV2("phase", "link target phase requires the original current-session scope and no completed target proof")
 		}
 	case IdentityPhaseConfirmV2:
-		if pending.SourceProof == nil || (operation.Kind == IdentityOperationLinkV2 && (pending.TargetProof == nil || pending.TargetSubject == nil)) {
+		if (operation.Kind == IdentityOperationUnlinkV2 && pending.SourceProof == nil) || (operation.Kind == IdentityOperationLinkV2 && (pending.TargetProof == nil || pending.TargetSubject == nil)) {
 			return identityOperationErrorV2("phase", "confirmation requires all exact proofs")
 		}
 	default:
@@ -240,8 +240,8 @@ func (operation IdentityOperationV2) validateStoredProof(proof IdentityProviderP
 		if proof.ChallengeDigest != pending.SourceChallengeDigest || proof.Subject != pending.SourceSubject {
 			return identityOperationErrorV2("proof.source", "requires the exact original source child and subject")
 		}
-	} else if operation.Kind != IdentityOperationLinkV2 || proof.ChallengeDigest != pending.TargetChallengeDigest || proof.Subject.Provider != pending.TargetProvider || pending.TargetSubject == nil || proof.Subject != *pending.TargetSubject || pending.SourceProof == nil || proof.ChallengeCreatedAt.Before(pending.SourceProof.CompletedAt) {
-		return identityOperationErrorV2("proof.target", "requires the independent target child after source completion")
+	} else if operation.Kind != IdentityOperationLinkV2 || proof.ChallengeDigest != pending.TargetChallengeDigest || proof.Subject.Provider != pending.TargetProvider || pending.TargetSubject == nil || proof.Subject != *pending.TargetSubject {
+		return identityOperationErrorV2("proof.target", "requires the independent target child bound to the current-session operation")
 	}
 	return nil
 }
@@ -287,11 +287,7 @@ func (operation IdentityOperationV2) RecordProof(challenge IdentityChallengeV2, 
 	switch operation.Phase {
 	case IdentityPhaseSourceProofV2:
 		next.Pending.SourceProof = &proof
-		if next.Kind == IdentityOperationLinkV2 {
-			next.Phase = IdentityPhaseTargetProofV2
-		} else {
-			next.Phase = IdentityPhaseConfirmV2
-		}
+		next.Phase = IdentityPhaseConfirmV2
 	case IdentityPhaseTargetProofV2:
 		next.Pending.TargetProof = &proof
 		subject := proof.Subject
@@ -310,8 +306,11 @@ func (operation IdentityOperationV2) RecordProof(challenge IdentityChallengeV2, 
 // Identity ownership, enabled methods, configuration, membership, CSRF and audit
 // must still be checked together in the actual mutation transaction.
 func (operation IdentityOperationV2) ValidateConfirm(at time.Time) error {
-	if operation.Validate() != nil || operation.Phase != IdentityPhaseConfirmV2 || at.Before(operation.CreatedAt) || !at.Before(operation.ExpiresAt) || operation.Pending.SourceProof.ValidateFresh(at) != nil {
-		return identityOperationErrorV2("confirm", "requires the original live confirm phase and fresh source proof")
+	if operation.Validate() != nil || operation.Phase != IdentityPhaseConfirmV2 || at.Before(operation.CreatedAt) || !at.Before(operation.ExpiresAt) {
+		return identityOperationErrorV2("confirm", "requires the original live confirm phase")
+	}
+	if operation.Kind == IdentityOperationUnlinkV2 && operation.Pending.SourceProof.ValidateFresh(at) != nil {
+		return identityOperationErrorV2("confirm", "unlink requires fresh remaining-provider proof")
 	}
 	if operation.Kind == IdentityOperationLinkV2 && operation.Pending.TargetProof.ValidateFresh(at) != nil {
 		return identityOperationErrorV2("confirm", "requires independent fresh target proof")

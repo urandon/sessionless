@@ -30,14 +30,14 @@ func WebIdentityManifestDigestV2(bindings []domain.IdentityProviderBindingV2) (d
 			return "", ports.IdentityAccountUnavailableV2
 		}
 	}
-	// This version changes if the accepted proof semantics change. These are
-	// the policies implemented by the concrete adapters, not caller choices.
+	// This version changes with accepted operation-flow or provider-proof
+	// semantics. These are runtime policies, not caller choices.
 	raw, err := json.Marshal(struct {
 		Version   string                             `json:"version"`
 		Yandex    domain.IdentityProviderProofKindV2 `json:"yandex_proof"`
 		Telegram  domain.IdentityProviderProofKindV2 `json:"telegram_proof"`
 		Providers []domain.IdentityProviderBindingV2 `json:"providers"`
-	}{"web-identity-runtime.v2", domain.IdentityProofYandexAuthorizationV2, domain.IdentityProofTelegramAuthTimeV2, bindings})
+	}{"web-identity-runtime.v2.session-link-v1", domain.IdentityProofYandexAuthorizationV2, domain.IdentityProofTelegramAuthTimeV2, bindings})
 	if err != nil {
 		return "", ports.IdentityAccountUnavailableV2
 	}

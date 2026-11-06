@@ -55,6 +55,20 @@ subscription credentials into this repository.
 
 ## Fast path
 
+### Account linking without live OAuth
+
+`make account-link-smoke-test` uses the installed locked Web dependencies and
+shared Go caches. It creates an explicit synthetic continuation fixture under
+an automatically cleaned `.build/account-link-smoke.*` directory: the real Go BFF/service/provider URL producer
+supplies response bytes to the real TypeScript API parser and Svelte component.
+The test checks **Link Telegram → Telegram navigation** from an existing session,
+with no repeat Yandex login, no automatic final confirmation and no mutation on
+return/refresh. Missing fixture/setup is a failure, not a silently skipped smoke.
+This does not start YDB, Docker, a VM, a provider or a cloud deployment and uses
+no real key, user payload or external request. Normal domain/store/browser tests
+remain required; this small composition is not a claim of genuine provider or
+Huawei-browser compatibility. See the [linking design](design/dual-provider-account-linking.md).
+
 ### Entity registry and state storage
 
 Maintain the [entity registry](architecture/entity-registry.md) when table,

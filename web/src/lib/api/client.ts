@@ -234,7 +234,7 @@ export class CanonicalApiClient {
         const view = parseIdentityOperation(text);
         if (
           view.kind !== input.kind ||
-          view.phase !== 'source_proof' ||
+          view.phase !== (input.kind === 'link' ? 'target_proof' : 'source_proof') ||
           view.outcome !== undefined ||
           view.before_revision !== input.expected_revision ||
           (input.kind === 'link' && view.target_provider !== input.target_provider)
@@ -345,6 +345,7 @@ export class CanonicalApiClient {
           error.code,
           'Login methods are unavailable.',
           error.code === 'temporarily_unavailable' ? 503 : error.status,
+          error.requestId,
         );
       throw new ApiError('temporarily_unavailable', 'Login methods are unavailable.', 503);
     } finally {

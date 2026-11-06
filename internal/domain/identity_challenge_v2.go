@@ -123,8 +123,8 @@ func (challenge IdentityChallengeV2) ValidateForOperation(operation IdentityOper
 			return identityOperationErrorV2("challenge.parent.source", "does not match fixed source child and subject")
 		}
 	case IdentityPhaseTargetProofV2:
-		if operation.Kind != IdentityOperationLinkV2 || challenge.StateDigest != pending.TargetChallengeDigest || proof.ExpectedSubject != nil || challenge.Binding.Provider != pending.TargetProvider || pending.SourceProof == nil || challenge.CreatedAt.Before(pending.SourceProof.CompletedAt) {
-			return identityOperationErrorV2("challenge.parent.target", "does not match independent target child after source proof")
+		if operation.Kind != IdentityOperationLinkV2 || challenge.StateDigest != pending.TargetChallengeDigest || proof.ExpectedSubject != nil || challenge.Binding.Provider != pending.TargetProvider {
+			return identityOperationErrorV2("challenge.parent.target", "does not match independent target child of the current-session operation")
 		}
 	default:
 		return identityOperationErrorV2("challenge.parent.phase", "cannot exchange another provider challenge in this phase")

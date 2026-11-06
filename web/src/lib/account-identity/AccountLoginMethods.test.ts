@@ -40,7 +40,7 @@ function rows(
 }
 function pending(
   reference = id,
-  phase = 'source_proof',
+  phase = 'target_proof',
   kind = 'link',
   target = 'telegram',
   revision = '7',
@@ -72,19 +72,20 @@ function terminal(outcome = 'linked', kind = 'link'): IdentityOperationView {
     }),
   );
 }
-function authorization(): string {
+function authorization(provider: IdentityProvider = 'telegram'): string {
   return (
-    'https://oauth.telegram.org/auth?' +
+    (provider === 'telegram'
+      ? 'https://oauth.telegram.org/auth?'
+      : 'https://oauth.yandex.ru/authorize?') +
     new URLSearchParams({
       client_id: '100000',
-      redirect_uri: `${globalThis.location.origin}/auth/telegram/callback`,
+      redirect_uri: `${globalThis.location.origin}${provider === 'telegram' ? '/auth/telegram/callback' : '/auth/login/callback'}`,
       response_type: 'code',
       state: 'state',
       code_challenge: 'A'.repeat(43),
       code_challenge_method: 'S256',
-      scope: 'openid profile',
-      max_age: '0',
-      nonce: 'nonce',
+      scope: provider === 'telegram' ? 'openid profile' : 'login:info',
+      ...(provider === 'telegram' ? { max_age: '0', nonce: 'nonce' } : { force_confirm: 'yes' }),
     })
   );
 }
@@ -101,7 +102,7 @@ function api(current: IdentityProvider = 'yandex') {
       .mockImplementation(async (input) =>
         pending(
           id,
-          'source_proof',
+          input.kind === 'link' ? 'target_proof' : 'source_proof',
           input.kind,
           input.kind === 'link' ? input.target_provider : 'yandex',
           input.expected_revision,
@@ -109,7 +110,9 @@ function api(current: IdentityProvider = 'yandex') {
       ),
     continueIdentityOperation: vi
       .fn<CanonicalApiClient['continueIdentityOperation']>()
-      .mockResolvedValue({ authorization_url: authorization() }),
+      .mockResolvedValue({
+        authorization_url: authorization(current === 'yandex' ? 'telegram' : 'yandex'),
+      }),
     confirmIdentityOperation: vi
       .fn<CanonicalApiClient['confirmIdentityOperation']>()
       .mockResolvedValue(terminal()),
@@ -127,6 +130,62 @@ function deferred<T>() {
 }
 
 describe('AccountLoginMethods presentation', () => {
+  it('links from the current session straight to Telegram without another Continue click', async () => {
+    const client = api();
+    client.startIdentityOperation.mockResolvedValue(pending(id, 'target_proof'));
+    const onNavigate = vi.fn();
+    render(AccountLoginMethods, { client, onNavigate });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledOnce());
+    expect(onNavigate).toHaveBeenCalledWith(authorization());
+    expect(client.continueIdentityOperation).toHaveBeenCalledExactlyOnceWith(
+      id,
+      '7',
+      expect.any(AbortSignal),
+    );
+    expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
+  });
+  it('preserves a failed target step and its safe reference without recommending another login or replaying', async () => {
+    const client = api(),
+      onNavigate = vi.fn();
+    client.continueIdentityOperation.mockRejectedValue(
+      new ApiError(
+        'temporarily_unavailable',
+        'private provider token detail',
+        503,
+        'req_synthetic244',
+      ),
+    );
+    render(AccountLoginMethods, { client, onNavigate });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not open Telegram');
+    expect(alert).toHaveTextContent('req_synthetic244');
+    expect(alert).not.toHaveTextContent('private provider');
+    expect(screen.queryByRole('link', { name: 'Sign in again' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Link Telegram' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue to Telegram' })).toBeDisabled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue to Telegram' })).toBeEnabled(),
+    );
+    expect(client.startIdentityOperation).toHaveBeenCalledOnce();
+    expect(client.continueIdentityOperation).toHaveBeenCalledOnce();
+    expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+  it('never navigates to the other allowed provider instead of the requested target', async () => {
+    const client = api(),
+      onNavigate = vi.fn();
+    client.continueIdentityOperation.mockResolvedValue({
+      authorization_url: authorization('yandex'),
+    });
+    render(AccountLoginMethods, { client, onNavigate });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not open Telegram');
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(client.continueIdentityOperation).toHaveBeenCalledOnce();
+  });
   for (const action of ['confirm', 'cancel'] as const) {
     it(`drops the old ${action} follow-up after scope changes inside outcome focus`, async () => {
       const client = api(),
@@ -134,15 +193,15 @@ describe('AccountLoginMethods presentation', () => {
       client.getIdentityOperationOutcome.mockResolvedValue(pending(id, 'confirm'));
       next.getAccountLoginMethods.mockResolvedValue(rows('telegram', false, '9'));
       next.getIdentityOperationOutcome.mockResolvedValue(
-        pending('next-operation', 'source_proof', 'link', 'yandex', '9'),
+        pending('next-operation', 'target_proof', 'link', 'yandex', '9'),
       );
       const view = render(AccountLoginMethods, { client, operationId: id });
       const button = await screen.findByRole('button', {
-        name: action === 'confirm' ? 'Confirm link' : 'Cancel operation',
+        name: action === 'confirm' ? 'Confirm Telegram link' : 'Cancel operation',
       });
       const oldReadSignal = client.getAccountLoginMethods.mock.calls[0]![0] as AbortSignal;
       let changed: Promise<void> | undefined;
-      screen.getByRole('heading', { name: 'Stored operation' }).addEventListener(
+      screen.getByRole('heading', { name: 'Link a sign-in method' }).addEventListener(
         'focus',
         () => {
           changed = view.rerender({ client: next, operationId: 'next-operation' });
@@ -160,7 +219,7 @@ describe('AccountLoginMethods presentation', () => {
       expect(changed).toBeDefined();
       await changed;
       await waitFor(() =>
-        expect(screen.getByText('9', { selector: '.revision' })).toBeInTheDocument(),
+        expect(screen.getByRole('button', { name: 'Continue to Yandex' })).toBeInTheDocument(),
       );
       expect(oldReadSignal.aborted).toBe(true);
       expect(client.getAccountLoginMethods).toHaveBeenCalledOnce();
@@ -212,14 +271,14 @@ describe('AccountLoginMethods presentation', () => {
     });
   }
   for (const current of ['yandex', 'telegram'] as const) {
-    it(`reads only on mount/refresh for ${current}, keeps server actions and starts separately`, async () => {
+    it(`reads only on mount/refresh for ${current} and the explicit Link click navigates once`, async () => {
       const client = api(current),
         onOperationIdChange = vi.fn(),
         onNavigate = vi.fn();
       const target = current === 'yandex' ? 'Telegram' : 'Yandex';
       const view = render(AccountLoginMethods, { client, onOperationIdChange, onNavigate });
       expect(screen.getByRole('heading', { name: 'Login methods' })).toHaveFocus();
-      await screen.findByRole('button', { name: `Start linking ${target}` });
+      await screen.findByRole('button', { name: `Link ${target}` });
       expect(client.getAccountLoginMethods).toHaveBeenCalledOnce();
       expect(client.getIdentityOperationOutcome).not.toHaveBeenCalled();
       expect(client.startIdentityOperation).not.toHaveBeenCalled();
@@ -231,17 +290,23 @@ describe('AccountLoginMethods presentation', () => {
       await waitFor(() => expect(client.getAccountLoginMethods).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(refresh).toBeEnabled());
       expect(refresh).toHaveFocus();
-      await fireEvent.click(screen.getByRole('button', { name: `Start linking ${target}` }));
-      const continuation = await screen.findByRole('button', { name: 'Continue provider check' });
+      await fireEvent.click(screen.getByRole('button', { name: `Link ${target}` }));
+      const continuation = await screen.findByRole('button', { name: `Continue to ${target}` });
       await waitFor(() => expect(continuation).toBeEnabled());
       expect(client.startIdentityOperation).toHaveBeenCalledWith(
         { kind: 'link', target_provider: target.toLowerCase(), expected_revision: '7' },
         expect.any(AbortSignal),
       );
       expect(onOperationIdChange).toHaveBeenCalledWith(id);
-      expect(client.continueIdentityOperation).not.toHaveBeenCalled();
-      expect(onNavigate).not.toHaveBeenCalled();
-      expect(screen.getByRole('heading', { name: 'Stored operation' })).toHaveFocus();
+      expect(client.continueIdentityOperation).toHaveBeenCalledExactlyOnceWith(
+        id,
+        '7',
+        expect.any(AbortSignal),
+      );
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith(
+        authorization(target.toLowerCase() as IdentityProvider),
+      );
+      expect(screen.getByRole('heading', { name: 'Link a sign-in method' })).toHaveFocus();
       await view.rerender({ client, operationId: id, onOperationIdChange, onNavigate });
       await tick();
       expect(client.getIdentityOperationOutcome).not.toHaveBeenCalled();
@@ -266,7 +331,7 @@ describe('AccountLoginMethods presentation', () => {
           .getByRole('heading', { name: current === 'yandex' ? 'Yandex' : 'Telegram' })
           .closest('li')!;
         expect(
-          within(currentRow).queryByRole('button', { name: /Start unlinking/ }),
+          within(currentRow).queryByRole('button', { name: /Remove/ }),
         ).not.toBeInTheDocument();
         expect(client.startIdentityOperation).not.toHaveBeenCalled();
       });
@@ -274,8 +339,8 @@ describe('AccountLoginMethods presentation', () => {
   it('preserves max uint64 decimal revision without frontend arithmetic', async () => {
     const client = api();
     client.getAccountLoginMethods.mockResolvedValue(rows('yandex', false, '18446744073709551615'));
-    render(AccountLoginMethods, { client });
-    await fireEvent.click(await screen.findByRole('button', { name: 'Start linking Telegram' }));
+    render(AccountLoginMethods, { client, onNavigate: vi.fn() });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
     await waitFor(() =>
       expect(client.startIdentityOperation).toHaveBeenCalledWith(
         { kind: 'link', target_provider: 'telegram', expected_revision: '18446744073709551615' },
@@ -287,7 +352,7 @@ describe('AccountLoginMethods presentation', () => {
     const client = api(),
       onNavigate = vi.fn();
     render(AccountLoginMethods, { client, operationId: id, onNavigate });
-    const button = await screen.findByRole('button', { name: 'Continue provider check' });
+    const button = await screen.findByRole('button', { name: 'Continue to Telegram' });
     expect(client.continueIdentityOperation).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
     await fireEvent.click(button);
@@ -303,7 +368,7 @@ describe('AccountLoginMethods presentation', () => {
       authorization_url: 'https://outside.example.com/?code=private',
     });
     render(AccountLoginMethods, { client, operationId: id, onNavigate });
-    await fireEvent.click(await screen.findByRole('button', { name: 'Continue provider check' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Continue to Telegram' }));
     expect(await screen.findByRole('alert')).not.toHaveTextContent('outside.example.com');
     expect(onNavigate).not.toHaveBeenCalled();
     expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
@@ -315,17 +380,15 @@ describe('AccountLoginMethods presentation', () => {
       .mockResolvedValueOnce(rows())
       .mockResolvedValue(rows('yandex', true, '8'));
     render(AccountLoginMethods, { client, operationId: id });
-    const confirm = await screen.findByRole('button', { name: 'Confirm link' });
+    const confirm = await screen.findByRole('button', { name: 'Confirm Telegram link' });
     expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole('button', { name: 'Continue provider check' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue to Telegram' })).not.toBeInTheDocument();
     await fireEvent.click(confirm);
     expect(await screen.findByText('Sign-in method linked.')).toBeInTheDocument();
     await waitFor(() => expect(client.getAccountLoginMethods).toHaveBeenCalledTimes(2));
     expect(client.confirmIdentityOperation).toHaveBeenCalledWith(id, '7', expect.any(AbortSignal));
-    expect(screen.getByRole('heading', { name: 'Stored operation' })).toHaveFocus();
-    expect(screen.queryByRole('button', { name: 'Confirm link' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Link a sign-in method' })).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'Confirm Telegram link' })).not.toBeInTheDocument();
     expect(screen.getByText(/Other Web sessions need to sign in again/)).toBeInTheDocument();
   });
   it('names the server-selected remaining method, uses own handle, and cancels only on explicit click', async () => {
@@ -333,7 +396,7 @@ describe('AccountLoginMethods presentation', () => {
     client.getAccountLoginMethods.mockResolvedValue(rows('yandex', true));
     client.cancelIdentityOperation.mockResolvedValue(terminal('cancelled', 'unlink'));
     render(AccountLoginMethods, { client });
-    const start = await screen.findByRole('button', { name: 'Start unlinking Yandex' });
+    const start = await screen.findByRole('button', { name: 'Remove Yandex' });
     expect(start.closest('li')).toHaveTextContent('Keep signing in with Telegram');
     expect(start.closest('li')).toHaveTextContent('Other Web sessions will need sign-in again');
     await fireEvent.click(start);
@@ -357,7 +420,7 @@ describe('AccountLoginMethods presentation', () => {
     );
     client.confirmIdentityOperation.mockResolvedValue(terminal('unlinked', 'unlink'));
     render(AccountLoginMethods, { client, operationId: id });
-    const confirm = await screen.findByRole('button', { name: 'Confirm unlink' });
+    const confirm = await screen.findByRole('button', { name: 'Confirm removal of Yandex' });
     expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
     await fireEvent.click(confirm);
     expect(await screen.findByText('Sign-in method unlinked.')).toBeInTheDocument();
@@ -373,7 +436,7 @@ describe('AccountLoginMethods presentation', () => {
       new ApiError('temporarily_unavailable', 'private lost response', 503),
     );
     render(AccountLoginMethods, { client, operationId: id });
-    await fireEvent.click(await screen.findByRole('button', { name: 'Confirm link' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Confirm Telegram link' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('outcome is unknown');
     await waitFor(() =>
@@ -383,7 +446,7 @@ describe('AccountLoginMethods presentation', () => {
     expect(await screen.findByText('Sign-in method linked.')).toBeInTheDocument();
     expect(client.confirmIdentityOperation).toHaveBeenCalledOnce();
     expect(client.continueIdentityOperation).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Confirm link' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm Telegram link' })).not.toBeInTheDocument();
   });
   it('shows a genuine missing 410 view separately from unknown read failure and pending expiry', async () => {
     const client = api();
@@ -441,7 +504,7 @@ describe('AccountLoginMethods presentation', () => {
         new ApiError(code, 'private subject/token/upstream detail', 503),
       );
       render(AccountLoginMethods, { client });
-      await fireEvent.click(await screen.findByRole('button', { name: 'Start linking Telegram' }));
+      await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
       const alert = await screen.findByRole('alert');
       expect(alert).toHaveTextContent(phrase);
       expect(alert).not.toHaveTextContent('private subject');
@@ -449,7 +512,7 @@ describe('AccountLoginMethods presentation', () => {
       expect(client.startIdentityOperation).toHaveBeenCalledOnce();
       expect(client.continueIdentityOperation).not.toHaveBeenCalled();
       expect(client.confirmIdentityOperation).not.toHaveBeenCalled();
-      expect(screen.getByRole('button', { name: 'Start linking Telegram' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Link Telegram' })).toBeDisabled();
       await fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
       await waitFor(() => expect(client.getAccountLoginMethods).toHaveBeenCalledTimes(2));
       expect(client.startIdentityOperation).toHaveBeenCalledOnce();
@@ -463,7 +526,7 @@ describe('AccountLoginMethods presentation', () => {
     await waitFor(() => expect(client.getIdentityOperationOutcome).toHaveBeenCalledOnce());
     const signal = client.getIdentityOperationOutcome.mock.calls[0]![1] as AbortSignal;
     await view.rerender({ client, operationId: 'next-operation' });
-    await screen.findByRole('button', { name: 'Continue provider check' });
+    await screen.findByRole('button', { name: 'Continue to Telegram' });
     expect(signal.aborted).toBe(true);
     old.resolve(terminal());
     await tick();
@@ -476,7 +539,7 @@ describe('AccountLoginMethods presentation', () => {
       onOperationIdChange = vi.fn();
     client.startIdentityOperation.mockReturnValue(response.promise);
     const view = render(AccountLoginMethods, { client, onOperationIdChange });
-    await fireEvent.click(await screen.findByRole('button', { name: 'Start linking Telegram' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link Telegram' }));
     const signal = client.startIdentityOperation.mock.calls[0]![1] as AbortSignal;
     await view.rerender({ client, operationId: 'next-operation', onOperationIdChange });
     await waitFor(() =>
@@ -495,7 +558,7 @@ describe('AccountLoginMethods presentation', () => {
       onNavigate = vi.fn();
     other.continueIdentityOperation.mockReturnValue(navigation.promise);
     const next = render(AccountLoginMethods, { client: other, operationId: id, onNavigate });
-    await fireEvent.click(await screen.findByRole('button', { name: 'Continue provider check' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Continue to Telegram' }));
     await next.unmount();
     navigation.resolve({ authorization_url: authorization() });
     await tick();

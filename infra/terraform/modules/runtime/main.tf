@@ -85,6 +85,7 @@ resource "yandex_serverless_container" "control" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
 }
@@ -139,6 +140,7 @@ resource "yandex_serverless_container" "reconciler" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
 }
@@ -196,6 +198,7 @@ resource "yandex_serverless_container" "worker" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
 }
@@ -236,6 +239,7 @@ resource "yandex_serverless_container" "telegram_sender" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
 }

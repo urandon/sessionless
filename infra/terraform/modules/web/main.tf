@@ -173,6 +173,7 @@ resource "yandex_serverless_container" "web" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
 }
@@ -222,6 +223,7 @@ resource "yandex_api_gateway" "web" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
   spec = yamlencode({

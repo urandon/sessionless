@@ -39,7 +39,7 @@ run "yandex_login_web_module" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
@@ -142,7 +142,7 @@ run "reject_missing_yandex_login_client" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
   }
@@ -169,7 +169,7 @@ run "reject_unknown_login_provider" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "unknown"
   }
@@ -351,7 +351,7 @@ run "reject_empty_web_version" {
     web_secret_version_id               = ""
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
@@ -379,7 +379,7 @@ run "reject_whitespace_web_version" {
     web_secret_version_id               = "   "
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
@@ -407,7 +407,7 @@ run "reject_empty_scheduler_version" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = ""
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
@@ -435,7 +435,7 @@ run "reject_whitespace_scheduler_version" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = " \t "
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex"
     yandex_login_client_id              = "yandex-client-test"
@@ -463,7 +463,7 @@ run "both_login_web_module" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex,telegram"
     telegram_oidc_client_id             = "123456789"
@@ -526,7 +526,7 @@ run "reject_both_missing_telegram_client" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex,telegram"
     yandex_login_client_id              = "yandex-client-test"
@@ -556,7 +556,7 @@ run "v2_login_sensitive_operations_off" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex,telegram"
     telegram_oidc_client_id             = "123456789"
@@ -594,7 +594,7 @@ run "reject_unknown_identity_version" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex,telegram"
     telegram_oidc_client_id             = "123456789"
@@ -625,7 +625,7 @@ run "reject_v1_sensitive_identity_operations" {
     web_secret_version_id               = "web-version-test"
     scheduler_ymq_secret_id             = "scheduler-secret-test"
     scheduler_ymq_secret_version_id     = "scheduler-version-test"
-    log_group_id                        = "logs-test"
+    log_group_id                        = "e2300000000000000000"
     deletion_protection                 = true
     login_providers                     = "yandex,telegram"
     telegram_oidc_client_id             = "123456789"

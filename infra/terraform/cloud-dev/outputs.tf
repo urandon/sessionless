@@ -20,6 +20,7 @@ output "telegram_secret_id" { value = module.foundation.telegram_secret_id }
 output "web_bff_secret_id" { value = module.foundation.web_bff_secret_id }
 output "gateway_service_account_id" { value = module.foundation.service_account_ids["gateway"] }
 output "runtime_log_group_id" { value = module.foundation.log_group_id }
+output "runtime_log_folder_id" { value = module.foundation.log_folder_id }
 output "queue_provisioner_secret_id" { value = module.foundation.queue_provisioner_secret_id }
 output "queue_provisioner_secret_version_id" { value = module.foundation.queue_provisioner_secret_version_id }
 output "scheduler_ymq_secret_id" { value = module.foundation.scheduler_ymq_secret_id }

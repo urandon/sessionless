@@ -30,7 +30,32 @@ variable "telegram_secret_id" { type = string }
 variable "telegram_secret_version_id" { type = string }
 variable "scheduler_ymq_secret_id" { type = string }
 variable "scheduler_ymq_secret_version_id" { type = string }
-variable "log_group_id" { type = string }
+variable "log_group_id" {
+  description = "Explicit existing native log-group destination; set exactly one native destination."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.log_group_id == null || can(regex("^[a-z0-9]{20}$", var.log_group_id))
+    error_message = "log_group_id must be null or one exact 20-character native log-group ID."
+  }
+  validation {
+    condition     = (var.log_group_id != null) != (var.log_folder_id != null)
+    error_message = "Set exactly one of log_group_id or log_folder_id; no implicit native logging destination is allowed."
+  }
+}
+variable "log_folder_id" {
+  description = "Explicit native folder-default log destination; not proof of Monium delivery or retention."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.log_folder_id == null || can(regex("^[a-z0-9]{20}$", var.log_folder_id))
+    error_message = "log_folder_id must be null or one exact 20-character folder ID."
+  }
+  validation {
+    condition     = var.log_folder_id == null || var.log_folder_id == var.folder_id
+    error_message = "log_folder_id must be the same explicit deployment folder_id."
+  }
+}
 variable "labels" { type = map(string) }
 variable "control_memory_mb" { type = number }
 variable "worker_memory_mb" { type = number }

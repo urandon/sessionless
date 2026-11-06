@@ -1,6 +1,6 @@
 # Native observability YAML and operator runbook
 
-Version: 1.0.1, offline configuration tooling for
+Version: 1.0.2, offline configuration tooling for
 [#225](https://gitcode.com/urandon/sessionless/issues/225), under
 [#19](https://gitcode.com/urandon/sessionless/issues/19). Accepted design:
 [Wiki 0.1.1](https://gitcode.com/urandon/sessionless/wiki/Cloud-Dev-Observability-Design.md).
@@ -18,9 +18,20 @@ MVP routes remain required. A deterministic fixture qualifies neither route.
 ### Native log destination ownership
 
 [#243](https://gitcode.com/urandon/sessionless/issues/243) separates native log
-delivery from legacy log-group management. Cloud-dev requires the exact existing
-`runtime_log_group_id` in its private tfvars; no name lookup, default group,
-Monium-project substitution, data source or automatic creation is allowed.
+delivery from legacy log-group management. Cloud-dev requires exactly one
+explicit destination in its private tfvars:
+
+- `runtime_log_group_id`: the exact existing operator-owned log-group ID;
+- `runtime_log_folder_id`: the exact deployment folder ID, selecting the
+  provider's native folder-default destination.
+
+Set the unused input to `null` or omit it. Both set, both missing, empty, padded,
+URL, project-name and placeholder inputs fail validation. Folder routing must
+name this deployment's folder; it is not an automatic fallback from a failed
+group lookup. The two outputs preserve that distinction: the unselected output
+has no value and may be omitted by `terraform output`. No name lookup,
+Monium-project substitution, data source, managed group
+or implicit destination is introduced.
 The operator owns the destination, retention and access verification. Remove the
 obsolete `log_retention` input: Terraform no longer promises to enforce it.
 The existing INFO stdout integration and write-only IAM remain unchanged for
@@ -28,11 +39,21 @@ all containers and both gateways. This is not a new exporter or alert stack.
 
 The foundation's declarative `removed` block has `destroy = false`: an existing
 group is retained, not deleted/recreated. Review its exact `forget` plan action
-and unchanged destination wiring before apply. Never substitute `state rm`,
+and the explicitly selected destination wiring before apply. Never substitute `state rm`,
 `refresh=false`, a guessed ID, a logging-disabled revision or an OTLP ingestion
 endpoint as a Terraform management endpoint. Other resources still refresh.
-A new environment must first have an explicitly provisioned and verified native
-destination; this configuration does not bootstrap one through the failed API.
+A new environment must first have a verified destination and an exact folder
+identity. This configuration does not provision a log group through the failed
+management API. Folder routing delegates the native default-group resolution
+to the provider service; it does not prove that service is healthy.
+
+The supported [logging destination API](https://yandex.cloud/en/docs/serverless-containers/operations/logs-write)
+distinguishes `logGroupId` from `folderId`. Every container and both gateways use
+the selected field with INFO still enabled and the same write-only IAM. A
+reviewed folder-native plan can therefore avoid an explicit retained-group
+reference during revision deployment while preserving the old group and logs.
+The Terraform handoff alone does not eliminate a service-side lookup or prove
+that a revision using a retained group can be created.
 
 Before the separately authorized handoff, verify a fresh benign native record
 is readable in the exact destination, along with its actual retention, ownership
@@ -50,9 +71,14 @@ defines non-destruction; the pinned
 skips the provider refresh for an explicit forget. Regression verification must
 exercise that actual engine with a synthetic state, not a cloud credential.
 
+Folder-default routing is not synonymous with direct Monium ingestion and does
+not establish a retention period. The accepted DEV policy is 31-day Monium
+retention with no secrets or user content; verify actual destination, delivery,
+retention and cost separately. Any DEV rollout waiver for an unqualified native
+route must remain explicit and must not be described as observability acceptance.
+
 The alternatives are explicit: a compatible documented management endpoint may
-retain Terraform ownership if proven; folder-native routing changes destination
-and policy and is not a silent fallback. Direct bounded OTLP is deferred unless
+retain Terraform ownership if proven. Direct bounded OTLP is deferred unless
 native delivery fails and a separate reviewed lifecycle/auth design is accepted.
 No authentication migration, application-data change or rollout permission is
 implied by this infrastructure handoff.

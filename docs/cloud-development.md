@@ -585,7 +585,11 @@ Never substitute manual recursive bucket deletion or a broad YDB cleanup.
 
 ### 8. Apply schema and complete environment
 
-Resolve and privately set the existing `runtime_log_group_id` before planning.
+Resolve and privately set exactly one destination before planning:
+`runtime_log_group_id` for the existing group, or `runtime_log_folder_id` for
+the same deployment folder's native default destination. Omit or null the other
+input; do not substitute a Monium project ID or guess an ID. A destination
+change requires an explicitly reviewed plan, not an error-triggered fallback.
 Follow the [native log destination handoff](cloud-dev-observability.md#native-log-destination-ownership):
 the first updated plan retains the legacy group with a non-destructive `forget`
 action, rather than refreshing its unavailable management API. Other resources
@@ -730,7 +734,7 @@ export TELEGRAM_WEBHOOK_SECRET='loaded by credential-store command'
 export CLOUD_DEV_FOLDER_ID="$(./scripts/cloud-terraform.sh output -raw folder_id)"
 export YANDEX_API_FQDN="$(./scripts/cloud-terraform.sh output -raw api_fqdn)"
 export YANDEX_GATEWAY_SERVICE_ACCOUNT_ID="$(./scripts/cloud-terraform.sh output -raw gateway_service_account_id)"
-export YANDEX_LOG_GROUP_ID="$(./scripts/cloud-terraform.sh output -raw runtime_log_group_id)"
+export YANDEX_LOG_GROUP_ID='separately verified existing log-group ID for the optional edge'
 export YANDEX_TELEGRAM_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw telegram_secret_id)"
 ./scripts/cloudflare-telegram-edge.sh
 unset CLOUDFLARE_API_TOKEN TELEGRAM_WEBHOOK_SECRET
@@ -745,6 +749,11 @@ export CONFIRM_EXTERNAL_TELEGRAM_EDGE='sessionless-external-edge'
 unset TELEGRAM_EDGE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
 unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 ```
+
+The optional Cloudflare edge still requires a separately verified log-group ID;
+its script does not accept a folder ID or Monium project as an alias. Do not
+read the unset `runtime_log_group_id` output when the environment selected
+folder-native routing, or interpret that route as proof of an edge log group.
 
 The Web smoke proves anonymous direct invocation is denied, authenticated
 private health works, the managed hostname and certificate are usable, the

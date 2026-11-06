@@ -34,12 +34,25 @@ variable "queue_visibility_timeout_seconds" { type = number }
 variable "queue_retention_seconds" { type = number }
 variable "queue_max_receive_count" { type = number }
 variable "runtime_log_group_id" {
-  description = "Exact existing operator-owned native log destination; delivery, retention and ownership require separate live verification."
+  description = "Explicit existing native log-group destination; set exactly one native destination."
   type        = string
-  nullable    = false
+  default     = null
   validation {
-    condition     = can(regex("^[a-z0-9]{20}$", var.runtime_log_group_id))
-    error_message = "runtime_log_group_id must be an exact existing 20-character native log-group ID, not a name, project, URL or placeholder."
+    condition     = var.runtime_log_group_id == null || can(regex("^[a-z0-9]{20}$", var.runtime_log_group_id))
+    error_message = "runtime_log_group_id must be null or one exact 20-character native log-group ID."
+  }
+  validation {
+    condition     = (var.runtime_log_group_id != null) != (var.runtime_log_folder_id != null)
+    error_message = "Set exactly one of runtime_log_group_id or runtime_log_folder_id; no implicit native logging destination is allowed."
+  }
+}
+variable "runtime_log_folder_id" {
+  description = "Explicit native folder-default log destination; not proof of Monium delivery or retention."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.runtime_log_folder_id == null || can(regex("^[a-z0-9]{20}$", var.runtime_log_folder_id))
+    error_message = "runtime_log_folder_id must be null or one exact 20-character folder ID."
   }
 }
 variable "deletion_protection" { type = bool }

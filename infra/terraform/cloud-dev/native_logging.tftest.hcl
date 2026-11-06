@@ -27,6 +27,109 @@ run "explicit_native_destination" {
   }
 }
 
+run "explicit_folder_native_destination" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = "b1g00000000000000000"
+  }
+  override_resource {
+    target          = module.foundation.yandex_resourcemanager_folder.environment
+    override_during = plan
+    values          = { id = "b1g00000000000000000" }
+  }
+  assert {
+    condition     = output.runtime_log_folder_id == "b1g00000000000000000" && output.runtime_log_group_id == null
+    error_message = "Only the explicitly selected deployment folder may be wired as the native destination."
+  }
+}
+
+run "reject_missing_native_destination" {
+  command = plan
+  variables { runtime_log_group_id = null }
+  expect_failures = [var.runtime_log_group_id]
+}
+
+run "reject_ambiguous_native_destination" {
+  command = plan
+  variables { runtime_log_folder_id = "b1g00000000000000000" }
+  expect_failures = [var.runtime_log_group_id]
+}
+
+run "reject_empty_folder_native_destination" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = ""
+  }
+  expect_failures = [var.runtime_log_folder_id]
+}
+
+run "reject_padded_folder_native_destination" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = " b1g00000000000000000"
+  }
+  expect_failures = [var.runtime_log_folder_id]
+}
+
+run "reject_folder_native_destination_url" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = "https://example.invalid/logs"
+  }
+  expect_failures = [var.runtime_log_folder_id]
+}
+
+run "reject_project_as_folder_native_destination" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = "folder__synthetic"
+  }
+  expect_failures = [var.runtime_log_folder_id]
+}
+
+run "reject_placeholder_folder_native_destination" {
+  command = plan
+  variables {
+    runtime_log_group_id  = null
+    runtime_log_folder_id = "replace-deployment-folder-id"
+  }
+  expect_failures = [var.runtime_log_folder_id]
+}
+
+run "reject_cross_folder_native_destination" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "b1g00000000000000000"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = null
+    log_folder_id                       = "b1g11111111111111111"
+    deletion_protection                 = true
+    login_providers                     = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  expect_failures = [var.log_folder_id]
+}
+
 run "reject_empty_native_destination" {
   command = plan
   variables { runtime_log_group_id = "" }

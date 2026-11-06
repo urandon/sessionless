@@ -292,7 +292,11 @@ func (h *Handler) dispatchIdentityCallback(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	for key, values := range query {
-		if len(values) != 1 || key != "state" && key != "code" && key != "error" && key != "error_description" {
+		// Yandex adds opaque cid metadata to its authorization response (RFC
+		// 6749 section 4.1.2). It is not OAuth client_id or account authority;
+		// accept one bounded value only on its callback, then ignore it.
+		supplementaryCID := key == "cid" && r.URL.Path == webcontract.RouteLoginCallback && len(values) == 1 && domain.ValidateOpaqueID("identity.callback_cid", values[0]) == nil
+		if len(values) != 1 || !supplementaryCID && key != "state" && key != "code" && key != "error" && key != "error_description" {
 			h.writeIdentityAccountError(w, r, ports.IdentityAccountAccessDeniedV2)
 			return true
 		}

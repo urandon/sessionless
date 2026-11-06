@@ -26,6 +26,7 @@ module "foundation" {
   queue_retention_seconds          = var.queue_retention_seconds
   queue_max_receive_count          = var.queue_max_receive_count
   runtime_log_group_id             = var.runtime_log_group_id
+  runtime_log_folder_id            = var.runtime_log_folder_id
   deletion_protection              = var.deletion_protection
   github_oidc_audience             = var.github_oidc_audience
   github_oidc_subject              = var.github_oidc_subject
@@ -70,6 +71,7 @@ module "runtime" {
   scheduler_ymq_secret_id         = module.foundation.scheduler_ymq_secret_id
   scheduler_ymq_secret_version_id = module.foundation.scheduler_ymq_secret_version_id
   log_group_id                    = module.foundation.log_group_id
+  log_folder_id                   = module.foundation.log_folder_id
   labels                          = local.labels
   control_memory_mb               = var.control_memory_mb
   worker_memory_mb                = var.worker_memory_mb
@@ -92,6 +94,7 @@ module "edge" {
   stable_slot                = var.stable_slot
   canary_weight              = var.canary_weight
   log_group_id               = module.foundation.log_group_id
+  log_folder_id              = module.foundation.log_folder_id
   deletion_protection        = var.deletion_protection
   labels                     = local.labels
 }
@@ -126,6 +129,7 @@ module "web" {
   concurrency                         = var.web_concurrency
   execution_timeout                   = var.web_execution_timeout
   log_group_id                        = module.foundation.log_group_id
+  log_folder_id                       = module.foundation.log_folder_id
   deletion_protection                 = var.deletion_protection
   labels                              = local.labels
 }
@@ -140,6 +144,10 @@ resource "terraform_data" "external_guardrails" {
     precondition {
       condition     = length(trimspace(var.billing_account_id)) > 0 && length(trimspace(var.budget_id)) > 0
       error_message = "A folder-scoped Billing Budget must be created and verified before the environment can be applied."
+    }
+    precondition {
+      condition     = var.runtime_log_folder_id == null || var.runtime_log_folder_id == module.foundation.folder_id
+      error_message = "runtime_log_folder_id must be this deployment's exact folder_id, not a different folder or an implicit default."
     }
   }
 }

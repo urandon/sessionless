@@ -47,6 +47,7 @@ resource "yandex_api_gateway" "api" {
   }
   log_options {
     log_group_id = var.log_group_id
+    folder_id    = var.log_folder_id
     min_level    = "INFO"
   }
   spec = <<-YAML

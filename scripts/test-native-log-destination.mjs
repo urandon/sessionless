@@ -8,6 +8,7 @@ import { test } from 'node:test';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const destination = 'e2300000000000000000';
+const folderDestination = 'b1g00000000000000000';
 const foundation = readFileSync(join(repo, 'infra/terraform/modules/foundation/main.tf'), 'utf8');
 const handoff = foundation.match(/removed\s*\{\s*from\s*=\s*yandex_logging_group\.application\s*lifecycle\s*\{\s*destroy\s*=\s*false\s*\}\s*\}/)?.[0];
 
@@ -92,11 +93,14 @@ test('pinned real orphan planner retains state without refresh; destructive cont
   assert.equal(readFileSync(join(root, 'terraform.tfstate'), 'utf8'), oldState);
 });
 
-test('actual mocked full plan preserves INFO destination for all six containers and both gateways', () => {
+for (const [run, selected, unselected, id] of [
+  ['web_deployment_plan', 'log_group_id', 'folder_id', destination],
+  ['explicit_folder_native_destination', 'folder_id', 'log_group_id', folderDestination],
+]) test(`actual mocked ${run} preserves explicit INFO destination for all six containers and both gateways`, () => {
   const path = process.env.NATIVE_LOG_TEST_PLAN_JSON;
   assert.ok(path, 'run through make terraform-ci or supply the actual Terraform test JSONL');
   const records = readFileSync(path, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-  const plans = records.filter((r) => r.type === 'test_plan' && r['@testrun'] === 'web_deployment_plan');
+  const plans = records.filter((r) => r.type === 'test_plan' && r['@testrun'] === run);
   assert.equal(plans.length, 1);
   const resources = plans[0].test_plan.resource_changes;
   const expected = [
@@ -113,10 +117,10 @@ test('actual mocked full plan preserves INFO destination for all six containers 
     assert.equal(rows.length, 1, address);
     const logs = rows[0].change.after.log_options;
     assert.equal(logs.length, 1, address);
-    assert.equal(logs[0].log_group_id, destination, address);
+    assert.equal(logs[0][selected], id, address);
     assert.equal(logs[0].min_level, 'INFO', address);
     assert.notEqual(logs[0].disabled, true, address);
-    assert.equal(logs[0].folder_id, null, 'no silent default-folder route');
+    assert.equal(logs[0][unselected], null, `${address}: only the explicit selected destination may be set`);
   }
   assert.ok(!resources.some((r) => r.type === 'yandex_logging_group'), 'no legacy managed resource or lookup');
 });

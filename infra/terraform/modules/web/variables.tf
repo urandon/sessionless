@@ -119,7 +119,32 @@ variable "execution_timeout" {
     error_message = "execution_timeout must remain at or below 30 seconds."
   }
 }
-variable "log_group_id" { type = string }
+variable "log_group_id" {
+  description = "Explicit existing native log-group destination; set exactly one native destination."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.log_group_id == null || can(regex("^[a-z0-9]{20}$", var.log_group_id))
+    error_message = "log_group_id must be null or one exact 20-character native log-group ID."
+  }
+  validation {
+    condition     = (var.log_group_id != null) != (var.log_folder_id != null)
+    error_message = "Set exactly one of log_group_id or log_folder_id; no implicit native logging destination is allowed."
+  }
+}
+variable "log_folder_id" {
+  description = "Explicit native folder-default log destination; not proof of Monium delivery or retention."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.log_folder_id == null || can(regex("^[a-z0-9]{20}$", var.log_folder_id))
+    error_message = "log_folder_id must be null or one exact 20-character folder ID."
+  }
+  validation {
+    condition     = var.log_folder_id == null || var.log_folder_id == var.folder_id
+    error_message = "log_folder_id must be the same explicit deployment folder_id."
+  }
+}
 variable "deletion_protection" { type = bool }
 variable "labels" {
   type    = map(string)
